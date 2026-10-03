@@ -4,7 +4,7 @@
 
 Build a Telegram bot with aiogram 3 for creating and running quests and managing participants. The user interface supports Uzbek, Russian, and English. There will be no web admin panel and no advertising.
 
-The first release runs entirely inside Telegram and stores its primary data in SQLite. Quest titles, descriptions, and questions are displayed in the language entered by the quest author; changing the interface language does not automatically translate quest content.
+The first release runs entirely inside Telegram. Production deployments use PostgreSQL through `asyncpg`; SQLite remains available for local development and unit tests. Quest titles, descriptions, and questions are displayed in the language entered by the quest author; changing the interface language does not automatically translate quest content.
 
 ## 2. Functional components
 
@@ -77,8 +77,10 @@ The first release runs entirely inside Telegram and stores its primary data in S
 
 - `main.py` — bot startup, routers, and scheduler.
 - `quest_bot/handlers/` — common menu, quest creation, participant and leaderboard flows, admin tools, and support tickets.
-- `quest_bot/database.py` — SQLite schema and transactions.
+- `quest_bot/database.py` — PostgreSQL/SQLite persistence and transactions.
+- `quest_bot/postgres.py` — PostgreSQL driver compatibility for shared repository queries and schema.
 - `quest_bot/scheduler.py` — quest starts, scheduled stages, and timeout handling.
+- `deploy.sh` — PostgreSQL validation and systemd service installation/startup.
 - `quest_bot/services.py` — question delivery, group announcements, and chat-member removal.
 - `quest_bot/localization.py` — Uzbek, Russian, and English translations.
 - `tests/` — database and core-rule tests.
@@ -89,7 +91,9 @@ The first release runs entirely inside Telegram and stores its primary data in S
 - To remove members, the bot must be an admin with `can_restrict_members`. Publishing to a channel requires `can_post_messages`; creating invite links requires `can_invite_users`.
 - A recipient can forward a one-person Telegram invite link to someone else. `member_limit=1` limits the first successful join, not who uses the link, so send it privately to the intended participant.
 - A private-quest bot deep link is a shareable quest invitation and is separate from a group/channel invite link.
-- In production, store the SQLite database on persistent storage and back it up regularly. Exports omit private quest tokens and secret chat invite URLs.
+- Production configuration uses `DATABASE_URL` and PostgreSQL. Back up the PostgreSQL database regularly. Exports omit private quest tokens and secret chat invite URLs.
+- `deploy.sh` validates the PostgreSQL connection, initializes missing tables, seeds configured superadmins, and installs/enables a systemd service with automatic restart. Run it as the deployment user with sudo privileges, not as root.
+- Existing SQLite databases are not automatically migrated to PostgreSQL; any required data transfer must be planned separately.
 
 ## 7. Out of scope for the first release
 

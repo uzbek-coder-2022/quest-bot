@@ -37,7 +37,11 @@ async def main() -> None:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
     settings = Settings.from_env()
-    db = Database(settings.database_path)
+    db = Database(
+        settings.database_dsn,
+        pool_min_size=settings.database_pool_min_size,
+        pool_max_size=settings.database_pool_max_size,
+    )
     await db.initialize()
     await db.seed_superadmins(settings.superadmin_ids)
 
@@ -65,6 +69,7 @@ async def main() -> None:
             pass
         await bot.session.close()
         await dispatcher.storage.close()
+        await db.close()
 
 
 if __name__ == "__main__":

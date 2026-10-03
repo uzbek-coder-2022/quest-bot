@@ -1,4 +1,4 @@
-"""SQLite persistence layer for quests, participants, moderation, and support."""
+"""Async persistence layer for quests, participants, moderation, and support."""
 
 from __future__ import annotations
 
@@ -13,6 +13,9 @@ from pathlib import Path
 from typing import Any
 
 import aiosqlite
+import asyncpg
+
+from .postgres import AsyncpgConnection, postgres_schema
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (
@@ -188,7 +191,7 @@ CREATE INDEX IF NOT EXISTS idx_chat_members_active ON chat_members(chat_id, is_m
 
 
 def utc_now() -> str:
-    """Return an ISO-8601 UTC timestamp suitable for SQLite storage."""
+    """Return an ISO-8601 UTC timestamp for persistence in either backend."""
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 
@@ -200,13 +203,45 @@ def normalize_exact_answer(value: str) -> str:
 
 
 class Database:
-    """Small async SQLite repository; each operation uses its own connection."""
+    """Async PostgreSQL repository with SQLite support for local development and tests."""
 
-    def __init__(self, path: str | Path) -> None:
-        self.path = str(path)
+    def __init__(
+        self,
+        dsn: str | Path,
+        pool_min_size: int = 1,
+        pool_max_size: int = 10,
+    ) -> None:
+        self.dsn = str(dsn)
+        self.pool_min_size = pool_min_size
+        self.pool_max_size = pool_max_size
+        self.is_postgres = self.dsn.startswith(("postgres://", "postgresql://", "postgresql+asyncpg://"))
+        if self.is_postgres:
+            self.dsn = self.dsn.replace("postgresql+asyncpg://", "postgresql://", 1)
+            if self.dsn.startswith("postgres://"):
+                self.dsn = "postgresql://" + self.dsn.removeprefix("postgres://")
+        elif "://" in self.dsn:
+            raise ValueError("DATABASE_URL must use a PostgreSQL URL")
+        self.path = self.dsn
+        self._pool: asyncpg.Pool | None = None
 
     @asynccontextmanager
-    async def _connection(self) -> AsyncIterator[aiosqlite.Connection]:
+    async def _connection(self) -> AsyncIterator[Any]:
+        if self.is_postgres:
+            if self._pool is None:
+                raise RuntimeError("Database.initialize() must be called before database operations")
+            async with self._pool.acquire() as raw_connection:
+                transaction = raw_connection.transaction()
+                await transaction.start()
+                connection = AsyncpgConnection(raw_connection, transaction)
+                try:
+                    yield connection
+                except BaseException:
+                    await connection.rollback()
+                    raise
+                else:
+                    await connection.commit()
+            return
+
         connection = await aiosqlite.connect(self.path, timeout=30)
         connection.row_factory = aiosqlite.Row
         await connection.execute("PRAGMA foreign_keys = ON")
@@ -217,12 +252,34 @@ class Database:
             await connection.close()
 
     async def initialize(self) -> None:
-        """Create tables and enable WAL for reliable concurrent reads."""
+        """Create database tables and initialize the selected backend."""
+        if self.is_postgres:
+            if self._pool is None:
+                self._pool = await asyncpg.create_pool(
+                    dsn=self.dsn,
+                    min_size=self.pool_min_size,
+                    max_size=self.pool_max_size,
+                    command_timeout=60,
+                )
+            try:
+                async with self._connection() as connection:
+                    await connection.executescript(postgres_schema(SCHEMA))
+            except BaseException:
+                await self.close()
+                raise
+            return
+
         Path(self.path).parent.mkdir(parents=True, exist_ok=True)
         async with self._connection() as connection:
             await connection.execute("PRAGMA journal_mode = WAL")
             await connection.executescript(SCHEMA)
             await connection.commit()
+
+    async def close(self) -> None:
+        """Close the PostgreSQL connection pool, when one is active."""
+        if self._pool is not None:
+            await self._pool.close()
+            self._pool = None
 
     async def seed_superadmins(self, user_ids: Iterable[int]) -> None:
         now = utc_now()
@@ -383,7 +440,7 @@ class Database:
             return quest_id
 
     @staticmethod
-    def _quest_dict(row: aiosqlite.Row) -> dict[str, Any]:
+    def _quest_dict(row: Any) -> dict[str, Any]:
         return dict(row)
 
     async def get_quest(self, quest_id: int) -> dict[str, Any] | None:
@@ -1318,6 +1375,8 @@ class Database:
                     writer = csv.writer(text_buffer)
                     if cursor.description:
                         writer.writerow([column[0] for column in cursor.description])
+                    elif self.is_postgres:
+                        writer.writerow(await connection.column_names(query))
                     writer.writerows([tuple(row) for row in rows])
                     archive.writestr(f"{filename}.csv", text_buffer.getvalue())
         return memory.getvalue()
