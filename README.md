@@ -1,38 +1,38 @@
 # Quest Bot
 
-Aiogram 3 asosidagi Telegram kvest boti. Interfeys tillari: o‘zbekcha, ruscha va inglizcha. Web-admin panel va reklama mavjud emas.
+A Telegram quest bot built with aiogram 3. The interface is available in Uzbek, Russian, and English. There is no web admin panel or advertising.
 
-## Imkoniyatlar
+## Features
 
-- Faqat admin/superadmin kvest yaratadi.
-- Title, description, public/private ko‘rinish, boshlanish vaqti, bosqichlar soni, umumiy vaqt.
-- Har bosqichda savol, urinishlar soni, vaqt limiti va avtomatik yoki admin tekshiruvi.
-- Keyingi bosqichni to‘g‘ri javobdan keyin darhol yoki oldindan belgilangan jadvalda yuborish.
-- Public kvestlarni ko‘rish, qatnashish, status bo‘yicha saralash va reyting.
-- Private kvestga bot deep-link orqali qo‘shilish.
-- Kvestni Telegram guruh/kanaliga biriktirish; javoblar doimo botning private chatiga yuboriladi.
-- Qatnashchini kvest doirasida sababli yoki sababsiz bloklash va unga ogohlantirish yuborish.
-- Superadmin paneli: admin tayinlash, barcha kvestlarni boshqarish, arxivlash, statistika, audit log, chat sozlamalari, sahifa o‘lchami va ZIP eksport.
-- Superadmin yoki kvest admini bilan bot ichida ticket-chat.
+- Only admins and superadmins can create quests.
+- Configure quest title and description, public/private visibility, start time, stages, and overall duration.
+- Set a question, attempt limit, time limit, and automatic or admin review for each stage.
+- Choose immediate progression after a correct answer or scheduled stage releases.
+- Browse and join public quests, filter by status, and view leaderboards.
+- Invite users to private quests through a bot deep link.
+- Publish questions to a Telegram group or channel; participants always submit answers privately to the bot.
+- Block a participant from a particular quest, optionally with a reason and a notification.
+- Superadmin panel for admin management, all quests, archiving, statistics, audit logs, chat settings, pagination, and ZIP export.
+- Private support conversations with superadmins or the admins of quests a user joined.
 
-To‘liq funksional reja, qoida va Telegram API cheklovlari: [`plan.md`](plan.md).
+See [`plan.md`](plan.md) for the complete requirements, behavior, and Telegram API limitations.
 
-## Talablar
+## Requirements
 
-- Python 3.11+
-- Telegram bot tokeni (BotFather orqali)
-- Kamida bitta superadminning raqamli Telegram ID raqami
+- Python 3.11 or newer
+- A Telegram bot token from BotFather
+- The numeric Telegram user ID of at least one superadmin
 
-## O‘rnatish va ishga tushirish
+## Install and run
 
 ```bash
 python -m venv .venv
-source .venv/bin/activate      # Windows: .venv\Scripts\activate
+source .venv/bin/activate      # Windows PowerShell: .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 cp .env.example .env
 ```
 
-`.env` faylida quyidagilarni kiriting:
+Set the following values in `.env`:
 
 ```dotenv
 BOT_TOKEN=123456:replace-with-real-token
@@ -41,77 +41,78 @@ DATABASE_PATH=data/quest_bot.sqlite3
 SCHEDULER_INTERVAL_SECONDS=10
 ```
 
-Bir nechta superadmin bo‘lsa, ID’larni vergul bilan ajrating:
+For multiple superadmins, separate IDs with commas:
 
 ```dotenv
 SUPERADMIN_IDS=123456789,987654321
 ```
 
-Botni ishga tushiring:
+Start the bot:
 
 ```bash
 python main.py
 ```
 
-Superadmin botni kamida bir marta `/start` bilan ochishi lozim. SQLite bazasi `DATABASE_PATH` ko‘rsatgan faylda saqlanadi; production’da bu joy persistent disk/volume bo‘lishi kerak.
+Each superadmin must open the bot and send `/start` at least once. The SQLite database is stored at `DATABASE_PATH`; in production, this path must be on persistent storage.
 
-## Guruh yoki kanal ulash
+## Connect a group or channel
 
-1. Botni kerakli Telegram guruh yoki kanalga qo‘shing va admin qiling.
-2. Kanal uchun botga xabar chiqarish (`can_post_messages`), chatni tozalash uchun a’zolarni cheklash (`can_restrict_members`), bir kishilik invite link yaratish uchun a’zo taklif qilish (`can_invite_users`) huquqlarini bering.
-3. Guruh/kanalda `/chatid` buyrug‘ini yuboring. Bot chat ID’ni qaytaradi.
-4. Superadmin botdagi **Admin paneli → Sozlamalar → Guruh/kanallar → Qo‘shish** orqali chat ID’ni ro‘yxatdan o‘tkazadi.
-5. Kvest yaratishda admin ro‘yxatdagi chatni tanlaydi yoki **Faqat bot** variantidan foydalanadi.
-6. A’zolarni start paytida chiqarish kerak bo‘lsa, superadmin chat sozlamasida bu funksiyani yoqib, chiqarilmaydigan ID’larni whitelistga qo‘shadi.
+1. Add the bot to the Telegram group or channel and make it an administrator.
+2. For a channel, grant permission to post (`can_post_messages`). For cleanup, grant permission to restrict members (`can_restrict_members`). For invite links, grant permission to invite users (`can_invite_users`).
+3. Send `/chatid` in the group or channel to get its chat ID.
+4. As a superadmin, open **Admin panel → Settings → Groups/channels → Add** in the bot and register that chat ID.
+5. When creating a quest, select the registered chat or choose **Bot only**.
+6. If members should be removed when a quest starts, enable cleanup in the superadmin chat settings and add exempt user IDs to the whitelist.
 
-Savollar guruh/kanalda e’lon qilinadi, javoblar esa botga private yuboriladi. Jadval rejimida har bir rejalashtirilgan bosqich e’lon qilinadi. Darhol o‘tish rejimida faqat birinchi bosqich umumiy chatga chiqariladi; keyingi bosqichlar har qatnashchiga alohida yuboriladi, shunda javoblar orqali savol oshkor bo‘lmaydi.
+Questions are published to the group/channel, but answers are sent privately to the bot. In scheduled mode, each stage is published at its configured time. In immediate mode, only stage one is published to the group; subsequent stages are sent privately to each participant so their answers do not reveal future questions.
 
-> **A’zolarni chiqarish cheklovi:** Telegram botlar chatdagi barcha mavjud a’zolar ro‘yxatini so‘rab ololmaydi. Bot chat ro‘yxatga olinganidan keyin `chat_member` yangilanishlarida kuzatgan a’zolarnigina tekshiradi. Botni admin qilish va `chat_member` update’larini qabul qilish kerak. Oldindan mavjud a’zolarni qo‘shish yoki to‘liq tozalash kerak bo‘lsa, alohida user ID ro‘yxati talab qilinadi.
+> **Member-removal limitation:** Telegram bots cannot retrieve a complete list of existing chat members. The bot can check only members it has tracked from `chat_member` updates since the chat was registered. The bot must be an administrator and receive these updates. If you need to manage existing members, provide their user IDs separately.
 
-## Adminlardan foydalanish
+## Admin guide
 
-- Superadmin: `/admin` yoki menyudagi **Admin paneli**.
-- Yangi admin: **Adminlarni boshqarish → Qo‘shish**, so‘ng raqamli Telegram ID yuborish. Yangi admin botni `/start` bilan ochgach, o‘z kvestlarini yaratishi mumkin.
-- Kvest yaratish: **Kvest yaratish** wizardidagi ko‘rsatmalarga amal qiling.
-- Admin o‘z kvestlarida reyting, ishtirokchilar va tekshiruvdagi javoblarni boshqaradi.
-- Arxivlash faqat superadmin uchun.
-- Private kvest yaratilgach, bot qo‘shilish deep-linkini beradi. Uni yana olish uchun kvest boshqaruvidagi **Kvest taklif havolasini olish** tugmasidan foydalaning.
-- Kvestga qo‘shilgan qatnashchiga biriktirilgan chat uchun bir kishilik link yuboriladi: kvest boshlanishidan oldin qo‘shilganga tozalashdan so‘ng, start paytida; faol kvestga qo‘shilganga darhol. Keyin **Chatga bir kishilik havola** tugmasi bilan qayta ko‘rish mumkin. Telegram invite link `member_limit=1` bilan, expiry vaqti belgilanmasdan yaratiladi. Har qatnashchiga link faqat bir marta yaratiladi.
+- Superadmins and admins can open `/admin` or use the **Admin panel** menu in the bot's private chat.
+- To add an admin, a superadmin selects **Manage admins → Add** and sends the person's numeric Telegram ID. The new admin must open the bot with `/start` before creating quests or receiving bot messages.
+- Create a quest by following the **Create quest** wizard.
+- An admin can manage leaderboards, participants, and pending manual reviews for their own quests. Superadmins can manage every quest.
+- Only superadmins can archive quests.
+- After creating a private quest, the bot provides its join deep link. To retrieve it again, use **Get quest invite link** in the quest management view.
+- A participant in a quest attached to a chat receives an individual one-person invite link: scheduled-quest participants receive it after start-time cleanup, while participants joining an active quest receive it immediately. The **One-person chat invite** button can retrieve it again. The link is created with `member_limit=1` and no expiration. One stored link is reused for each participant.
 
-## Vaqt va javob qoidalari
+## Time and answer rules
 
-- Kvest vaqti `Asia/Tashkent` mahalliy vaqtida kiritiladi; SQLite’da UTC saqlanadi.
-- Sana formati: `YYYY-MM-DD HH:MM`, masalan `2026-10-03 18:30`.
-- Umumiy yoki bosqich vaqti daqiqada kiritiladi; `0` — cheklov yo‘q.
-- Avtomatik tekshiruvda javob matni aynan mos bo‘lishi kerak; faqat Unicode NFC va bosh/oxiridagi bo‘sh joylar normallashtiriladi. Katta-kichik harf va tinish belgisi muhim.
-- Urinishlar tugasa yoki bosqich vaqti tugasa, qatnashchi kvestdan `failed` holatiga o‘tadi.
-- Bir nechta kvestda bir vaqtda ochiq savol bo‘lsa, javob yuborishdan avval kvestni tanlash tugmalari ko‘rsatiladi.
+- Quest times are entered in the `Asia/Tashkent` timezone and stored in UTC.
+- Date format: `YYYY-MM-DD HH:MM`, for example `2026-10-03 18:30`.
+- Overall and stage time limits are entered in minutes; `0` means no limit.
+- Automatic answer checking requires an exact match after Unicode NFC normalization and trimming leading/trailing whitespace. Letter case, punctuation, and internal whitespace matter.
+- If a participant exhausts their attempts or a stage time limit expires, they are marked `failed` for that quest.
+- If a participant has open questions in multiple quests, the bot asks them to select the quest before submitting an answer.
 
-## Asosiy buyruqlar
+## Commands
 
-| Buyruq | Vazifasi |
+| Command | Purpose |
 |---|---|
-| `/start` | Botni ochish yoki kvest taklif havolasi orqali qo‘shilish |
-| `/menu` | Asosiy menyu |
-| `/quests` | Public kvestlar |
-| `/admin` | Admin paneli |
-| `/support` | Superadmin yoki kvest adminiga murojaat |
-| `/language` | Interfeys tilini o‘zgartirish |
-| `/help` | Foydalanish yo‘riqnomasi |
-| `/cancel` | Joriy wizard/amalni bekor qilish |
-| `/chatid` | Guruh/kanal ID’sini ko‘rsatish |
+| `/start` | Open the bot or join through a quest invitation link |
+| `/menu` | Open the main menu |
+| `/quests` | Browse public quests |
+| `/admin` | Open the admin panel |
+| `/support` | Contact a superadmin or quest admin |
+| `/language` | Change the interface language |
+| `/help` | Show usage help |
+| `/cancel` | Cancel the current wizard or action |
+| `/chatid` | Show the current group or channel ID |
 
-## Testlar
+## Tests
 
 ```bash
 .venv/bin/python -m unittest discover -s tests -v
 ```
 
-Testlar SQLite’dagi kvest yaratish, private token tekshiruvi, javob urinishlari, admin review va role sozlamalarini qamrab oladi.
+The tests cover SQLite quest flows, private-quest tokens, answer attempts, manual review, role settings, and related rules.
 
-## Ishga tushirishdan oldingi xavfsizlik
+## Security checklist before launch
 
-- `.env` faylini Git’ga qo‘shmang; tokenni hech qayerda log qilmang.
-- `data/quest_bot.sqlite3` uchun backup siyosatini belgilang.
-- Admin bot bilan shaxsiy chatni ochib, `/start` qilishi kerak, aks holda bot unga savol, review yoki support xabarini yubora olmaydi.
-- Private kvest bot deep-linki shareable; bitta foydalanuvchi bilan cheklangan kanal/guruh linkidan alohida.
+- Keep `.env` out of Git and never log the bot token.
+- Back up `data/quest_bot.sqlite3` regularly.
+- Admins should open a private chat with the bot and send `/start`; otherwise, the bot cannot deliver questions, review notices, or support messages to them.
+- Use the bot's private chat for quest creation, admin actions, support, and answer submissions.
+- Private-quest deep links can be shared. One-person group/channel invite links can also be forwarded; the first person to use a link may consume its one-person limit.
