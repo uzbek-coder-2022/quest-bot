@@ -2,30 +2,41 @@
 
 from __future__ import annotations
 
+import logging
+
 from aiogram import Bot, F, Router
 from aiogram.exceptions import TelegramAPIError
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 
+from ..config import Settings
 from ..database import Database, utc_now
 from ..keyboards import (
     admin_quest_filters,
     answer_quest_selector,
     browse_filters,
     button,
+    edit_done_keyboard,
+    edit_prompt_keyboard,
+    edit_stage_actions_keyboard,
+    editable_stages_keyboard,
     home_keyboard,
     manage_quest,
     quest_detail,
+    ratings_overview_keyboard,
     review_keyboard,
 )
 from ..localization import tr
+from ..periods import current_period_bounds
 from ..services import (
+    archive_question_message,
+    delete_archived_message,
     get_chat_invite_for_participant,
     send_current_stage_after_join,
     send_stage_to_user,
 )
-from ..states import AnswerFlow
+from ..states import AnswerFlow, EditStage
 from ..utils import (
     can_manage_quest,
     display_name,
@@ -34,6 +45,7 @@ from ..utils import (
 )
 
 router = Router(name="quests")
+logger = logging.getLogger(__name__)
 
 
 def _status_name(language: str, status: str) -> str:
@@ -304,12 +316,69 @@ async def show_leaderboard(callback: CallbackQuery, db: Database) -> None:
     await callback.answer()
 
 
+@router.callback_query(F.data == "ratings:overview")
+async def ratings_overview(callback: CallbackQuery, db: Database) -> None:
+    language = await db.get_language(callback.from_user.id)
+    role = await db.get_role(callback.from_user.id)
+    if callback.message:
+        await callback.message.edit_text(
+            tr(language, "ratings_overview_title"),
+            reply_markup=ratings_overview_keyboard(language, role),
+        )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("ratings:period:"))
+async def aggregate_leaderboard(callback: CallbackQuery, db: Database) -> None:
+    period = callback.data.rsplit(":", 1)[1]
+    if period not in {"week", "month", "year"}:
+        await callback.answer()
+        return
+    language = await db.get_language(callback.from_user.id)
+    start_at, end_at = current_period_bounds(period)
+    items = await db.aggregate_leaderboard(start_at, end_at, limit=30)
+    text = tr(
+        language,
+        "aggregate_leaderboard_title",
+        period=tr(language, f"period_{period}"),
+    )
+    if not items:
+        text += f"\n\n{tr(language, 'aggregate_leaderboard_empty')}"
+    else:
+        rendered = []
+        for rank, item in enumerate(items, start=1):
+            name = display_name(item.get("full_name"), item.get("username"), item.get("user_id"))
+            rendered.append(
+                tr(
+                    language,
+                    "aggregate_leaderboard_row",
+                    rank=rank,
+                    name=name,
+                    points=item["solved"],
+                    completed=item["completed_quests"],
+                )
+            )
+        text += "\n\n" + "\n".join(rendered)
+    markup = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [button(tr(language, "btn_back"), "ratings:overview")],
+            [button(tr(language, "btn_home"), "menu:home")],
+        ]
+    )
+    if callback.message:
+        await callback.message.edit_text(text, reply_markup=markup)
+    await callback.answer()
+
+
 @router.callback_query(F.data.startswith("ratings:list:"))
 async def leaderboard_quest_list(callback: CallbackQuery, db: Database) -> None:
     try:
         _, _, scope, page_text = callback.data.split(":", 3)
         page = int(page_text)
     except (ValueError, AttributeError):
+        await callback.answer()
+        return
+    if scope not in {"all", "managed"} or page < 0:
         await callback.answer()
         return
     language = await db.get_language(callback.from_user.id)
@@ -324,7 +393,10 @@ async def leaderboard_quest_list(callback: CallbackQuery, db: Database) -> None:
         quests = await db.list_manageable_quests(callback.from_user.id, role == "superadmin", None, page * size, size)
     else:
         quests = await db.list_public_quests(None, page * size, size)
-    rows = [[button(item["title"][:50], f"rating:show:{item['id']}")] for item in quests]
+    rows = [
+        [button(tr(language, "btn_back"), "ratings:overview")],
+        *[[button(item["title"][:50], f"rating:show:{item['id']}")] for item in quests],
+    ]
     nav = []
     if page > 0:
         nav.append(button("◀", f"ratings:list:{scope}:{page - 1}"))
@@ -333,7 +405,8 @@ async def leaderboard_quest_list(callback: CallbackQuery, db: Database) -> None:
     if nav:
         rows.append(nav)
     rows.append([button(tr(language, "btn_home"), "menu:home")])
-    text = tr(language, "btn_ratings")
+    title_key = "btn_managed_ratings" if scope == "managed" else "btn_public_quest_ratings"
+    text = tr(language, title_key)
     if not quests:
         text += f"\n\n{tr(language, 'empty_quests')}"
     if callback.message:
@@ -359,6 +432,243 @@ async def manage_quest_callback(callback: CallbackQuery, db: Database) -> None:
     if callback.message:
         await callback.message.edit_text(quest["title"], reply_markup=manage_quest(language, quest, role or "admin"))
     await callback.answer()
+
+
+async def _editable_stage_list(db: Database, quest_id: int) -> list[dict]:
+    now = utc_now()
+    stages = await db.list_quest_stages(quest_id)
+    editable = []
+    for stage in stages:
+        if await db.stage_is_editable(quest_id, int(stage["stage_order"]), now):
+            editable.append(stage)
+    return editable
+
+
+@router.callback_query(F.data.startswith("manage:editquestions:"))
+async def edit_questions_list(callback: CallbackQuery, db: Database) -> None:
+    if not await ensure_private_callback(callback, db):
+        return
+    try:
+        quest_id = int(callback.data.rsplit(":", 1)[1])
+    except ValueError:
+        await callback.answer()
+        return
+    language = await db.get_language(callback.from_user.id)
+    quest = await db.get_quest(quest_id)
+    if not quest or not await can_manage_quest(db, callback.from_user.id, quest):
+        await callback.answer(tr(language, "quest_not_found"), show_alert=True)
+        return
+    stages = await _editable_stage_list(db, quest_id)
+    text = f"{quest['title']}\n\n{tr(language, 'edit_questions_title')}"
+    if not stages:
+        text += f"\n\n{tr(language, 'no_editable_stages')}"
+    if callback.message:
+        await callback.message.edit_text(
+            text,
+            reply_markup=editable_stages_keyboard(language, quest_id, stages),
+        )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("manage:editstage:"))
+async def edit_stage_options(callback: CallbackQuery, db: Database) -> None:
+    if not await ensure_private_callback(callback, db):
+        return
+    try:
+        _, _, quest_id_text, stage_order_text = callback.data.split(":", 3)
+        quest_id, stage_order = int(quest_id_text), int(stage_order_text)
+    except (ValueError, AttributeError):
+        await callback.answer()
+        return
+    language = await db.get_language(callback.from_user.id)
+    quest = await db.get_quest(quest_id)
+    stage = await db.get_stage(quest_id, stage_order)
+    if (
+        not quest
+        or not stage
+        or not await can_manage_quest(db, callback.from_user.id, quest)
+        or not await db.stage_is_editable(quest_id, stage_order, utc_now())
+    ):
+        await callback.answer(tr(language, "stage_not_editable"), show_alert=True)
+        return
+    if callback.message:
+        await callback.message.edit_text(
+            tr(language, "edit_stage_title", number=stage_order),
+            reply_markup=edit_stage_actions_keyboard(
+                language, quest_id, stage_order, stage["answer_mode"] == "auto"
+            ),
+        )
+    await callback.answer()
+
+
+async def _begin_stage_edit(
+    callback: CallbackQuery, state: FSMContext, db: Database, edit_kind: str
+) -> None:
+    if not await ensure_private_callback(callback, db):
+        return
+    try:
+        _, _, quest_id_text, stage_order_text = callback.data.split(":", 3)
+        quest_id, stage_order = int(quest_id_text), int(stage_order_text)
+    except (ValueError, AttributeError):
+        await callback.answer()
+        return
+    language = await db.get_language(callback.from_user.id)
+    quest = await db.get_quest(quest_id)
+    stage = await db.get_stage(quest_id, stage_order)
+    if (
+        not quest
+        or not stage
+        or not await can_manage_quest(db, callback.from_user.id, quest)
+        or not await db.stage_is_editable(quest_id, stage_order, utc_now())
+        or (edit_kind == "answer" and stage["answer_mode"] != "auto")
+    ):
+        await callback.answer(tr(language, "stage_not_editable"), show_alert=True)
+        return
+    await state.clear()
+    await state.update_data(edit_quest_id=quest_id, edit_stage_order=stage_order)
+    if edit_kind == "question":
+        await state.set_state(EditStage.question)
+        prompt = tr(language, "ask_replacement_question")
+    else:
+        await state.set_state(EditStage.answer)
+        prompt = tr(language, "ask_replacement_answer")
+    if callback.message:
+        await callback.message.answer(prompt, reply_markup=edit_prompt_keyboard(language))
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("manage:editquestion:"))
+async def begin_question_edit(callback: CallbackQuery, state: FSMContext, db: Database) -> None:
+    await _begin_stage_edit(callback, state, db, "question")
+
+
+@router.callback_query(F.data.startswith("manage:editanswer:"))
+async def begin_answer_edit(callback: CallbackQuery, state: FSMContext, db: Database) -> None:
+    await _begin_stage_edit(callback, state, db, "answer")
+
+
+@router.callback_query(F.data == "manage:editcancel")
+async def cancel_stage_edit(callback: CallbackQuery, state: FSMContext, db: Database) -> None:
+    data = await state.get_data()
+    await state.clear()
+    language = await db.get_language(callback.from_user.id)
+    quest_id = data.get("edit_quest_id")
+    if callback.message:
+        markup = edit_done_keyboard(language, int(quest_id)) if quest_id else None
+        await callback.message.answer(tr(language, "edit_cancelled"), reply_markup=markup)
+    await callback.answer()
+
+
+async def _message_edit_access(
+    message: Message, state: FSMContext, db: Database
+) -> tuple[int, int] | None:
+    data = await state.get_data()
+    quest_id = data.get("edit_quest_id")
+    stage_order = data.get("edit_stage_order")
+    if not message.from_user or quest_id is None or stage_order is None:
+        await state.clear()
+        return None
+    quest = await db.get_quest(int(quest_id))
+    if not quest or not await can_manage_quest(db, message.from_user.id, quest):
+        await state.clear()
+        await message.answer(tr(await db.get_language(message.from_user.id), "admin_only"))
+        return None
+    quest_id, stage_order = int(quest_id), int(stage_order)
+    if not await db.stage_is_editable(quest_id, stage_order, utc_now()):
+        await state.clear()
+        await message.answer(tr(await db.get_language(message.from_user.id), "stage_not_editable"))
+        return None
+    return quest_id, stage_order
+
+
+def _replacement_question_text(message: Message) -> str | None:
+    if message.text is not None:
+        question = message.text.strip()
+        return question if question and len(question) <= 4096 else None
+    if message.photo or message.video:
+        caption = (message.caption or "").strip()
+        return caption if len(caption) <= 1024 else None
+    return None
+
+
+@router.message(EditStage.question)
+async def replacement_question_received(
+    message: Message, state: FSMContext, db: Database, settings: Settings
+) -> None:
+    if not message.from_user:
+        return
+    language = await db.get_language(message.from_user.id)
+    question = _replacement_question_text(message)
+    if question is None:
+        await message.answer(tr(language, "invalid_question"))
+        return
+    edit_context = await _message_edit_access(message, state, db)
+    if not edit_context:
+        return
+    quest_id, stage_order = edit_context
+    try:
+        archive_chat_id, archive_message_id = await archive_question_message(
+            message.bot, message, settings.question_archive_channel_id
+        )
+    except TelegramAPIError:
+        logger.exception("Could not archive an edited question from admin %s", message.from_user.id)
+        await message.answer(tr(language, "question_archive_failed"))
+        return
+    try:
+        previous = await db.update_stage_question(
+            quest_id,
+            stage_order,
+            question,
+            archive_chat_id,
+            archive_message_id,
+            message.from_user.id,
+            utc_now(),
+        )
+    except Exception:
+        await delete_archived_message(message.bot, archive_chat_id, archive_message_id)
+        raise
+    if previous is None:
+        await delete_archived_message(message.bot, archive_chat_id, archive_message_id)
+        await state.clear()
+        await message.answer(tr(language, "stage_not_editable"))
+        return
+    await delete_archived_message(
+        message.bot,
+        previous.get("source_chat_id"),
+        previous.get("source_message_id"),
+    )
+    await state.clear()
+    await message.answer(
+        tr(language, "stage_question_updated"),
+        reply_markup=edit_done_keyboard(language, quest_id),
+    )
+
+
+@router.message(EditStage.answer)
+async def replacement_answer_received(message: Message, state: FSMContext, db: Database) -> None:
+    if not message.from_user:
+        return
+    language = await db.get_language(message.from_user.id)
+    answer = (message.text or "").strip()
+    if not answer or len(answer) > 300:
+        await message.answer(tr(language, "invalid_text"))
+        return
+    edit_context = await _message_edit_access(message, state, db)
+    if not edit_context:
+        return
+    quest_id, stage_order = edit_context
+    updated = await db.update_stage_answer(
+        quest_id, stage_order, answer, message.from_user.id, utc_now()
+    )
+    if not updated:
+        await state.clear()
+        await message.answer(tr(language, "stage_not_editable"))
+        return
+    await state.clear()
+    await message.answer(
+        tr(language, "stage_answer_updated"),
+        reply_markup=edit_done_keyboard(language, quest_id),
+    )
 
 
 async def _notify_answer_reviewers(

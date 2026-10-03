@@ -39,6 +39,54 @@ def stage_message(language: str, quest: dict[str, Any], stage: dict[str, Any]) -
     )
 
 
+def stage_meta_message(language: str, quest: dict[str, Any], stage: dict[str, Any]) -> str:
+    time_hint = ""
+    if int(stage.get("time_limit_seconds") or 0) > 0:
+        time_hint = tr(language, "stage_time_hint", minutes=max(1, int(stage["time_limit_seconds"]) // 60))
+    return tr(
+        language,
+        "stage_meta",
+        title=quest["title"],
+        number=stage["stage_order"],
+        attempts=stage["max_attempts"],
+        time=time_hint,
+    )
+
+
+async def archive_question_message(bot: Bot, message: Any, archive_channel_id: int) -> tuple[int, int]:
+    """Copy a text or media question into the private archive without downloading it."""
+    copied = await bot.copy_message(
+        chat_id=archive_channel_id,
+        from_chat_id=message.chat.id,
+        message_id=message.message_id,
+    )
+    return int(archive_channel_id), int(copied.message_id)
+
+
+async def delete_archived_message(bot: Bot, chat_id: int | None, message_id: int | None) -> None:
+    """Remove a superseded archive entry when Telegram still permits it."""
+    if chat_id is None or message_id is None:
+        return
+    try:
+        await bot.delete_message(chat_id=int(chat_id), message_id=int(message_id))
+    except TelegramAPIError:
+        logger.warning("Could not delete superseded question archive message %s", message_id)
+
+
+async def validate_question_archive(bot: Bot, archive_channel_id: int) -> None:
+    """Ensure the configured archive is a private channel where the bot can post."""
+    chat = await bot.get_chat(archive_channel_id)
+    if chat.type != "channel" or getattr(chat, "username", None):
+        raise RuntimeError("QUESTION_ARCHIVE_CHANNEL_ID must refer to a private Telegram channel")
+    bot_user = await bot.get_me()
+    member = await bot.get_chat_member(archive_channel_id, bot_user.id)
+    status = str(getattr(member.status, "value", member.status))
+    if status not in {"administrator", "creator"}:
+        raise RuntimeError("The bot must be an administrator in the question archive channel")
+    if status == "administrator" and not bool(getattr(member, "can_post_messages", False)):
+        raise RuntimeError("The bot needs permission to post messages in the question archive channel")
+
+
 def answer_button(language: str, link: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(text=tr(language, "btn_answer_privately"), url=link)
@@ -57,10 +105,22 @@ async def send_stage_to_user(
     """Activate a participant stage and send its private question."""
     if not already_activated and not await db.activate_stage_for_participant(quest["id"], user_id, stage, utc_now()):
         return False
+    stage = await db.get_stage(int(quest["id"]), int(stage["stage_order"]))
+    if not stage:
+        return False
     language = await db.get_language(user_id)
-    message = stage_message(language, quest, stage)
+    source_chat_id = stage.get("source_chat_id")
+    source_message_id = stage.get("source_message_id")
     try:
-        await bot.send_message(user_id, message)
+        if source_chat_id is not None and source_message_id is not None:
+            await bot.send_message(user_id, stage_meta_message(language, quest, stage))
+            await bot.copy_message(
+                chat_id=user_id,
+                from_chat_id=int(source_chat_id),
+                message_id=int(source_message_id),
+            )
+        else:
+            await bot.send_message(user_id, stage_message(language, quest, stage))
         await bot.send_message(user_id, tr(language, "send_answer"))
         return True
     except TelegramForbiddenError:
@@ -85,16 +145,35 @@ async def announce_stage(
         return
     if not await db.claim_stage_announcement(int(quest["id"]), int(stage["id"])):
         return
+    stage = await db.get_stage(int(quest["id"]), int(stage["stage_order"]))
+    if not stage:
+        return
     language = await db.get_language(int(quest["owner_id"]))
     try:
-        text = stage_message(language, quest, stage)
         link = answer_deep_link(bot_username, quest)
-        await bot.send_message(
-            int(chat_id),
-            text,
-            reply_markup=answer_button(language, link),
-            disable_notification=False,
-        )
+        reply_markup = answer_button(language, link)
+        source_chat_id = stage.get("source_chat_id")
+        source_message_id = stage.get("source_message_id")
+        if source_chat_id is not None and source_message_id is not None:
+            await bot.send_message(
+                int(chat_id),
+                stage_meta_message(language, quest, stage),
+                disable_notification=False,
+            )
+            await bot.copy_message(
+                chat_id=int(chat_id),
+                from_chat_id=int(source_chat_id),
+                message_id=int(source_message_id),
+                reply_markup=reply_markup,
+                disable_notification=False,
+            )
+        else:
+            await bot.send_message(
+                int(chat_id),
+                stage_message(language, quest, stage),
+                reply_markup=reply_markup,
+                disable_notification=False,
+            )
     except TelegramAPIError:
         logger.exception("Failed to announce quest %s stage %s", quest["id"], stage["stage_order"])
 

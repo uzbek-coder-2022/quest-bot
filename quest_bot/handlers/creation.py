@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import logging
 import secrets
 from datetime import datetime, timedelta, timezone
 
 from aiogram import Bot, F, Router
+from aiogram.exceptions import TelegramAPIError
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
+from ..config import Settings
 from ..database import Database
 from ..keyboards import (
     creation_answer_mode,
@@ -17,11 +20,27 @@ from ..keyboards import (
     creation_visibility,
 )
 from ..localization import tr
-from ..services import answer_deep_link
+from ..services import (
+    answer_deep_link,
+    archive_question_message,
+    delete_archived_message,
+)
 from ..states import CreateQuest
 from ..utils import format_datetime, parse_local_datetime
 
 router = Router(name="creation")
+logger = logging.getLogger(__name__)
+
+
+def _extract_question_text(message: Message) -> str | None:
+    """Return a valid text/caption for a supported question message."""
+    if message.text is not None:
+        question = message.text.strip()
+        return question if _valid_text(question, 4096) else None
+    if message.photo or message.video:
+        caption = (message.caption or "").strip()
+        return caption if len(caption) <= 1024 else None
+    return None
 
 
 def _valid_text(value: str | None, limit: int = 1000) -> bool:
@@ -224,13 +243,35 @@ async def chat_selected(callback: CallbackQuery, state: FSMContext, db: Database
 
 
 @router.message(CreateQuest.question)
-async def question_received(message: Message, state: FSMContext, db: Database) -> None:
-    language = await db.get_language(message.from_user.id)
-    question = message.text.strip() if message.text else ""
-    if not _valid_text(question, 1000):
-        await message.answer(tr(language, "invalid_text"))
+async def question_received(
+    message: Message, state: FSMContext, db: Database, settings: Settings
+) -> None:
+    if not message.from_user:
         return
-    await state.update_data(stage_draft={"question": question})
+    language = await db.get_language(message.from_user.id)
+    question = _extract_question_text(message)
+    if question is None:
+        await message.answer(tr(language, "invalid_question"))
+        return
+    if not await _authorized(message, db):
+        await state.clear()
+        await message.answer(tr(language, "admin_only"))
+        return
+    try:
+        archive_chat_id, archive_message_id = await archive_question_message(
+            message.bot, message, settings.question_archive_channel_id
+        )
+    except TelegramAPIError:
+        logger.exception("Could not archive a quest question from admin %s", message.from_user.id)
+        await message.answer(tr(language, "question_archive_failed"))
+        return
+    await state.update_data(
+        stage_draft={
+            "question": question,
+            "source_chat_id": archive_chat_id,
+            "source_message_id": archive_message_id,
+        }
+    )
     await state.set_state(CreateQuest.answer_mode)
     await message.answer(tr(language, "ask_answer_mode"), reply_markup=creation_answer_mode(language))
 
@@ -330,8 +371,18 @@ async def stage_start_received(message: Message, state: FSMContext, db: Database
 
 @router.callback_query(F.data == "create:cancel")
 async def creation_cancel(callback: CallbackQuery, state: FSMContext, db: Database) -> None:
+    data = await state.get_data()
     await state.clear()
     language = await db.get_language(callback.from_user.id)
     if callback.message:
+        archive_messages = list(data.get("stages", []))
+        if data.get("stage_draft"):
+            archive_messages.append(data["stage_draft"])
+        for stage in archive_messages:
+            await delete_archived_message(
+                callback.message.bot,
+                stage.get("source_chat_id"),
+                stage.get("source_message_id"),
+            )
         await callback.message.answer(tr(language, "cancelled"))
     await callback.answer()

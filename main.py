@@ -25,6 +25,7 @@ from quest_bot.lifecycle import (
 )
 from quest_bot.logging_setup import configure_logging
 from quest_bot.scheduler import scheduler_loop
+from quest_bot.services import validate_question_archive
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +55,7 @@ async def main() -> None:
 
     try:
         bot = Bot(settings.bot_token, default=DefaultBotProperties(parse_mode=None))
+        await validate_question_archive(bot, settings.question_archive_channel_id)
         await db.initialize()
         logger.info("Database initialized successfully")
         previous_superadmin_ids = {

@@ -20,6 +20,11 @@ class CreateQuest(StatesGroup):
     stage_start = State()
 
 
+class EditStage(StatesGroup):
+    question = State()
+    answer = State()
+
+
 class SupportFlow(StatesGroup):
     new_message = State()
     user_reply = State()

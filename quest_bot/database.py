@@ -64,6 +64,8 @@ CREATE TABLE IF NOT EXISTS stages (
     max_attempts INTEGER NOT NULL CHECK (max_attempts BETWEEN 1 AND 100),
     time_limit_seconds INTEGER NOT NULL DEFAULT 0,
     starts_at TEXT NOT NULL,
+    source_chat_id INTEGER,
+    source_message_id INTEGER,
     UNIQUE (quest_id, stage_order)
 );
 
@@ -184,6 +186,8 @@ CREATE INDEX IF NOT EXISTS idx_quests_status_start ON quests(status, start_at);
 CREATE INDEX IF NOT EXISTS idx_quests_owner ON quests(owner_id, status);
 CREATE INDEX IF NOT EXISTS idx_participants_user ON quest_participants(user_id, status);
 CREATE INDEX IF NOT EXISTS idx_stage_sessions_status ON participant_stages(status, started_at);
+CREATE INDEX IF NOT EXISTS idx_stage_completed ON participant_stages(status, completed_at);
+CREATE INDEX IF NOT EXISTS idx_participant_completion ON quest_participants(status, completed_at);
 CREATE INDEX IF NOT EXISTS idx_answers_pending ON answers(quest_id, verdict, created_at);
 CREATE INDEX IF NOT EXISTS idx_audit_logs_created ON audit_logs(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_chat_members_active ON chat_members(chat_id, is_member);
@@ -264,6 +268,12 @@ class Database:
             try:
                 async with self._connection() as connection:
                     await connection.executescript(postgres_schema(SCHEMA))
+                    await connection.execute(
+                        "ALTER TABLE stages ADD COLUMN IF NOT EXISTS source_chat_id BIGINT"
+                    )
+                    await connection.execute(
+                        "ALTER TABLE stages ADD COLUMN IF NOT EXISTS source_message_id BIGINT"
+                    )
             except BaseException:
                 await self.close()
                 raise
@@ -273,6 +283,12 @@ class Database:
         async with self._connection() as connection:
             await connection.execute("PRAGMA journal_mode = WAL")
             await connection.executescript(SCHEMA)
+            cursor = await connection.execute("PRAGMA table_info(stages)")
+            stage_columns = {str(row["name"]) for row in await cursor.fetchall()}
+            if "source_chat_id" not in stage_columns:
+                await connection.execute("ALTER TABLE stages ADD COLUMN source_chat_id INTEGER")
+            if "source_message_id" not in stage_columns:
+                await connection.execute("ALTER TABLE stages ADD COLUMN source_message_id INTEGER")
             await connection.commit()
 
     async def close(self) -> None:
@@ -420,7 +436,8 @@ class Database:
             for index, stage in enumerate(stages, start=1):
                 await connection.execute(
                     "INSERT INTO stages(quest_id,stage_order,question,answer_mode,correct_answer,max_attempts,"
-                    "time_limit_seconds,starts_at) VALUES(?,?,?,?,?,?,?,?)",
+                    "time_limit_seconds,starts_at,source_chat_id,source_message_id) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?)",
                     (
                         quest_id,
                         index,
@@ -430,6 +447,8 @@ class Database:
                         int(stage["max_attempts"]),
                         int(stage.get("time_limit_seconds", 0)),
                         stage["starts_at"],
+                        stage.get("source_chat_id"),
+                        stage.get("source_message_id"),
                     ),
                 )
             await connection.execute(
@@ -524,6 +543,118 @@ class Database:
             row = await cursor.fetchone()
             return dict(row) if row else None
 
+    @staticmethod
+    def _timestamp_is_future(value: str, now: str) -> bool:
+        value_at = datetime.fromisoformat(value)
+        now_at = datetime.fromisoformat(now)
+        if value_at.tzinfo is None:
+            value_at = value_at.replace(tzinfo=timezone.utc)
+        if now_at.tzinfo is None:
+            now_at = now_at.replace(tzinfo=timezone.utc)
+        return value_at > now_at
+
+    @classmethod
+    def _stage_row_is_editable(cls, row: Any, now: str) -> bool:
+        if bool(row["already_delivered"]) or bool(row["already_announced"]):
+            return False
+        if row["quest_status"] == "scheduled":
+            return cls._timestamp_is_future(str(row["quest_start"]), now)
+        if row["quest_status"] != "active":
+            return False
+        return row["progression"] in {"immediate", "scheduled"}
+
+    async def _stage_editability_row(self, connection: Any, quest_id: int, stage_order: int) -> Any:
+        cursor = await connection.execute(
+            "SELECT s.id AS stage_id,q.status AS quest_status,q.progression,q.start_at AS quest_start,"
+            "EXISTS(SELECT 1 FROM participant_stages ps WHERE ps.stage_id=s.id) AS already_delivered,"
+            "EXISTS(SELECT 1 FROM announced_stages a WHERE a.stage_id=s.id) AS already_announced "
+            "FROM quests q JOIN stages s ON s.quest_id=q.id "
+            "WHERE q.id=? AND s.stage_order=?",
+            (quest_id, stage_order),
+        )
+        return await cursor.fetchone()
+
+    async def stage_is_editable(self, quest_id: int, stage_order: int, now: str) -> bool:
+        async with self._connection() as connection:
+            row = await self._stage_editability_row(connection, quest_id, stage_order)
+            return bool(row and self._stage_row_is_editable(row, now))
+
+    async def update_stage_question(
+        self,
+        quest_id: int,
+        stage_order: int,
+        question: str,
+        source_chat_id: int,
+        source_message_id: int,
+        actor_id: int,
+        now: str,
+    ) -> dict[str, Any] | None:
+        """Replace an unreleased question and return its prior archive reference."""
+        async with self._connection() as connection:
+            await connection.execute("BEGIN IMMEDIATE")
+            editability = await self._stage_editability_row(connection, quest_id, stage_order)
+            if not editability or not self._stage_row_is_editable(editability, now):
+                await connection.rollback()
+                return None
+            cursor = await connection.execute(
+                "SELECT * FROM stages WHERE quest_id=? AND stage_order=?", (quest_id, stage_order)
+            )
+            existing = await cursor.fetchone()
+            if not existing:
+                await connection.rollback()
+                return None
+            previous = dict(existing)
+            await connection.execute(
+                "UPDATE stages SET question=?,source_chat_id=?,source_message_id=? WHERE id=?",
+                (question, source_chat_id, source_message_id, int(existing["id"])),
+            )
+            await connection.execute(
+                "INSERT INTO audit_logs(actor_id,action,entity_type,entity_id,details,created_at) "
+                "VALUES(?,?,?,?,?,?)",
+                (
+                    actor_id,
+                    "stage.question_updated",
+                    "stage",
+                    str(existing["id"]),
+                    json.dumps({"quest_id": quest_id, "stage_order": stage_order}, ensure_ascii=False),
+                    now,
+                ),
+            )
+            await connection.commit()
+            return previous
+
+    async def update_stage_answer(
+        self, quest_id: int, stage_order: int, answer: str, actor_id: int, now: str
+    ) -> bool:
+        """Update an automatic answer only while its question remains unreleased."""
+        async with self._connection() as connection:
+            await connection.execute("BEGIN IMMEDIATE")
+            editability = await self._stage_editability_row(connection, quest_id, stage_order)
+            if not editability or not self._stage_row_is_editable(editability, now):
+                await connection.rollback()
+                return False
+            cursor = await connection.execute(
+                "UPDATE stages SET correct_answer=? WHERE quest_id=? AND stage_order=? AND answer_mode='auto'",
+                (answer, quest_id, stage_order),
+            )
+            if cursor.rowcount != 1:
+                await connection.rollback()
+                return False
+            await connection.execute(
+                "INSERT INTO audit_logs(actor_id,action,entity_type,entity_id,details,created_at) "
+                "VALUES(?,?,?,?,?,?)",
+                (
+                    actor_id,
+                    "stage.answer_updated",
+                    "stage",
+                    str(editability["stage_id"]),
+                    json.dumps({"quest_id": quest_id, "stage_order": stage_order}, ensure_ascii=False),
+                    now,
+                ),
+            )
+            await connection.commit()
+            return True
+
     async def list_scheduled_quests_due(self, now: str) -> list[dict[str, Any]]:
         async with self._connection() as connection:
             cursor = await connection.execute(
@@ -587,6 +718,7 @@ class Database:
 
     async def claim_stage_announcement(self, quest_id: int, stage_id: int) -> bool:
         async with self._connection() as connection:
+            await connection.execute("BEGIN IMMEDIATE")
             cursor = await connection.execute(
                 "INSERT OR IGNORE INTO announced_stages(quest_id,stage_id,announced_at) VALUES(?,?,?)",
                 (quest_id, stage_id, utc_now()),
@@ -1059,6 +1191,25 @@ class Database:
                 "WHERE p.quest_id=? GROUP BY p.quest_id,p.user_id "
                 "ORDER BY solved DESC,CASE WHEN p.completed_at IS NULL THEN 1 ELSE 0 END,p.completed_at,p.joined_at",
                 (quest_id,),
+            )
+            return [dict(row) for row in await cursor.fetchall()]
+
+    async def aggregate_leaderboard(
+        self, start_at: str, end_at: str, limit: int = 30
+    ) -> list[dict[str, Any]]:
+        """Rank players by correctly solved public-quest stages in a time window."""
+        async with self._connection() as connection:
+            cursor = await connection.execute(
+                "SELECT ps.user_id,u.full_name,u.username,COUNT(DISTINCT ps.id) AS solved,"
+                "COUNT(DISTINCT CASE WHEN p.status='completed' AND p.completed_at>=? AND p.completed_at<? "
+                "THEN p.quest_id END) AS completed_quests "
+                "FROM participant_stages ps JOIN quests q ON q.id=ps.quest_id "
+                "JOIN users u ON u.telegram_id=ps.user_id "
+                "LEFT JOIN quest_participants p ON p.quest_id=ps.quest_id AND p.user_id=ps.user_id "
+                "WHERE q.visibility='public' AND ps.status='correct' AND ps.completed_at>=? AND ps.completed_at<? "
+                "GROUP BY ps.user_id,u.full_name,u.username "
+                "ORDER BY solved DESC,completed_quests DESC,u.full_name,ps.user_id LIMIT ?",
+                (start_at, end_at, start_at, end_at, max(1, min(int(limit), 100))),
             )
             return [dict(row) for row in await cursor.fetchall()]
 

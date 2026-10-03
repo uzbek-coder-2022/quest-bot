@@ -8,7 +8,10 @@ A Telegram quest bot built with aiogram 3. The interface is available in Uzbek, 
 - Configure quest title and description, public/private visibility, start time, stages, and overall duration.
 - Set a question, attempt limit, time limit, and automatic or admin review for each stage.
 - Choose immediate progression after a correct answer or scheduled stage releases.
-- Browse and join public quests, filter by status, and view leaderboards.
+- Browse and join public quests, filter by status, and view per-quest leaderboards.
+- View aggregate public-quest leaderboards for the current Tashkent calendar week, month, and year. Correctly solved stages earn one point; completed public quests break ties.
+- Edit question text/media and automatic answers before release. Once a quest is active, only undelivered stages remain editable.
+- Archive text, photo, and video questions in a private Telegram channel and deliver them with Telegram message copies; no media files are downloaded or stored in the database.
 - Invite users to private quests through a bot deep link.
 - Publish questions to a Telegram group or channel; participants always submit answers privately to the bot.
 - Block a participant from a particular quest, optionally with a reason and a notification.
@@ -52,11 +55,12 @@ cp .env.example .env
 nano .env
 ```
 
-Set your BotFather token, at least one numeric superadmin Telegram ID, and the PostgreSQL URL:
+Set your BotFather token, at least one numeric superadmin Telegram ID, the private question archive channel ID, and the PostgreSQL URL:
 
 ```dotenv
 BOT_TOKEN=123456:replace-with-real-token
 SUPERADMIN_IDS=123456789
+QUESTION_ARCHIVE_CHANNEL_ID=-1001234567890
 DATABASE_URL=postgresql://quest_bot:your-password@127.0.0.1:5432/quest_bot
 DATABASE_POOL_MIN_SIZE=1
 DATABASE_POOL_MAX_SIZE=10
@@ -66,6 +70,8 @@ SERVICE_STOP_TIMEOUT_SECONDS=1800
 ```
 
 URL-encode reserved characters in the database username or password. For example, encode `@` as `%40`. For a hosted PostgreSQL provider, include its required SSL query parameters (commonly `?sslmode=require`). `DATABASE_URL` is required by `deploy.sh`; the application also supports a local SQLite fallback for development and tests by leaving `DATABASE_URL` empty and setting `DATABASE_PATH=data/quest_bot.sqlite3`.
+
+Create a dedicated **private Telegram channel** for question archives, add the bot as an administrator with permission to post messages, and set its numeric ID in `QUESTION_ARCHIVE_CHANNEL_ID`. The bot checks this configuration at startup. Questions are copied into the channel when created; the database stores the question text/caption, answer metadata, and archive chat/message IDs, not media files. At delivery, `copy_message` copies the archived post to the participant privately and, when configured, to the quest chat according to the existing progression rules. Media is never downloaded to the server or stored in the database.
 
 `BACKUP_UPLOAD_TIMEOUT_SECONDS` controls how long the bot waits while sending a backup; `SERVICE_STOP_TIMEOUT_SECONDS` controls how long systemd allows graceful shutdown and backup delivery. The bot keeps aiogram's default `https://api.telegram.org` base URL. Backup files are streamed from disk rather than loaded into memory.
 
@@ -129,6 +135,8 @@ Questions are published to the group/channel, but answers are sent privately to 
 - To add an admin, a superadmin selects **Manage admins → Add** and sends the person's numeric Telegram ID. The command menu is updated immediately. The new admin must open the bot with `/start` before creating quests or receiving bot messages.
 - Create a quest by following the **Create quest** wizard.
 - An admin can manage leaderboards, participants, and pending manual reviews for their own quests. Superadmins can manage every quest.
+- Open **Edit questions** from a scheduled or active quest to update an unreleased stage's text/media and (for automatic-answer stages) its correct answer. Before the quest starts, all stages can be edited. After it starts, delivered stages are locked and only unreleased stages can be changed.
+- The public **Leaderboards** menu provides current-week, current-month, and current-year aggregate rankings across public quests, alongside the existing individual-quest ratings. Period boundaries use `Asia/Tashkent` (Monday week start, local month/year start).
 - Only superadmins can archive quests.
 - After creating a private quest, the bot provides its join deep link. To retrieve it again, use **Get quest invite link** in the quest management view.
 - A participant in a quest attached to a chat receives an individual one-person invite link: scheduled-quest participants receive it after start-time cleanup, while participants joining an active quest receive it immediately. The **One-person chat invite** button can retrieve it again. The link is created with `member_limit=1` and no expiration. One stored link is reused for each participant.

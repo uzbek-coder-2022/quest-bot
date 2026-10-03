@@ -20,6 +20,7 @@ class Settings:
     scheduler_interval_seconds: int = 10
     backup_upload_timeout_seconds: int = 900
     service_stop_timeout_seconds: int = 1800
+    question_archive_channel_id: int = 0
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -51,6 +52,12 @@ class Settings:
             stop_timeout = int(os.getenv("SERVICE_STOP_TIMEOUT_SECONDS", "1800"))
         except ValueError as exc:
             raise ValueError("Database, scheduler, and service timeout settings must be integers") from exc
+        try:
+            archive_channel_id = int(os.getenv("QUESTION_ARCHIVE_CHANNEL_ID", "").strip())
+        except ValueError as exc:
+            raise ValueError("QUESTION_ARCHIVE_CHANNEL_ID must be a non-zero numeric Telegram chat ID") from exc
+        if archive_channel_id == 0:
+            raise ValueError("QUESTION_ARCHIVE_CHANNEL_ID must be a non-zero numeric Telegram chat ID")
         if pool_min_size < 1 or pool_max_size < pool_min_size:
             raise ValueError("Database pool sizes must satisfy 1 <= MIN_SIZE <= MAX_SIZE")
         if interval < 1:
@@ -70,4 +77,5 @@ class Settings:
             interval,
             backup_timeout,
             stop_timeout,
+            archive_channel_id,
         )

@@ -14,11 +14,13 @@ The first release runs entirely inside Telegram. Production deployments use Post
 - Pagination size configurable by a superadmin: 5, 10, 20, or 50 records.
 - Join public quests in the bot; join private quests through a bot deep link.
 - Submit answers in a private chat with the bot.
-- Quest leaderboard ordered by correctly solved stages, completion time, and then join time.
+- Preserve each quest's leaderboard, ordered by correctly solved stages, completion time, and then join time.
+- Aggregate rankings across public quests for the current calendar week, month, and year in `Asia/Tashkent`. Each correctly solved stage earns one point; break ties by the number of public quests completed in that period. The week begins Monday; months and years begin on their first calendar day.
 
 ### B. Quest creation and participation
 - Quest fields: title, description, public/private visibility, start time, overall duration, number of stages, and the chat in which questions are published.
-- Each stage has a question, automatic or manual answer checking, an attempt limit, and an optional time limit.
+- Each stage has a text, photo, or video question, automatic or manual answer checking, an attempt limit, and an optional time limit. Text/media questions are copied into a dedicated private Telegram archive channel; the database stores the question text/caption, answer metadata, and Telegram chat/message references, never media files.
+- Questions and their media can be edited before the quest starts. Once active, only stages not yet delivered to participants or announced in a quest chat can be edited. Delivered stages remain unchanged. Automatic-answer stages also allow the correct answer to be corrected while the stage remains unreleased.
 - Stage progression modes:
   - **Immediate:** after a correct answer, the next question is sent privately to that participant.
   - **Scheduled:** each stage is announced at its configured time and delivered to participants.
@@ -29,6 +31,7 @@ The first release runs entirely inside Telegram. Production deployments use Post
 
 ### C. Admins and superadmins
 - Superadmins are configured by Telegram user ID in `.env`; each superadmin must open the bot with `/start`.
+- `QUESTION_ARCHIVE_CHANNEL_ID` is configured in `.env`. The bot must be an administrator with posting permission in that private channel.
 - A superadmin can add or remove admins by numeric Telegram user ID.
 - An admin can manage only quests they created; superadmins can view and manage every quest.
 - Quest management includes leaderboards, participants, manually reviewed answers, and finishing a quest.
@@ -38,8 +41,8 @@ The first release runs entirely inside Telegram. Production deployments use Post
 
 ### D. Group and channel integration
 - Superadmins register managed chats. A quest can publish to one registered group/channel or run in the bot only.
-- In scheduled mode, each stage question is announced in the selected chat once. Participants submit their answers privately to the bot.
-- In immediate mode, only the first stage is published in the chat. Later stages are sent privately to each participant so one participant's progress does not reveal a later question to everyone.
+- In scheduled mode, each stage question is copied from the private archive and announced in the selected chat once. Participants submit their answers privately to the bot.
+- In immediate mode, only the first stage is published in the chat. Later stages are copied from the archive and sent privately to each participant so one participant's progress does not reveal a later question to everyone.
 - Superadmins can enable chat cleanup per managed chat. At quest start, the bot removes tracked members who are not on that chat's whitelist.
 - `chat_member` updates track membership changes received after a chat is registered.
 

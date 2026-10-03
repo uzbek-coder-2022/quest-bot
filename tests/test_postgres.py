@@ -35,6 +35,8 @@ class PostgresCompatibilityTests(unittest.TestCase):
         schema = postgres_schema(SCHEMA)
         self.assertIn("id BIGSERIAL PRIMARY KEY", schema)
         self.assertIn("telegram_id BIGINT PRIMARY KEY", schema)
+        self.assertIn("source_chat_id BIGINT", schema)
+        self.assertIn("source_message_id BIGINT", schema)
         self.assertNotIn("AUTOINCREMENT", schema)
         self.assertNotIn("INTEGER", schema)
 
@@ -50,6 +52,7 @@ class PostgresCompatibilityTests(unittest.TestCase):
         values = {
             "BOT_TOKEN": "123456:abcdefghijklmnopqrstuvwxyzABCDEFG12345",
             "SUPERADMIN_IDS": "123,456",
+            "QUESTION_ARCHIVE_CHANNEL_ID": "-1001234567890",
             "DATABASE_URL": "postgresql://bot:secret@localhost/quests",
             "DATABASE_POOL_MIN_SIZE": "2",
             "DATABASE_POOL_MAX_SIZE": "12",
@@ -60,11 +63,24 @@ class PostgresCompatibilityTests(unittest.TestCase):
         with patch.dict("os.environ", values):
             settings = Settings.from_env()
         self.assertEqual(settings.database_dsn, values["DATABASE_URL"])
+        self.assertEqual(settings.question_archive_channel_id, -1001234567890)
         self.assertEqual(settings.database_pool_min_size, 2)
         self.assertEqual(settings.database_pool_max_size, 12)
         self.assertEqual(settings.scheduler_interval_seconds, 7)
         self.assertEqual(settings.backup_upload_timeout_seconds, 1200)
         self.assertEqual(settings.service_stop_timeout_seconds, 2400)
+
+    def test_settings_require_a_question_archive_channel_id(self) -> None:
+        values = {
+            "BOT_TOKEN": "123456:abcdefghijklmnopqrstuvwxyzABCDEFG12345",
+            "SUPERADMIN_IDS": "123",
+            "QUESTION_ARCHIVE_CHANNEL_ID": "",
+        }
+        with (
+            patch.dict("os.environ", values, clear=True),
+            self.assertRaisesRegex(ValueError, "QUESTION_ARCHIVE_CHANNEL_ID"),
+        ):
+            Settings.from_env()
 
     def test_cursor_description_uses_column_names(self) -> None:
         class RecordLike:
