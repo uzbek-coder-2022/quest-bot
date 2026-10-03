@@ -515,6 +515,75 @@ class Database:
             row = await cursor.fetchone()
             return self._quest_dict(row) if row else None
 
+    async def update_quest_metadata(
+        self,
+        quest_id: int,
+        changes: dict[str, Any],
+        actor_id: int,
+        now: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Update title, description, or archived cover references for a non-archived quest."""
+        allowed = {"title", "description", "cover_chat_id", "cover_message_id"}
+        if not changes or changes.keys() - allowed:
+            raise ValueError("Only quest title, description, and cover references can be updated")
+        normalized = dict(changes)
+        if ("cover_chat_id" in normalized) != ("cover_message_id" in normalized):
+            raise ValueError("Both cover Telegram references must be updated together")
+        for field, maximum in (("title", 100), ("description", 1000)):
+            if field in normalized:
+                value = normalized[field]
+                if not isinstance(value, str):
+                    raise ValueError(f"Quest {field} must be text")
+                normalized[field] = value.strip()
+                if not 1 <= len(normalized[field]) <= maximum:
+                    raise ValueError(f"Quest {field} must contain 1 to {maximum} characters")
+        if "cover_chat_id" in normalized and (
+            (normalized["cover_chat_id"] is None)
+            != (normalized["cover_message_id"] is None)
+        ):
+            raise ValueError("Cover references must either both be set or both be cleared")
+        if normalized.get("cover_chat_id") is not None:
+            try:
+                normalized["cover_chat_id"] = int(normalized["cover_chat_id"])
+                normalized["cover_message_id"] = int(normalized["cover_message_id"])
+            except (TypeError, ValueError) as exc:
+                raise ValueError("Cover references must be Telegram chat and message IDs") from exc
+            if normalized["cover_message_id"] < 1:
+                raise ValueError("Cover message ID must be positive")
+        now = now or utc_now()
+        fields = [field for field in ("title", "description", "cover_chat_id", "cover_message_id") if field in normalized]
+        assignments = ",".join(f"{field}=?" for field in fields)
+        values = [normalized[field] for field in fields]
+        async with self._connection() as connection:
+            await connection.execute("BEGIN IMMEDIATE")
+            cursor = await connection.execute("SELECT * FROM quests WHERE id=?", (quest_id,))
+            row = await cursor.fetchone()
+            if not row or row["status"] == "archived":
+                await connection.rollback()
+                return None
+            previous = dict(row)
+            cursor = await connection.execute(
+                f"UPDATE quests SET {assignments},updated_at=? WHERE id=? AND status!='archived'",
+                (*values, now, quest_id),
+            )
+            if cursor.rowcount != 1:
+                await connection.rollback()
+                return None
+            await connection.execute(
+                "INSERT INTO audit_logs(actor_id,action,entity_type,entity_id,details,created_at) "
+                "VALUES(?,?,?,?,?,?)",
+                (
+                    actor_id,
+                    "quest.metadata.updated",
+                    "quest",
+                    str(quest_id),
+                    json.dumps({"fields": fields}, ensure_ascii=False),
+                    now,
+                ),
+            )
+            await connection.commit()
+            return previous
+
     async def get_quest_by_token(self, quest_id: int, token: str) -> dict[str, Any] | None:
         async with self._connection() as connection:
             cursor = await connection.execute(

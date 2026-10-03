@@ -7,8 +7,47 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from .localization import LANGUAGE_NAMES, tr
 
 
-def button(text: str, data: str) -> InlineKeyboardButton:
-    return InlineKeyboardButton(text=text, callback_data=data)
+def _button_style(data: str) -> str:
+    """Choose Telegram's built-in semantic button color from callback behavior."""
+    if (
+        data in {"create:cancel", "manage:editcancel"}
+        or ":cancel:" in data
+        or data.endswith(":cancel")
+        or data.startswith((
+            "quest:joincancel:",
+            "manage:archive:",
+            "manage:finish-confirmed:",
+            "manage:edit:cover:remove",
+            "super:removeadmin:",
+            "super:delwhite:",
+        ))
+        or (data.startswith("review:") and data.endswith(":no"))
+        or (data.startswith("manage:participant:") and data.endswith(":ban"))
+    ):
+        return "danger"
+    if (
+        data.startswith((
+            "quest:joinconfirm:",
+            "manage:resume:",
+            "manage:unarchive:",
+            "super:addadmin",
+            "super:addchat",
+            "super:addwhite:",
+            "create:start",
+        ))
+        or (data.startswith("review:") and data.endswith(":yes"))
+        or (data.startswith("manage:participant:") and data.endswith(":unban"))
+    ):
+        return "success"
+    return "primary"
+
+
+def button(text: str, data: str, style: str | None = None) -> InlineKeyboardButton:
+    """Create an inline button with Telegram's native blue/green/red style."""
+    selected_style = style or _button_style(data)
+    if selected_style not in {"primary", "success", "danger"}:
+        raise ValueError("Button style must be primary, success, or danger")
+    return InlineKeyboardButton(text=text, callback_data=data, style=selected_style)
 
 
 def language_keyboard() -> InlineKeyboardMarkup:
@@ -65,12 +104,12 @@ def browse_filters(language: str, current: str, page: int, items: list[dict], pa
         ],
         [button(tr(language, "filter_archived"), "browse:filter:archived:0")],
     ]
-    rows.extend([[button(item["title"][:50], f"quest:view:{item['id']}")] for item in items])
+    rows.extend([[button(f"🧭 {item['title'][:47]}", f"quest:view:{item['id']}")] for item in items])
     nav = []
     if page > 0:
-        nav.append(button("◀", f"browse:filter:{current}:{page - 1}"))
+        nav.append(button("⬅️", f"browse:filter:{current}:{page - 1}"))
     if len(items) == page_size:
-        nav.append(button("▶", f"browse:filter:{current}:{page + 1}"))
+        nav.append(button("➡️", f"browse:filter:{current}:{page + 1}"))
     if nav:
         rows.append(nav)
     rows.append([button(tr(language, "btn_home"), "menu:home")])
@@ -103,7 +142,7 @@ def join_confirmation_keyboard(language: str, quest_id: int, token: str | None =
 def participating_quests_keyboard(
     language: str, quests: list[dict], page: int = 0, page_size: int = 20
 ) -> InlineKeyboardMarkup:
-    rows = [[button(quest["title"][:50], f"quest:view:my:{quest['id']}")] for quest in quests]
+    rows = [[button(f"🧭 {quest['title'][:47]}", f"quest:view:my:{quest['id']}")] for quest in quests]
     nav: list[InlineKeyboardButton] = []
     if page > 0:
         nav.append(button("◀️", f"quest:mylist:{page - 1}"))
@@ -147,8 +186,8 @@ def creation_answer_mode(language: str) -> InlineKeyboardMarkup:
 
 
 def creation_chat(language: str, chats: list[dict]) -> InlineKeyboardMarkup:
-    rows = [[button(tr(language, "chat_private_only"), "create:chat:0")]]
-    rows.extend([[button(chat["title"][:45], f"create:chat:{chat['chat_id']}")] for chat in chats])
+    rows = [[button(f"🤖 {tr(language, 'chat_private_only')}", "create:chat:0")]]
+    rows.extend([[button(f"📣 {chat['title'][:45]}", f"create:chat:{chat['chat_id']}")] for chat in chats])
     rows.append([button(tr(language, "btn_cancel"), "create:cancel")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -175,12 +214,12 @@ def admin_quest_filters(language: str, current: str, page: int, items: list[dict
         button(tr(language, f"filter_{status}"), f"adminq:filter:{status}:0")
         for status in ("all", "scheduled", "active", "completed")
     ], [button(tr(language, "filter_archived"), "adminq:filter:archived:0")]]
-    rows.extend([[button(item["title"][:48], f"manage:quest:{item['id']}")] for item in items])
+    rows.extend([[button(f"🛠 {item['title'][:45]}", f"manage:quest:{item['id']}")] for item in items])
     nav = []
     if page > 0:
-        nav.append(button("◀", f"adminq:filter:{current}:{page - 1}"))
+        nav.append(button("⬅️", f"adminq:filter:{current}:{page - 1}"))
     if len(items) == page_size:
-        nav.append(button("▶", f"adminq:filter:{current}:{page + 1}"))
+        nav.append(button("➡️", f"adminq:filter:{current}:{page + 1}"))
     if nav:
         rows.append(nav)
     rows.append([button(tr(language, "btn_admin_home"), "admin:home")])
@@ -193,6 +232,8 @@ def manage_quest(language: str, quest: dict, role: str) -> InlineKeyboardMarkup:
         [button(tr(language, "btn_participants"), f"manage:participants:{quest['id']}")],
         [button(tr(language, "btn_pending"), f"manage:pending:{quest['id']}")],
     ]
+    if quest["status"] != "archived":
+        rows.append([button(tr(language, "btn_edit_details"), f"manage:editdetails:{quest['id']}")])
     if quest["status"] in {"scheduled", "active"}:
         rows.append([button(tr(language, "btn_edit_questions"), f"manage:editquestions:{quest['id']}")])
     if quest.get("visibility") == "private":
@@ -211,6 +252,50 @@ def manage_quest(language: str, quest: dict, role: str) -> InlineKeyboardMarkup:
     rows.append([button(tr(language, "btn_back"), "adminq:filter:all:0")])
     rows.append([button(tr(language, "btn_admin_home"), "admin:home")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def edit_quest_details_keyboard(language: str, quest_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [button(tr(language, "btn_edit_title"), f"manage:edit:title:{quest_id}")],
+        [button(tr(language, "btn_edit_description"), f"manage:edit:description:{quest_id}")],
+        [button(tr(language, "btn_edit_cover"), f"manage:edit:cover:{quest_id}")],
+        [button(tr(language, "btn_back"), f"manage:quest:{quest_id}")],
+        [button(tr(language, "btn_admin_home"), "admin:home")],
+    ])
+
+
+def edit_quest_cover_keyboard(
+    language: str, quest_id: int, has_cover: bool
+) -> InlineKeyboardMarkup:
+    rows = [[button(tr(language, "btn_replace_cover"), f"manage:edit:cover:photo:{quest_id}")]]
+    if has_cover:
+        rows.append([
+            button(
+                tr(language, "btn_remove_cover"),
+                f"manage:edit:cover:remove:{quest_id}",
+                style="danger",
+            )
+        ])
+    rows.extend([
+        [button(tr(language, "btn_back"), f"manage:editdetails:{quest_id}")],
+        [button(tr(language, "btn_admin_home"), "admin:home")],
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def confirm_cover_removal_keyboard(language: str, quest_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        button(
+            tr(language, "btn_confirm_remove_cover"),
+            f"manage:edit:cover:remove-confirm:{quest_id}",
+            style="danger",
+        ),
+        button(
+            tr(language, "btn_cancel"),
+            f"manage:edit:cover:{quest_id}",
+            style="primary",
+        ),
+    ], [button(tr(language, "btn_admin_home"), "admin:home")]])
 
 
 def editable_stages_keyboard(language: str, quest_id: int, stages: list[dict]) -> InlineKeyboardMarkup:
@@ -267,12 +352,12 @@ def participants_keyboard(
             "failed": "participant_failed",
             "blocked": "participant_blocked",
         }.get(participant["status"], "participant_active")
-        rows.append([button(f"{label[:25]} · {tr(language, status_key)}", f"manage:participant:{quest_id}:{participant['user_id']}:{action}")])
+        rows.append([button(f"👤 {label[:23]} · {tr(language, status_key)}", f"manage:participant:{quest_id}:{participant['user_id']}:{action}")])
     nav = []
     if page > 0:
-        nav.append(button("◀", f"manage:participants:{quest_id}:{page - 1}"))
+        nav.append(button("⬅️", f"manage:participants:{quest_id}:{page - 1}"))
     if start + page_size < len(participants):
-        nav.append(button("▶", f"manage:participants:{quest_id}:{page + 1}"))
+        nav.append(button("➡️", f"manage:participants:{quest_id}:{page + 1}"))
     if nav:
         rows.append(nav)
     rows.append([button(tr(language, "btn_back"), f"manage:quest:{quest_id}")])
@@ -282,7 +367,7 @@ def participants_keyboard(
 
 def answer_quest_selector(language: str, quests: list[dict]) -> InlineKeyboardMarkup:
     rows = [
-        [button(f"{item['title'][:38]} · {item['stage_order']}", f"answer:select:{item['quest_id']}")]
+        [button(f"🧩 {item['title'][:30]} · {item['stage_order']}", f"answer:select:{item['quest_id']}")]
         for item in quests
     ]
     rows.append([button(tr(language, "btn_home"), "menu:home")])
@@ -324,7 +409,7 @@ def settings_keyboard(language: str, page_size: int) -> InlineKeyboardMarkup:
 
 def page_sizes_keyboard(language: str, current: int) -> InlineKeyboardMarkup:
     sizes = (5, 10, 20, 50)
-    rows = [[button(f"{'✓ ' if size == current else ''}{size}", f"super:pagesize:{size}") for size in sizes]]
+    rows = [[button(f"{'✅' if size == current else '🔢'} {size}", f"super:pagesize:{size}") for size in sizes]]
     rows.append([button(tr(language, "btn_back"), "super:settings")])
     rows.append([button(tr(language, "btn_admin_home"), "admin:home")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -332,7 +417,7 @@ def page_sizes_keyboard(language: str, current: int) -> InlineKeyboardMarkup:
 
 def managed_chats_keyboard(language: str, chats: list[dict]) -> InlineKeyboardMarkup:
     rows = [[button(tr(language, "btn_add"), "super:addchat")]]
-    rows.extend([[button(f"{chat['title'][:28]} · {chat['chat_id']}", f"super:chat:{chat['chat_id']}")] for chat in chats])
+    rows.extend([[button(f"📣 {chat['title'][:25]} · {chat['chat_id']}", f"super:chat:{chat['chat_id']}")] for chat in chats])
     rows.append([button(tr(language, "btn_back"), "super:settings")])
     rows.append([button(tr(language, "btn_admin_home"), "admin:home")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -349,7 +434,7 @@ def manage_chat_keyboard(language: str, chat: dict) -> InlineKeyboardMarkup:
 
 def whitelist_keyboard(language: str, chat_id: int, users: list[dict]) -> InlineKeyboardMarkup:
     rows = [[button(tr(language, "btn_add"), f"super:addwhite:{chat_id}")]]
-    rows.extend([[button(f"{item['user_id']} · {tr(language, 'btn_remove')}", f"super:delwhite:{chat_id}:{item['user_id']}")] for item in users])
+    rows.extend([[button(f"🗑️ {item['user_id']} · {tr(language, 'btn_remove')}", f"super:delwhite:{chat_id}:{item['user_id']}")] for item in users])
     rows.append([button(tr(language, "btn_back"), f"super:chat:{chat_id}")])
     rows.append([button(tr(language, "btn_admin_home"), "admin:home")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -357,7 +442,7 @@ def whitelist_keyboard(language: str, chat_id: int, users: list[dict]) -> Inline
 
 def support_start_keyboard(language: str, quests: list[dict]) -> InlineKeyboardMarkup:
     rows = [[button(tr(language, "btn_support_super"), "support:new:super")]]
-    rows.extend([[button(f"{tr(language, 'btn_support_quest')}: {quest['title'][:30]}", f"support:new:quest:{quest['id']}")] for quest in quests])
+    rows.extend([[button(f"💬 {tr(language, 'btn_support_quest')}: {quest['title'][:27]}", f"support:new:quest:{quest['id']}")] for quest in quests])
     rows.append([button(tr(language, "btn_my_tickets"), "support:tickets")])
     rows.append([button(tr(language, "btn_home"), "menu:home")])
     return InlineKeyboardMarkup(inline_keyboard=rows)

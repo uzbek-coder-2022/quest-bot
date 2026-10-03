@@ -132,11 +132,11 @@ async def start_command(
     role = await db.get_role(user.id)
     await message.answer(
         **Text(
-            Bold(tr(language, "welcome")),
+            Bold(f"👋 {tr(language, 'welcome')}"),
             "\n\n",
-            Italic(tr(language, "welcome_hint")),
+            Italic(f"✨ {tr(language, 'welcome_hint')}"),
             "\n\n",
-            tr(language, "menu"),
+            f"📋 {tr(language, 'menu')}",
         ).as_kwargs(),
         reply_markup=main_menu(language, role),
     )

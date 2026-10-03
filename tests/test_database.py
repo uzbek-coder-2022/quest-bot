@@ -258,6 +258,65 @@ class DatabaseFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(saved["cover_chat_id"], -1001234567890)
         self.assertEqual(saved["cover_message_id"], 4321)
 
+    async def test_quest_metadata_updates_are_atomic_audited_and_available_when_completed(self) -> None:
+        quest_id = await self.create_quest()
+        await self.db.update_quest_metadata(
+            quest_id,
+            {"cover_chat_id": -1001234567890, "cover_message_id": 321},
+            1,
+            "2026-10-01T01:00:00+00:00",
+        )
+        await self.db.set_quest_status(quest_id, "completed")
+
+        previous = await self.db.update_quest_metadata(
+            quest_id,
+            {
+                "title": "Updated title",
+                "description": "Updated description",
+                "cover_chat_id": -1009876543210,
+                "cover_message_id": 654,
+            },
+            1,
+            "2026-10-01T02:00:00+00:00",
+        )
+
+        self.assertIsNotNone(previous)
+        self.assertEqual(previous["title"], "Test quest")
+        self.assertEqual(previous["cover_chat_id"], -1001234567890)
+        updated = await self.db.get_quest(quest_id)
+        self.assertEqual(updated["title"], "Updated title")
+        self.assertEqual(updated["description"], "Updated description")
+        self.assertEqual(updated["cover_chat_id"], -1009876543210)
+        self.assertEqual(updated["cover_message_id"], 654)
+        self.assertEqual(updated["status"], "completed")
+        self.assertEqual(updated["updated_at"], "2026-10-01T02:00:00+00:00")
+        audit = await self.db.latest_logs(1)
+        self.assertEqual(audit[0]["action"], "quest.metadata.updated")
+        self.assertEqual(audit[0]["entity_id"], str(quest_id))
+        self.assertEqual(audit[0]["actor_id"], 1)
+
+    async def test_quest_metadata_cannot_update_archived_quests_or_partial_cover_refs(self) -> None:
+        quest_id = await self.create_quest()
+        await self.db.set_quest_status(quest_id, "archived")
+        self.assertIsNone(
+            await self.db.update_quest_metadata(quest_id, {"title": "Too late"}, 1)
+        )
+        archived = await self.db.get_quest(quest_id)
+        self.assertEqual(archived["title"], "Test quest")
+
+        with self.assertRaises(ValueError):
+            await self.db.update_quest_metadata(quest_id, {"cover_message_id": 9}, 1)
+        with self.assertRaises(ValueError):
+            await self.db.update_quest_metadata(
+                quest_id, {"cover_chat_id": None, "cover_message_id": 9}, 1
+            )
+        with self.assertRaises(ValueError):
+            await self.db.update_quest_metadata(quest_id, {"private": True}, 1)
+        with self.assertRaises(ValueError):
+            await self.db.update_quest_metadata(quest_id, {"title": " "}, 1)
+        with self.assertRaises(ValueError):
+            await self.db.update_quest_metadata(quest_id, {"description": "x" * 1001}, 1)
+
     async def test_paused_scheduled_quest_is_not_due_and_start_is_shifted(self) -> None:
         quest = {
             "title": "Paused schedule",

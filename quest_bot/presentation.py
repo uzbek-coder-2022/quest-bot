@@ -25,41 +25,41 @@ def quest_preview(quest: dict[str, Any], language: str, participants: int) -> Te
     )
     description = str(quest.get("description") or "—")
     return Text(
-        Bold(str(quest["title"])),
+        Bold(f"🧭 {quest['title']}"),
         "\n\n",
-        Bold(tr(language, "quest_label_description")),
+        Bold(f"📝 {tr(language, 'quest_label_description')}"),
         "\n",
         BlockQuote(description),
         "\n\n",
-        Bold(tr(language, "quest_label_status")),
+        Bold(f"📍 {tr(language, 'quest_label_status')}"),
         ": ",
         tr(language, f"status_{status}"),
         "\n",
-        Bold(tr(language, "quest_label_visibility")),
+        Bold(f"🌐 {tr(language, 'quest_label_visibility')}"),
         ": ",
         tr(language, f"visibility_{quest['visibility']}"),
         "\n",
-        Bold(tr(language, "quest_label_start")),
+        Bold(f"🕒 {tr(language, 'quest_label_start')}"),
         ": ",
         format_datetime(quest.get("start_at"), language),
         "\n",
-        Bold(tr(language, "quest_label_stages")),
+        Bold(f"🧩 {tr(language, 'quest_label_stages')}"),
         ": ",
         str(int(quest.get("stage_count") or 0)),
         "\n",
-        Bold(tr(language, "quest_label_participants")),
+        Bold(f"👥 {tr(language, 'quest_label_participants')}"),
         ": ",
         str(participants),
         "\n",
-        Bold(tr(language, "quest_label_progression")),
+        Bold(f"⚙️ {tr(language, 'quest_label_progression')}"),
         ": ",
         tr(language, f"progression_{quest['progression']}"),
         "\n",
-        Bold(tr(language, "quest_label_duration")),
+        Bold(f"⏳ {tr(language, 'quest_label_duration')}"),
         ": ",
         duration,
         "\n",
-        Bold(tr(language, "quest_label_chat")),
+        Bold(f"📣 {tr(language, 'quest_label_chat')}"),
         ": ",
         chat_title,
     )
@@ -68,7 +68,7 @@ def quest_preview(quest: dict[str, Any], language: str, participants: int) -> Te
 def support_reply(source: str, message: str, ticket_id: int) -> Text:
     """Build a ticket reply that clearly separates its source and user text."""
     return Text(
-        Bold(f"#{ticket_id} · {source}"),
+        Bold(f"🎫 #{ticket_id} · {source}"),
         "\n",
         BlockQuote(message),
     )
@@ -79,7 +79,7 @@ def support_notification(
 ) -> Text:
     """Format an admin notification with unambiguous ticket and sender context."""
     return Text(
-        Bold(f"#{ticket_id} · {source}"),
+        Bold(f"🎫 #{ticket_id} · {source}"),
         "\n",
         Bold(sender_name),
         "\n",

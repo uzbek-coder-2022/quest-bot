@@ -607,6 +607,13 @@ class FeatureFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any(entity.type == "blockquote" for entity in kwargs["entities"]))
         self.assertTrue(any(entity.type == "bold" for entity in kwargs["entities"]))
 
+    async def test_safe_edit_reports_successful_message_updates(self) -> None:
+        message = SimpleNamespace(edit_text=AsyncMock())
+        callback = SimpleNamespace(message=message)
+
+        self.assertTrue(await safe_edit(callback, "updated"))
+        message.edit_text.assert_awaited_once_with(text="updated", reply_markup=None)
+
     async def test_safe_edit_ignores_only_message_not_modified(self) -> None:
         message = SimpleNamespace(
             edit_text=AsyncMock(
@@ -617,7 +624,8 @@ class FeatureFlowTests(unittest.IsolatedAsyncioTestCase):
             )
         )
         callback = SimpleNamespace(message=message)
-        await safe_edit(callback, "same")
+        changed = await safe_edit(callback, "same")
+        self.assertFalse(changed)
         message.edit_text.assert_awaited_once_with(text="same", reply_markup=None)
 
 

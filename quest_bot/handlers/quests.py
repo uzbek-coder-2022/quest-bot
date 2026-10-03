@@ -9,6 +9,7 @@ from aiogram.exceptions import TelegramAPIError
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
+from aiogram.utils.formatting import BlockQuote, Bold, Text
 
 from ..config import Settings
 from ..database import Database, utc_now
@@ -18,8 +19,11 @@ from ..keyboards import (
     answer_quest_selector,
     browse_filters,
     button,
+    confirm_cover_removal_keyboard,
     edit_done_keyboard,
     edit_prompt_keyboard,
+    edit_quest_cover_keyboard,
+    edit_quest_details_keyboard,
     edit_stage_actions_keyboard,
     editable_stages_keyboard,
     home_keyboard,
@@ -40,7 +44,7 @@ from ..services import (
     send_current_stage_after_join,
     send_stage_to_user,
 )
-from ..states import AnswerFlow, EditStage
+from ..states import AnswerFlow, EditQuestDetails, EditStage
 from ..utils import (
     can_manage_quest,
     display_name,
@@ -594,6 +598,435 @@ async def manage_quest_callback(callback: CallbackQuery, db: Database) -> None:
     await callback.answer()
 
 
+@router.callback_query(F.data.startswith("manage:editdetails:"))
+async def edit_quest_details_menu(callback: CallbackQuery, db: Database) -> None:
+    if not await ensure_private_callback(callback, db):
+        return
+    try:
+        quest_id = int(callback.data.rsplit(":", 1)[1])
+    except ValueError:
+        await callback.answer()
+        return
+    language = await db.get_language(callback.from_user.id)
+    quest = await db.get_quest(quest_id)
+    if not quest or not await can_manage_quest(db, callback.from_user.id, quest):
+        await callback.answer(tr(language, "quest_not_found"), show_alert=True)
+        return
+    if quest["status"] == "archived":
+        await callback.answer(tr(language, "quest_metadata_archived"), show_alert=True)
+        return
+    if callback.message:
+        await safe_edit(
+            callback,
+            Text(
+                Bold(f"🛠 {tr(language, 'edit_quest_details_title')}"),
+                "\n\n",
+                Bold(f"🧭 {quest['title']}"),
+                "\n\n",
+                BlockQuote(f"💡 {tr(language, 'edit_quest_details_hint')}"),
+            ),
+            reply_markup=edit_quest_details_keyboard(language, quest_id),
+        )
+    await callback.answer()
+
+
+async def _clear_fsm_and_archived_drafts(state: FSMContext, bot: Bot) -> None:
+    """Clear an existing flow without orphaning its staged private archive messages."""
+    data = await state.get_data()
+    stages = data.get("stages") or []
+    stage_draft = data.get("stage_draft") or {}
+    for stage in [*stages, stage_draft]:
+        await delete_archived_message(
+            bot, stage.get("source_chat_id"), stage.get("source_message_id")
+        )
+    await delete_archived_message(bot, data.get("cover_chat_id"), data.get("cover_message_id"))
+    await state.clear()
+
+
+async def _begin_metadata_edit(
+    callback: CallbackQuery,
+    state: FSMContext,
+    db: Database,
+    field: str,
+) -> None:
+    if not await ensure_private_callback(callback, db):
+        return
+    try:
+        quest_id = int(callback.data.rsplit(":", 1)[1])
+    except ValueError:
+        await callback.answer()
+        return
+    language = await db.get_language(callback.from_user.id)
+    quest = await db.get_quest(quest_id)
+    if not quest or not await can_manage_quest(db, callback.from_user.id, quest):
+        await callback.answer(tr(language, "quest_not_found"), show_alert=True)
+        return
+    if quest["status"] == "archived":
+        await callback.answer(tr(language, "quest_metadata_archived"), show_alert=True)
+        return
+
+    await _clear_fsm_and_archived_drafts(state, callback.message.bot)
+    await state.update_data(edit_quest_id=quest_id, edit_context="quest_metadata")
+    if field == "title":
+        await state.set_state(EditQuestDetails.title)
+        prompt = Text(
+            Bold(f"✏️ {tr(language, 'ask_quest_title')}"),
+            "\n\n",
+            Bold(f"📌 {tr(language, 'quest_label_title')}"),
+            "\n",
+            BlockQuote(str(quest["title"])),
+        )
+    else:
+        await state.set_state(EditQuestDetails.description)
+        prompt = Text(
+            Bold(f"📝 {tr(language, 'ask_quest_description')}"),
+            "\n\n",
+            Bold(f"📄 {tr(language, 'quest_label_description')}"),
+            "\n",
+            BlockQuote(str(quest.get("description") or "—")),
+        )
+    if callback.message:
+        await callback.message.answer(
+            **prompt.as_kwargs(), reply_markup=edit_prompt_keyboard(language)
+        )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("manage:edit:title:"))
+async def begin_quest_title_edit(
+    callback: CallbackQuery, state: FSMContext, db: Database
+) -> None:
+    await _begin_metadata_edit(callback, state, db, "title")
+
+
+@router.callback_query(F.data.startswith("manage:edit:description:"))
+async def begin_quest_description_edit(
+    callback: CallbackQuery, state: FSMContext, db: Database
+) -> None:
+    await _begin_metadata_edit(callback, state, db, "description")
+
+
+@router.callback_query(F.data.regexp(r"^manage:edit:cover:\d+$"))
+async def quest_cover_editor(callback: CallbackQuery, db: Database, bot: Bot) -> None:
+    if not await ensure_private_callback(callback, db):
+        return
+    try:
+        quest_id = int(callback.data.rsplit(":", 1)[1])
+    except ValueError:
+        await callback.answer()
+        return
+    language = await db.get_language(callback.from_user.id)
+    quest = await db.get_quest(quest_id)
+    if not quest or not await can_manage_quest(db, callback.from_user.id, quest):
+        await callback.answer(tr(language, "quest_not_found"), show_alert=True)
+        return
+    if quest["status"] == "archived":
+        await callback.answer(tr(language, "quest_metadata_archived"), show_alert=True)
+        return
+    has_cover = quest.get("cover_chat_id") is not None and quest.get("cover_message_id") is not None
+    body = (
+        tr(language, "edit_quest_cover_has_photo")
+        if has_cover
+        else tr(language, "edit_quest_cover_missing")
+    )
+    if callback.message:
+        edited = await safe_edit(
+            callback,
+            Text(
+                Bold(f"🖼 {tr(language, 'edit_quest_cover_title')}"),
+                "\n\n",
+                Bold(f"🧭 {quest['title']}"),
+                "\n",
+                BlockQuote(body),
+            ),
+            reply_markup=edit_quest_cover_keyboard(language, quest_id, has_cover),
+        )
+        if has_cover and edited:
+            await copy_quest_cover(bot, quest, callback.message.chat.id)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("manage:edit:cover:photo:"))
+async def begin_quest_cover_photo_edit(
+    callback: CallbackQuery, state: FSMContext, db: Database
+) -> None:
+    if not await ensure_private_callback(callback, db):
+        return
+    try:
+        quest_id = int(callback.data.rsplit(":", 1)[1])
+    except ValueError:
+        await callback.answer()
+        return
+    language = await db.get_language(callback.from_user.id)
+    quest = await db.get_quest(quest_id)
+    if not quest or not await can_manage_quest(db, callback.from_user.id, quest):
+        await callback.answer(tr(language, "quest_not_found"), show_alert=True)
+        return
+    if quest["status"] == "archived":
+        await callback.answer(tr(language, "quest_metadata_archived"), show_alert=True)
+        return
+    await _clear_fsm_and_archived_drafts(state, callback.message.bot)
+    await state.update_data(edit_quest_id=quest_id, edit_context="quest_metadata")
+    await state.set_state(EditQuestDetails.cover_photo)
+    if callback.message:
+        await callback.message.answer(
+            **Text(
+                Bold(f"📷 {tr(language, 'ask_quest_cover')}"),
+                "\n\n",
+                Bold(f"🧭 {quest['title']}"),
+            ).as_kwargs(),
+            reply_markup=edit_prompt_keyboard(language),
+        )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("manage:edit:cover:remove:"))
+async def confirm_quest_cover_removal_prompt(
+    callback: CallbackQuery, db: Database
+) -> None:
+    if not await ensure_private_callback(callback, db):
+        return
+    try:
+        quest_id = int(callback.data.rsplit(":", 1)[1])
+    except ValueError:
+        await callback.answer()
+        return
+    language = await db.get_language(callback.from_user.id)
+    quest = await db.get_quest(quest_id)
+    if not quest or not await can_manage_quest(db, callback.from_user.id, quest):
+        await callback.answer(tr(language, "quest_not_found"), show_alert=True)
+        return
+    if quest["status"] == "archived":
+        await callback.answer(tr(language, "quest_metadata_archived"), show_alert=True)
+        return
+    if quest.get("cover_chat_id") is None or quest.get("cover_message_id") is None:
+        await callback.answer(tr(language, "edit_quest_cover_missing"), show_alert=True)
+        return
+    if callback.message:
+        await safe_edit(
+            callback,
+            Text(
+                Bold(f"⚠️ {tr(language, 'confirm_remove_cover')}"),
+                "\n\n",
+                BlockQuote(str(quest["title"])),
+            ),
+            reply_markup=confirm_cover_removal_keyboard(language, quest_id),
+        )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("manage:edit:cover:remove-confirm:"))
+async def remove_quest_cover(
+    callback: CallbackQuery, db: Database
+) -> None:
+    if not await ensure_private_callback(callback, db):
+        return
+    try:
+        quest_id = int(callback.data.rsplit(":", 1)[1])
+    except ValueError:
+        await callback.answer()
+        return
+    language = await db.get_language(callback.from_user.id)
+    quest = await db.get_quest(quest_id)
+    if not quest or not await can_manage_quest(db, callback.from_user.id, quest):
+        await callback.answer(tr(language, "quest_not_found"), show_alert=True)
+        return
+    if quest["status"] == "archived":
+        await callback.answer(tr(language, "quest_metadata_archived"), show_alert=True)
+        return
+    if quest.get("cover_chat_id") is None or quest.get("cover_message_id") is None:
+        await callback.answer(tr(language, "edit_quest_cover_missing"), show_alert=True)
+        return
+    previous = await db.update_quest_metadata(
+        quest_id,
+        {"cover_chat_id": None, "cover_message_id": None},
+        callback.from_user.id,
+        utc_now(),
+    )
+    if previous is None:
+        await callback.answer(tr(language, "quest_metadata_archived"), show_alert=True)
+        return
+    await delete_archived_message(
+        callback.message.bot,
+        previous.get("cover_chat_id"),
+        previous.get("cover_message_id"),
+    )
+    updated = await db.get_quest(quest_id)
+    if callback.message and updated:
+        await safe_edit(
+            callback,
+            Text(
+                Bold(f"✅ {tr(language, 'quest_cover_removed')}"),
+                "\n\n",
+                Bold(f"🧭 {updated['title']}"),
+            ),
+            reply_markup=edit_quest_cover_keyboard(language, quest_id, False),
+        )
+    await callback.answer()
+
+
+async def _metadata_message_quest(
+    message: Message, state: FSMContext, db: Database
+) -> tuple[int, dict] | None:
+    data = await state.get_data()
+    quest_id = data.get("edit_quest_id")
+    if not message.from_user or quest_id is None:
+        await state.clear()
+        return None
+    quest = await db.get_quest(int(quest_id))
+    language = await db.get_language(message.from_user.id)
+    if not quest or not await can_manage_quest(db, message.from_user.id, quest):
+        await state.clear()
+        await message.answer(tr(language, "quest_not_found"))
+        return None
+    if quest["status"] == "archived":
+        await state.clear()
+        await message.answer(tr(language, "quest_metadata_archived"))
+        return None
+    return int(quest_id), quest
+
+
+@router.message(EditQuestDetails.title)
+async def quest_title_received(
+    message: Message, state: FSMContext, db: Database
+) -> None:
+    if not message.from_user:
+        return
+    language = await db.get_language(message.from_user.id)
+    access = await _metadata_message_quest(message, state, db)
+    if not access:
+        return
+    title = (message.text or "").strip()
+    if not 1 <= len(title) <= 100:
+        await message.answer(
+            **Text(Bold(f"⚠️ {tr(language, 'invalid_quest_title')}" )).as_kwargs(),
+            reply_markup=edit_prompt_keyboard(language),
+        )
+        return
+    quest_id, _ = access
+    previous = await db.update_quest_metadata(
+        quest_id, {"title": title}, message.from_user.id, utc_now()
+    )
+    if previous is None:
+        await state.clear()
+        await message.answer(tr(language, "quest_metadata_archived"))
+        return
+    await state.clear()
+    await message.answer(
+        **Text(
+            Bold(f"✅ {tr(language, 'quest_title_updated')}"),
+            "\n\n",
+            Bold(f"📌 {tr(language, 'quest_label_title')}"),
+            "\n",
+            BlockQuote(title),
+        ).as_kwargs(),
+        reply_markup=edit_quest_details_keyboard(language, quest_id),
+    )
+
+
+@router.message(EditQuestDetails.description)
+async def quest_description_received(
+    message: Message, state: FSMContext, db: Database
+) -> None:
+    if not message.from_user:
+        return
+    language = await db.get_language(message.from_user.id)
+    access = await _metadata_message_quest(message, state, db)
+    if not access:
+        return
+    description = (message.text or "").strip()
+    if not 1 <= len(description) <= 1000:
+        await message.answer(
+            **Text(Bold(f"⚠️ {tr(language, 'invalid_quest_description')}" )).as_kwargs(),
+            reply_markup=edit_prompt_keyboard(language),
+        )
+        return
+    quest_id, _ = access
+    previous = await db.update_quest_metadata(
+        quest_id, {"description": description}, message.from_user.id, utc_now()
+    )
+    if previous is None:
+        await state.clear()
+        await message.answer(tr(language, "quest_metadata_archived"))
+        return
+    await state.clear()
+    await message.answer(
+        **Text(
+            Bold(f"✅ {tr(language, 'quest_description_updated')}"),
+            "\n\n",
+            Bold(f"📄 {tr(language, 'quest_label_description')}"),
+            "\n",
+            BlockQuote(description),
+        ).as_kwargs(),
+        reply_markup=edit_quest_details_keyboard(language, quest_id),
+    )
+
+
+@router.message(EditQuestDetails.cover_photo, F.photo)
+async def quest_cover_photo_received(
+    message: Message, state: FSMContext, db: Database, settings: Settings
+) -> None:
+    if not message.from_user:
+        return
+    language = await db.get_language(message.from_user.id)
+    access = await _metadata_message_quest(message, state, db)
+    if not access:
+        return
+    quest_id, _ = access
+    try:
+        archive_chat_id, archive_message_id = await archive_question_message(
+            message.bot, message, settings.question_archive_channel_id
+        )
+    except TelegramAPIError:
+        logger.exception("Could not archive an edited quest cover from admin %s", message.from_user.id)
+        await message.answer(
+            **Text(Bold(f"⚠️ {tr(language, 'question_archive_failed')}" )).as_kwargs(),
+            reply_markup=edit_prompt_keyboard(language),
+        )
+        return
+    try:
+        previous = await db.update_quest_metadata(
+            quest_id,
+            {"cover_chat_id": archive_chat_id, "cover_message_id": archive_message_id},
+            message.from_user.id,
+            utc_now(),
+        )
+    except Exception:
+        await delete_archived_message(message.bot, archive_chat_id, archive_message_id)
+        raise
+    if previous is None:
+        await delete_archived_message(message.bot, archive_chat_id, archive_message_id)
+        await state.clear()
+        await message.answer(tr(language, "quest_metadata_archived"))
+        return
+    await delete_archived_message(
+        message.bot, previous.get("cover_chat_id"), previous.get("cover_message_id")
+    )
+    await state.clear()
+    updated = await db.get_quest(quest_id)
+    await message.answer(
+        **Text(
+            Bold(f"✅ {tr(language, 'quest_cover_updated')}"),
+            "\n\n",
+            Bold(f"🧭 {(updated or previous)['title']}"),
+        ).as_kwargs(),
+        reply_markup=edit_quest_details_keyboard(language, quest_id),
+    )
+
+
+@router.message(EditQuestDetails.cover_photo)
+async def invalid_quest_cover_received(message: Message, state: FSMContext, db: Database) -> None:
+    if not message.from_user:
+        return
+    language = await db.get_language(message.from_user.id)
+    if not await _metadata_message_quest(message, state, db):
+        return
+    await message.answer(
+        **Text(Bold(f"⚠️ {tr(language, 'invalid_quest_cover')}" )).as_kwargs(),
+        reply_markup=edit_prompt_keyboard(language),
+    )
+
+
 @router.callback_query(F.data.startswith("manage:pause:"))
 async def pause_quest_callback(callback: CallbackQuery, db: Database) -> None:
     if not await ensure_private_callback(callback, db):
@@ -773,8 +1206,20 @@ async def cancel_stage_edit(callback: CallbackQuery, state: FSMContext, db: Data
     language = await db.get_language(callback.from_user.id)
     quest_id = data.get("edit_quest_id")
     if callback.message:
-        markup = edit_done_keyboard(language, int(quest_id)) if quest_id else None
-        await callback.message.answer(tr(language, "edit_cancelled"), reply_markup=markup)
+        if data.get("edit_context") == "quest_metadata" and quest_id:
+            quest = await db.get_quest(int(quest_id))
+            markup = (
+                edit_quest_details_keyboard(language, int(quest_id))
+                if quest and quest["status"] != "archived"
+                and await can_manage_quest(db, callback.from_user.id, quest)
+                else admin_home_keyboard(language)
+            )
+        else:
+            markup = edit_done_keyboard(language, int(quest_id)) if quest_id else None
+        await callback.message.answer(
+            **Text(Bold(f"↩️ {tr(language, 'edit_cancelled')}" )).as_kwargs(),
+            reply_markup=markup,
+        )
     await callback.answer()
 
 

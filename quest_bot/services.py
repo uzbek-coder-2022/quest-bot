@@ -89,7 +89,7 @@ async def validate_question_archive(bot: Bot, archive_channel_id: int) -> None:
 
 def answer_button(language: str, link: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text=tr(language, "btn_answer_privately"), url=link)
+        InlineKeyboardButton(text=tr(language, "btn_answer_privately"), url=link, style="primary")
     ]])
 
 

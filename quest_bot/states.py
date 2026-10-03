@@ -26,6 +26,12 @@ class EditStage(StatesGroup):
     answer = State()
 
 
+class EditQuestDetails(StatesGroup):
+    title = State()
+    description = State()
+    cover_photo = State()
+
+
 class SupportFlow(StatesGroup):
     new_message = State()
     user_reply = State()

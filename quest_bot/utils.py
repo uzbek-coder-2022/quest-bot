@@ -59,15 +59,18 @@ async def can_manage_quest(db: Database, user_id: int, quest: dict) -> bool:
 
 async def safe_edit(
     callback: CallbackQuery, text: str | Text, reply_markup: InlineKeyboardMarkup | None = None
-) -> None:
+) -> bool:
+    """Edit a callback message, returning False only when Telegram reports no change."""
     if not callback.message:
-        return
+        return False
     kwargs = text.as_kwargs() if isinstance(text, Text) else {"text": text}
     try:
         await callback.message.edit_text(**kwargs, reply_markup=reply_markup)
+        return True
     except TelegramBadRequest as exc:
         if "message is not modified" not in str(exc).lower():
             raise
+        return False
 
 
 async def send_or_edit(

@@ -41,7 +41,7 @@ def _role_kb(language: str, quest_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [
             button(tr(language, "btn_confirm"), f"manage:finish-confirmed:{quest_id}"),
-            button(tr(language, "btn_cancel"), f"manage:quest:{quest_id}"),
+            button(tr(language, "btn_cancel"), f"manage:quest:{quest_id}", style="danger"),
         ],
         [button(tr(language, "btn_admin_home"), "admin:home")],
     ])
