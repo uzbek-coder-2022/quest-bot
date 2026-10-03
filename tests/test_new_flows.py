@@ -459,6 +459,61 @@ class FeatureFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(callback.answer.await_args.kwargs["show_alert"])
         self.assertIn("paused", callback.answer.await_args.args[0])
 
+    async def test_view_embeds_new_cover_in_rich_message_with_inline_keyboard(self) -> None:
+        quest = self._quest(visibility="public", cover_file_id="telegram-cover-file-id")
+
+        class Db(JoinPreviewDatabase):
+            async def get_role(self, user_id: int):
+                return None
+
+            async def participant(self, quest_id: int, user_id: int):
+                return None
+
+        message = SimpleNamespace(
+            chat=SimpleNamespace(type="private", id=42),
+            edit_text=AsyncMock(),
+        )
+        callback = SimpleNamespace(
+            data="quest:view:17",
+            from_user=SimpleNamespace(id=42),
+            message=message,
+            answer=AsyncMock(),
+        )
+        bot = FakeBot()
+
+        await view_quest_callback(callback, Db(quest), bot)
+
+        self.assertEqual(bot.copies, [])
+        edited = message.edit_text.await_args.kwargs
+        rich = edited["rich_message"]
+        self.assertEqual(rich.blocks[1].type, "photo")
+        self.assertEqual(rich.blocks[1].photo.media, "telegram-cover-file-id")
+        self.assertIsNotNone(edited["reply_markup"])
+        self.assertEqual(
+            edited["reply_markup"].inline_keyboard[0][0].callback_data,
+            "quest:join:17",
+        )
+
+    async def test_private_deep_link_embeds_new_cover_and_keeps_join_buttons(self) -> None:
+        quest = self._quest(cover_file_id="telegram-cover-file-id")
+        message = SimpleNamespace(
+            from_user=SimpleNamespace(id=42),
+            answer=AsyncMock(),
+            answer_rich=AsyncMock(),
+        )
+        bot = FakeBot()
+
+        await _join_from_payload(message, "q_17_private-token", JoinPreviewDatabase(quest), bot)
+
+        self.assertEqual(bot.copies, [])
+        answer = message.answer_rich.await_args
+        self.assertEqual(answer.args[0].blocks[1].type, "photo")
+        self.assertEqual(answer.args[0].blocks[1].photo.media, "telegram-cover-file-id")
+        self.assertEqual(
+            answer.kwargs["reply_markup"].inline_keyboard[0][0].callback_data,
+            "quest:joinconfirm:17:private-token",
+        )
+
     async def test_creation_description_prompts_for_optional_cover_before_visibility(self) -> None:
         state = FakeState()
         message = SimpleNamespace(
@@ -578,7 +633,7 @@ class FeatureFlowTests(unittest.IsolatedAsyncioTestCase):
             from_user=SimpleNamespace(id=90),
             chat=SimpleNamespace(id=90),
             message_id=1234,
-            photo=[object()],
+            photo=[SimpleNamespace(file_id="telegram-cover-file-id")],
             bot=bot,
             answer=AsyncMock(),
         )
@@ -591,6 +646,7 @@ class FeatureFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(bot.copies[0]["message_id"], 1234)
         self.assertEqual(state.data["cover_chat_id"], -100777)
         self.assertEqual(state.data["cover_message_id"], 501)
+        self.assertEqual(state.data["cover_file_id"], "telegram-cover-file-id")
         self.assertEqual(state.current_state, CreateQuest.visibility)
 
     async def test_cancel_removes_staged_cover_from_private_archive(self) -> None:

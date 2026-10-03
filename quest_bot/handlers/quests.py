@@ -41,7 +41,7 @@ from ..presentation import (
     information_message,
     quest_preview,
 )
-from ..rich_text import bold, heading, paragraph, quote, rich_message
+from ..rich_text import bold, heading, paragraph, photo_block, quote, rich_message
 from ..services import (
     archive_question_message,
     delete_archived_message,
@@ -284,7 +284,8 @@ async def view_quest_callback(callback: CallbackQuery, db: Database, bot: Bot) -
 
     participants = await db.participant_count(quest_id)
     if callback.message:
-        await copy_quest_cover(bot, quest, callback.message.chat.id)
+        if not quest.get("cover_file_id"):
+            await copy_quest_cover(bot, quest, callback.message.chat.id)
         await safe_edit(
             callback,
             quest_preview(quest, language, participants),
@@ -824,17 +825,22 @@ async def quest_cover_editor(callback: CallbackQuery, db: Database, bot: Bot) ->
         if has_cover
         else tr(language, "edit_quest_cover_missing")
     )
+    cover_file_id = quest.get("cover_file_id")
+    has_inline_cover = isinstance(cover_file_id, str) and bool(cover_file_id.strip())
+    blocks = [
+        heading(f"🖼 {tr(language, 'edit_quest_cover_title')}", size=1),
+        paragraph(bold(f"🧭 {quest['title']}")),
+    ]
+    if has_inline_cover:
+        blocks.append(photo_block(cover_file_id))
+    blocks.append(quote(body))
     if callback.message:
         edited = await safe_edit(
             callback,
-            rich_message(
-                heading(f"🖼 {tr(language, 'edit_quest_cover_title')}", size=1),
-                paragraph(bold(f"🧭 {quest['title']}")),
-                quote(body),
-            ),
+            rich_message(*blocks),
             reply_markup=edit_quest_cover_keyboard(language, quest_id, has_cover),
         )
-        if has_cover and edited:
+        if has_cover and not has_inline_cover and edited:
             await copy_quest_cover(bot, quest, callback.message.chat.id)
     await callback.answer()
 
@@ -928,7 +934,11 @@ async def remove_quest_cover(callback: CallbackQuery, db: Database) -> None:
         return
     previous = await db.update_quest_metadata(
         quest_id,
-        {"cover_chat_id": None, "cover_message_id": None},
+        {
+            "cover_chat_id": None,
+            "cover_message_id": None,
+            "cover_file_id": None,
+        },
         callback.from_user.id,
         utc_now(),
     )
@@ -1074,7 +1084,11 @@ async def quest_cover_photo_received(
     try:
         previous = await db.update_quest_metadata(
             quest_id,
-            {"cover_chat_id": archive_chat_id, "cover_message_id": archive_message_id},
+            {
+                "cover_chat_id": archive_chat_id,
+                "cover_message_id": archive_message_id,
+                "cover_file_id": message.photo[-1].file_id,
+            },
             message.from_user.id,
             utc_now(),
         )

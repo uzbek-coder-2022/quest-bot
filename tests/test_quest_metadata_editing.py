@@ -74,6 +74,7 @@ class FakeMetadataDatabase:
             "description": "Original description",
             "cover_chat_id": None,
             "cover_message_id": None,
+            "cover_file_id": None,
         }
         self.roles = roles or {7: "admin"}
         self.updates: list[dict] = []
@@ -274,6 +275,23 @@ class QuestMetadataEditingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(markup.inline_keyboard[0][0].callback_data, "manage:edit:cover:photo:42")
         self.assertFalse(any("remove:" in button.callback_data for row in markup.inline_keyboard for button in row))
 
+    async def test_cover_editor_embeds_file_id_and_keeps_controls_on_same_rich_message(self) -> None:
+        db = FakeMetadataDatabase()
+        db.quest.update(
+            cover_chat_id=-100200,
+            cover_message_id=17,
+            cover_file_id="telegram-cover-file-id",
+        )
+        callback, message, bot = make_callback("manage:edit:cover:42")
+
+        await quest_cover_editor(callback, db, bot)
+
+        self.assertEqual(bot.copies, [])
+        rich = message.edit_text.await_args.kwargs["rich_message"]
+        self.assertEqual(rich.blocks[2].type, "photo")
+        self.assertEqual(rich.blocks[2].photo.media, "telegram-cover-file-id")
+        self.assertIsNotNone(message.edit_text.await_args.kwargs["reply_markup"])
+
     async def test_cover_photo_add_or_replace_archives_telegram_reference_then_removes_old_copy(self) -> None:
         db = FakeMetadataDatabase()
         db.quest.update(cover_chat_id=-100111, cover_message_id=12)
@@ -291,6 +309,8 @@ class QuestMetadataEditingTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(db.quest["cover_chat_id"], -100999)
         self.assertEqual(db.quest["cover_message_id"], 901)
+        self.assertEqual(db.quest["cover_file_id"], "telegram-file-id")
+        self.assertEqual(db.updates[-1]["cover_file_id"], "telegram-file-id")
         self.assertEqual(bot.deletions, [{"chat_id": -100111, "message_id": 12}])
         self.assertTrue(state.cleared)
         self.assertIsNotNone(message.answer_rich.await_args.kwargs["reply_markup"])
@@ -307,6 +327,7 @@ class QuestMetadataEditingTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(db.quest["cover_chat_id"], -100999)
         self.assertEqual(db.quest["cover_message_id"], 901)
+        self.assertEqual(db.quest["cover_file_id"], "telegram-file-id")
         self.assertEqual(len(bot.copies), 1)
         self.assertEqual(bot.deletions, [])
 
@@ -331,7 +352,11 @@ class QuestMetadataEditingTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_cover_removal_requires_confirmation_and_deletes_archived_message_reference(self) -> None:
         db = FakeMetadataDatabase()
-        db.quest.update(cover_chat_id=-100333, cover_message_id=81)
+        db.quest.update(
+            cover_chat_id=-100333,
+            cover_message_id=81,
+            cover_file_id="telegram-cover-file-id",
+        )
         callback, message, bot = make_callback("manage:edit:cover:remove:42")
 
         await confirm_quest_cover_removal_prompt(callback, db)
@@ -345,8 +370,16 @@ class QuestMetadataEditingTests(unittest.IsolatedAsyncioTestCase):
         await remove_quest_cover(callback, db)
         self.assertIsNone(db.quest["cover_chat_id"])
         self.assertIsNone(db.quest["cover_message_id"])
+        self.assertIsNone(db.quest["cover_file_id"])
         self.assertEqual(bot.deletions, [{"chat_id": -100333, "message_id": 81}])
-        self.assertEqual(db.updates[-1], {"cover_chat_id": None, "cover_message_id": None})
+        self.assertEqual(
+            db.updates[-1],
+            {
+                "cover_chat_id": None,
+                "cover_message_id": None,
+                "cover_file_id": None,
+            },
+        )
 
     async def test_cover_photo_action_and_removal_are_disabled_after_archive(self) -> None:
         db = FakeMetadataDatabase()

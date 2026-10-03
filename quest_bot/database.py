@@ -50,6 +50,7 @@ CREATE TABLE IF NOT EXISTS quests (
     chat_id INTEGER,
     cover_chat_id INTEGER,
     cover_message_id INTEGER,
+    cover_file_id TEXT,
     paused_at TEXT,
     cleanup_done INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
@@ -303,6 +304,9 @@ class Database:
                         "ALTER TABLE quests ADD COLUMN IF NOT EXISTS cover_message_id BIGINT"
                     )
                     await connection.execute(
+                        "ALTER TABLE quests ADD COLUMN IF NOT EXISTS cover_file_id TEXT"
+                    )
+                    await connection.execute(
                         "ALTER TABLE quests ADD COLUMN IF NOT EXISTS paused_at TEXT"
                     )
             except BaseException:
@@ -326,6 +330,8 @@ class Database:
                 await connection.execute("ALTER TABLE quests ADD COLUMN cover_chat_id INTEGER")
             if "cover_message_id" not in quest_columns:
                 await connection.execute("ALTER TABLE quests ADD COLUMN cover_message_id INTEGER")
+            if "cover_file_id" not in quest_columns:
+                await connection.execute("ALTER TABLE quests ADD COLUMN cover_file_id TEXT")
             if "paused_at" not in quest_columns:
                 await connection.execute("ALTER TABLE quests ADD COLUMN paused_at TEXT")
             await connection.commit()
@@ -456,8 +462,8 @@ class Database:
             await connection.execute("BEGIN IMMEDIATE")
             cursor = await connection.execute(
                 "INSERT INTO quests(owner_id,title,description,visibility,invite_token,status,progression,start_at,"
-                "duration_seconds,chat_id,cover_chat_id,cover_message_id,created_at,updated_at) "
-                "VALUES(?,?,?,?,?,'scheduled',?,?,?,?,?,?,?,?)",
+                "duration_seconds,chat_id,cover_chat_id,cover_message_id,cover_file_id,created_at,updated_at) "
+                "VALUES(?,?,?,?,?,'scheduled',?,?,?,?,?,?,?,?,?)",
                 (
                     owner_id,
                     quest["title"],
@@ -470,6 +476,7 @@ class Database:
                     quest.get("chat_id"),
                     quest.get("cover_chat_id"),
                     quest.get("cover_message_id"),
+                    quest.get("cover_file_id"),
                     now,
                     now,
                 ),
@@ -523,12 +530,15 @@ class Database:
         now: str | None = None,
     ) -> dict[str, Any] | None:
         """Update title, description, or archived cover references for a non-archived quest."""
-        allowed = {"title", "description", "cover_chat_id", "cover_message_id"}
+        cover_fields = {"cover_chat_id", "cover_message_id", "cover_file_id"}
+        allowed = {"title", "description", *cover_fields}
         if not changes or changes.keys() - allowed:
             raise ValueError("Only quest title, description, and cover references can be updated")
         normalized = dict(changes)
-        if ("cover_chat_id" in normalized) != ("cover_message_id" in normalized):
-            raise ValueError("Both cover Telegram references must be updated together")
+        if cover_fields.intersection(normalized):
+            if not {"cover_chat_id", "cover_message_id"}.issubset(normalized):
+                raise ValueError("Both cover Telegram references must be updated together")
+            normalized.setdefault("cover_file_id", None)
         for field, maximum in (("title", 100), ("description", 1000)):
             if field in normalized:
                 value = normalized[field]
@@ -542,7 +552,10 @@ class Database:
             != (normalized["cover_message_id"] is None)
         ):
             raise ValueError("Cover references must either both be set or both be cleared")
-        if normalized.get("cover_chat_id") is not None:
+        if normalized.get("cover_chat_id") is None:
+            if normalized.get("cover_file_id") is not None:
+                raise ValueError("A cover file ID requires archived cover references")
+        else:
             try:
                 normalized["cover_chat_id"] = int(normalized["cover_chat_id"])
                 normalized["cover_message_id"] = int(normalized["cover_message_id"])
@@ -550,8 +563,23 @@ class Database:
                 raise ValueError("Cover references must be Telegram chat and message IDs") from exc
             if normalized["cover_message_id"] < 1:
                 raise ValueError("Cover message ID must be positive")
+            file_id = normalized.get("cover_file_id")
+            if file_id is not None and (
+                not isinstance(file_id, str) or not file_id.strip()
+            ):
+                raise ValueError("Cover file ID must be non-empty text")
         now = now or utc_now()
-        fields = [field for field in ("title", "description", "cover_chat_id", "cover_message_id") if field in normalized]
+        fields = [
+            field
+            for field in (
+                "title",
+                "description",
+                "cover_chat_id",
+                "cover_message_id",
+                "cover_file_id",
+            )
+            if field in normalized
+        ]
         assignments = ",".join(f"{field}=?" for field in fields)
         values = [normalized[field] for field in fields]
         async with self._connection() as connection:

@@ -101,7 +101,8 @@ async def _join_from_payload(
         return True
 
     participant_count = await db.participant_count(quest_id)
-    await copy_quest_cover(bot, quest, user.id)
+    if not quest.get("cover_file_id"):
+        await copy_quest_cover(bot, quest, user.id)
     await message.answer_rich(
         quest_preview(quest, language, participant_count),
         reply_markup=join_confirmation_keyboard(language, quest_id, token),

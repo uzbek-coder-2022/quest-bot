@@ -52,6 +52,7 @@ class PostgresCompatibilityTests(unittest.TestCase):
         self.assertIn("source_message_id BIGINT", schema)
         self.assertIn("cover_chat_id BIGINT", schema)
         self.assertIn("cover_message_id BIGINT", schema)
+        self.assertIn("cover_file_id TEXT", schema)
         self.assertIn("paused_at TEXT", schema)
         self.assertNotIn("AUTOINCREMENT", schema)
         self.assertNotIn("INTEGER", schema)

@@ -5,11 +5,13 @@ from __future__ import annotations
 from collections.abc import Iterable, Sequence
 
 from aiogram.types import (
+    InputMediaPhoto,
     InputRichBlockBlockQuotation,
     InputRichBlockDivider,
     InputRichBlockList,
     InputRichBlockListItem,
     InputRichBlockParagraph,
+    InputRichBlockPhoto,
     InputRichBlockSectionHeading,
     InputRichMessage,
     RichTextBold,
@@ -39,6 +41,13 @@ def heading(text: RichTextUnion, size: int = 2) -> InputRichBlockSectionHeading:
 def paragraph(text: RichTextUnion) -> InputRichBlockParagraph:
     """Build a paragraph while keeping all supplied strings as literal text."""
     return InputRichBlockParagraph(text=text)
+
+
+def photo_block(file_id: str) -> InputRichBlockPhoto:
+    """Embed a previously received Telegram photo by its reusable file ID."""
+    if not file_id.strip():
+        raise ValueError("A photo block requires a non-empty Telegram file ID")
+    return InputRichBlockPhoto(photo=InputMediaPhoto(media=file_id))
 
 
 def quote(*parts: RichTextUnion) -> InputRichBlockBlockQuotation:

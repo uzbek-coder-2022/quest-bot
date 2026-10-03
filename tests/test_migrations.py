@@ -17,6 +17,7 @@ class DatabaseMigrationTests(unittest.IsolatedAsyncioTestCase):
                 SCHEMA.replace("    source_chat_id INTEGER,\n    source_message_id INTEGER,\n", "")
                 .replace("    cover_chat_id INTEGER,\n", "")
                 .replace("    cover_message_id INTEGER,\n", "")
+                .replace("    cover_file_id TEXT,\n", "")
                 .replace("    paused_at TEXT,\n", "")
             )
             async with aiosqlite.connect(path) as connection:
@@ -56,6 +57,7 @@ class DatabaseMigrationTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(stage["source_message_id"], 42)
             quest = await db.get_quest(quest_id)
             self.assertIsNone(quest["cover_chat_id"])
+            self.assertIsNone(quest["cover_file_id"])
             self.assertIsNone(quest["paused_at"])
             await db.close()
 

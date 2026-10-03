@@ -97,6 +97,7 @@ async def _save_stage_or_continue(message: Message, state: FSMContext, starts_at
         "chat_id": data.get("chat_id"),
         "cover_chat_id": data.get("cover_chat_id"),
         "cover_message_id": data.get("cover_message_id"),
+        "cover_file_id": data.get("cover_file_id"),
         "invite_token": secrets.token_urlsafe(9),
     }
     created_id = await db.create_quest(message.from_user.id, quest_data, stages)
@@ -174,7 +175,11 @@ async def cover_photo_received(
         logger.exception("Could not archive a quest cover from admin %s", message.from_user.id)
         await message.answer(tr(language, "question_archive_failed"))
         return
-    await state.update_data(cover_chat_id=cover_chat_id, cover_message_id=cover_message_id)
+    await state.update_data(
+        cover_chat_id=cover_chat_id,
+        cover_message_id=cover_message_id,
+        cover_file_id=message.photo[-1].file_id,
+    )
     await state.set_state(CreateQuest.visibility)
     await message.answer(tr(language, "ask_visibility"), reply_markup=creation_visibility(language))
 
@@ -188,7 +193,9 @@ async def invalid_cover_photo(message: Message, db: Database) -> None:
 @router.callback_query(CreateQuest.cover_photo, F.data == "create:cover:skip")
 async def skip_cover_photo(callback: CallbackQuery, state: FSMContext, db: Database) -> None:
     language = await db.get_language(callback.from_user.id)
-    await state.update_data(cover_chat_id=None, cover_message_id=None)
+    await state.update_data(
+        cover_chat_id=None, cover_message_id=None, cover_file_id=None
+    )
     await state.set_state(CreateQuest.visibility)
     if callback.message:
         await callback.message.answer(tr(language, "ask_visibility"), reply_markup=creation_visibility(language))

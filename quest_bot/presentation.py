@@ -16,6 +16,7 @@ from .rich_text import (
     divider,
     heading,
     paragraph,
+    photo_block,
     quote,
     rich_message,
 )
@@ -71,13 +72,19 @@ def quest_preview(
         [bold(f"⏳ {tr(language, 'quest_label_duration')}"), ": ", duration],
         [bold(f"📣 {tr(language, 'quest_label_chat')}"), ": ", str(chat_title)],
     ]
-    return rich_message(
-        heading(f"🧭 {quest['title']}", size=1),
-        heading(f"📝 {tr(language, 'quest_label_description')}", size=4),
-        quote(description),
-        divider(),
-        bullet_list(details),
+    blocks = [heading(f"🧭 {quest['title']}", size=1)]
+    cover_file_id = quest.get("cover_file_id")
+    if isinstance(cover_file_id, str) and cover_file_id.strip():
+        blocks.append(photo_block(cover_file_id))
+    blocks.extend(
+        (
+            heading(f"📝 {tr(language, 'quest_label_description')}", size=4),
+            quote(description),
+            divider(),
+            bullet_list(details),
+        )
     )
+    return rich_message(*blocks)
 
 
 def guide_message(language: str) -> InputRichMessage:

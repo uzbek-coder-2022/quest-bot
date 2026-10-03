@@ -240,6 +240,7 @@ class DatabaseFlowTests(unittest.IsolatedAsyncioTestCase):
             "chat_id": None,
             "cover_chat_id": -1001234567890,
             "cover_message_id": 4321,
+            "cover_file_id": "telegram-cover-file-id",
             "invite_token": "cover-reference-token",
         }
         quest_id = await self.db.create_quest(
@@ -257,6 +258,7 @@ class DatabaseFlowTests(unittest.IsolatedAsyncioTestCase):
         saved = await self.db.get_quest(quest_id)
         self.assertEqual(saved["cover_chat_id"], -1001234567890)
         self.assertEqual(saved["cover_message_id"], 4321)
+        self.assertEqual(saved["cover_file_id"], "telegram-cover-file-id")
 
     async def test_quest_metadata_updates_are_atomic_audited_and_available_when_completed(self) -> None:
         quest_id = await self.create_quest()
@@ -275,7 +277,9 @@ class DatabaseFlowTests(unittest.IsolatedAsyncioTestCase):
                 "description": "Updated description",
                 "cover_chat_id": -1009876543210,
                 "cover_message_id": 654,
+                "cover_file_id": "replacement-cover-file-id",
             },
+
             1,
             "2026-10-01T02:00:00+00:00",
         )
@@ -288,6 +292,7 @@ class DatabaseFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(updated["description"], "Updated description")
         self.assertEqual(updated["cover_chat_id"], -1009876543210)
         self.assertEqual(updated["cover_message_id"], 654)
+        self.assertEqual(updated["cover_file_id"], "replacement-cover-file-id")
         self.assertEqual(updated["status"], "completed")
         self.assertEqual(updated["updated_at"], "2026-10-01T02:00:00+00:00")
         audit = await self.db.latest_logs(1)
@@ -309,6 +314,10 @@ class DatabaseFlowTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError):
             await self.db.update_quest_metadata(
                 quest_id, {"cover_chat_id": None, "cover_message_id": 9}, 1
+            )
+        with self.assertRaises(ValueError):
+            await self.db.update_quest_metadata(
+                quest_id, {"cover_file_id": "telegram-photo-id"}, 1
             )
         with self.assertRaises(ValueError):
             await self.db.update_quest_metadata(quest_id, {"private": True}, 1)
