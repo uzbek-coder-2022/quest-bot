@@ -81,10 +81,10 @@ Useful service commands:
 sudo systemctl status quest-bot
 sudo journalctl -u quest-bot -f
 sudo systemctl restart quest-bot
-sudo systemctl stop quest-bot
+./stop.sh
 ```
 
-To use a different unit name, run `SERVICE_NAME=my-quest-bot ./deploy.sh`. After updating the checkout or changing dependencies, run `./deploy.sh` again to reinstall and restart the service.
+`./stop.sh` stops the service immediately but leaves it enabled for the next reboot. To disable automatic startup too, run `sudo systemctl disable --now quest-bot`. To use a different unit name, run `SERVICE_NAME=my-quest-bot ./deploy.sh` and later `SERVICE_NAME=my-quest-bot ./stop.sh` (or pass the name as an argument: `./stop.sh my-quest-bot`). After updating the checkout or changing dependencies, run `./deploy.sh` again to reinstall and restart the service.
 
 ### 5. Database operations
 

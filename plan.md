@@ -81,6 +81,7 @@ The first release runs entirely inside Telegram. Production deployments use Post
 - `quest_bot/postgres.py` — PostgreSQL driver compatibility for shared repository queries and schema.
 - `quest_bot/scheduler.py` — quest starts, scheduled stages, and timeout handling.
 - `deploy.sh` — PostgreSQL validation and systemd service installation/startup.
+- `stop.sh` — safely stop the systemd service during troubleshooting.
 - `quest_bot/services.py` — question delivery, group announcements, and chat-member removal.
 - `quest_bot/localization.py` — Uzbek, Russian, and English translations.
 - `tests/` — database and core-rule tests.
