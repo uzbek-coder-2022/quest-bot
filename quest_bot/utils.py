@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup
+from aiogram.utils.formatting import Text
 
 from .database import Database
 from .localization import tr
@@ -57,12 +58,13 @@ async def can_manage_quest(db: Database, user_id: int, quest: dict) -> bool:
 
 
 async def safe_edit(
-    callback: CallbackQuery, text: str, reply_markup: InlineKeyboardMarkup | None = None
+    callback: CallbackQuery, text: str | Text, reply_markup: InlineKeyboardMarkup | None = None
 ) -> None:
     if not callback.message:
         return
+    kwargs = text.as_kwargs() if isinstance(text, Text) else {"text": text}
     try:
-        await callback.message.edit_text(text, reply_markup=reply_markup)
+        await callback.message.edit_text(**kwargs, reply_markup=reply_markup)
     except TelegramBadRequest as exc:
         if "message is not modified" not in str(exc).lower():
             raise

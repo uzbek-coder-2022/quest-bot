@@ -66,6 +66,19 @@ class UpdateLoggingMiddleware(BaseMiddleware):
                 context["user_id"],
                 context["chat_id"],
             )
+            database = data.get("db")
+            try:
+                update_event = update.event
+            except UpdateTypeLookupError:
+                update_event = None
+            user = getattr(update_event, "from_user", None)
+            if context["chat_type"] == "private" and user and database:
+                ensure_user = getattr(database, "ensure_user", None)
+                if ensure_user:
+                    full_name = " ".join(
+                        part for part in (user.first_name, user.last_name) if part
+                    )
+                    await ensure_user(user.id, user.username, full_name)
         return await handler(event, data)
 
 

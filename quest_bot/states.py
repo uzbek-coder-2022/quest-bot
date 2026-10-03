@@ -6,6 +6,7 @@ from aiogram.fsm.state import State, StatesGroup
 class CreateQuest(StatesGroup):
     title = State()
     description = State()
+    cover_photo = State()
     visibility = State()
     stage_count = State()
     progression = State()

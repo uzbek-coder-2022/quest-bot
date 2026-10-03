@@ -60,7 +60,9 @@ async def scheduler_tick(
         quest_id = int(due_quest["id"])
         due_deadline = _overall_deadline(due_quest)
         if due_deadline and now_dt >= due_deadline:
-            user_ids = await db.set_quest_status(quest_id, "completed")
+            user_ids = await db.set_quest_status(quest_id, "completed", only_if_unpaused=True)
+            if user_ids is None:
+                continue
             await db.log_action(None, "quest.time_limit.completed", "quest", quest_id)
             await _notify_quest_end(bot, db, quest_id, user_ids)
             continue
@@ -70,14 +72,18 @@ async def scheduler_tick(
             continue
         await cleanup_known_chat_members(bot, db, quest)
         if started_now:
-            await send_chat_invites_to_current_participants(bot, db, quest)
+            latest_quest = await db.get_quest(quest_id)
+            if latest_quest and not latest_quest.get("paused_at"):
+                await send_chat_invites_to_current_participants(bot, db, latest_quest)
 
     active_quests = await db.list_active_quests()
     expired_quest_ids: set[int] = set()
     for quest in active_quests:
         deadline = _overall_deadline(quest)
         if deadline and now_dt >= deadline:
-            user_ids = await db.set_quest_status(int(quest["id"]), "completed")
+            user_ids = await db.set_quest_status(int(quest["id"]), "completed", only_if_unpaused=True)
+            if user_ids is None:
+                continue
             expired_quest_ids.add(int(quest["id"]))
             await db.log_action(
                 None, "quest.time_limit.completed", "quest", quest["id"]

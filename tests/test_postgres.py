@@ -4,7 +4,7 @@ import unittest
 from unittest.mock import patch
 
 from quest_bot.config import Settings
-from quest_bot.database import SCHEMA, Database
+from quest_bot.database import QUEST_LEADERBOARD_QUERY, SCHEMA, Database
 from quest_bot.postgres import (
     AsyncpgConnection,
     AsyncpgCursor,
@@ -31,12 +31,28 @@ class PostgresCompatibilityTests(unittest.TestCase):
             "SELECT * FROM managed_chats ORDER BY lower(title)",
         )
 
+    def test_per_quest_leaderboard_groups_every_selected_nonaggregate_column(self) -> None:
+        group_by = QUEST_LEADERBOARD_QUERY.split("GROUP BY", 1)[1].split("ORDER BY", 1)[0]
+        for column in (
+            "p.quest_id",
+            "p.user_id",
+            "p.status",
+            "p.joined_at",
+            "p.completed_at",
+            "u.full_name",
+            "u.username",
+        ):
+            self.assertIn(column, group_by)
+
     def test_schema_uses_postgresql_identity_and_bigint_types(self) -> None:
         schema = postgres_schema(SCHEMA)
         self.assertIn("id BIGSERIAL PRIMARY KEY", schema)
         self.assertIn("telegram_id BIGINT PRIMARY KEY", schema)
         self.assertIn("source_chat_id BIGINT", schema)
         self.assertIn("source_message_id BIGINT", schema)
+        self.assertIn("cover_chat_id BIGINT", schema)
+        self.assertIn("cover_message_id BIGINT", schema)
+        self.assertIn("paused_at TEXT", schema)
         self.assertNotIn("AUTOINCREMENT", schema)
         self.assertNotIn("INTEGER", schema)
 

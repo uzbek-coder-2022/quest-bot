@@ -13,6 +13,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 from ..config import Settings
 from ..database import Database, utc_now
 from ..keyboards import (
+    admin_home_keyboard,
     admin_quest_filters,
     answer_quest_selector,
     browse_filters,
@@ -22,13 +23,16 @@ from ..keyboards import (
     edit_stage_actions_keyboard,
     editable_stages_keyboard,
     home_keyboard,
+    join_confirmation_keyboard,
     manage_quest,
+    participating_quests_keyboard,
     quest_detail,
     ratings_overview_keyboard,
     review_keyboard,
 )
 from ..localization import tr
 from ..periods import current_period_bounds
+from ..presentation import copy_quest_cover, quest_preview
 from ..services import (
     archive_question_message,
     delete_archived_message,
@@ -41,7 +45,7 @@ from ..utils import (
     can_manage_quest,
     display_name,
     ensure_private_callback,
-    format_datetime,
+    safe_edit,
 )
 
 router = Router(name="quests")
@@ -73,7 +77,8 @@ async def _show_public_page(callback: CallbackQuery, db: Database, status: str, 
         title += f" · {tr(language, f'filter_{status}')}"
     text = title if items else f"{title}\n\n{tr(language, 'empty_quests')}"
     if callback.message:
-        await callback.message.edit_text(
+        await safe_edit(
+            callback,
             text,
             reply_markup=browse_filters(language, status, max(0, page), items, page_size),
         )
@@ -100,7 +105,8 @@ async def _show_manage_page(callback: CallbackQuery, db: Database, status: str, 
     if not items:
         title += f"\n\n{tr(language, 'empty_quests')}"
     if callback.message:
-        await callback.message.edit_text(
+        await safe_edit(
+            callback,
             title,
             reply_markup=admin_quest_filters(language, status, max(0, page), items, page_size),
         )
@@ -117,6 +123,48 @@ async def quests_command(message: Message, db: Database) -> None:
     if not items:
         title += f"\n\n{tr(language, 'empty_quests')}"
     await message.answer(title, reply_markup=browse_filters(language, "all", 0, items, page_size))
+
+
+@router.message(Command("myquests"))
+async def my_quests_command(message: Message, db: Database) -> None:
+    if not message.from_user:
+        return
+    language = await db.get_language(message.from_user.id)
+    if message.chat.type != "private":
+        await message.answer(tr(language, "open_private_chat"))
+        return
+    items = await db.list_user_quests(message.from_user.id, 0, 20)
+    text = tr(language, "my_participating_quests_title")
+    if not items:
+        text += f"\n\n{tr(language, 'empty_quests')}"
+    await message.answer(
+        text,
+        reply_markup=participating_quests_keyboard(language, items, 0, 20),
+    )
+
+
+@router.callback_query(F.data.startswith("quest:mylist:"))
+async def my_quests_callback(callback: CallbackQuery, db: Database) -> None:
+    if not await ensure_private_callback(callback, db):
+        return
+    try:
+        page = max(0, int(callback.data.rsplit(":", 1)[1]))
+    except (ValueError, AttributeError):
+        await callback.answer()
+        return
+    language = await db.get_language(callback.from_user.id)
+    page_size = int(await db.settings_get("page_size", "20"))
+    items = await db.list_user_quests(callback.from_user.id, page * page_size, page_size)
+    text = tr(language, "my_participating_quests_title")
+    if not items:
+        text += f"\n\n{tr(language, 'empty_quests')}"
+    if callback.message:
+        await safe_edit(
+            callback,
+            text,
+            reply_markup=participating_quests_keyboard(language, items, page, page_size),
+        )
+    await callback.answer()
 
 
 @router.callback_query(F.data.startswith("browse:filter:"))
@@ -150,10 +198,16 @@ async def manage_filter_callback(callback: CallbackQuery, db: Database) -> None:
 
 
 @router.callback_query(F.data.startswith("quest:view:"))
-async def view_quest_callback(callback: CallbackQuery, db: Database) -> None:
+async def view_quest_callback(callback: CallbackQuery, db: Database, bot: Bot) -> None:
     try:
-        quest_id = int(callback.data.rsplit(":", 1)[1])
-    except ValueError:
+        parts = callback.data.split(":")
+        if len(parts) == 4 and parts[2] == "my":
+            from_my_quests = True
+            quest_id = int(parts[3])
+        else:
+            from_my_quests = False
+            quest_id = int(parts[2])
+    except (ValueError, IndexError):
         await callback.answer()
         return
     quest = await db.get_quest(quest_id)
@@ -165,33 +219,30 @@ async def view_quest_callback(callback: CallbackQuery, db: Database) -> None:
         return
     participant = await db.participant(quest_id, callback.from_user.id)
     manager = await can_manage_quest(db, callback.from_user.id, quest)
-    if quest["visibility"] == "private" and not participant and not manager:
+    if (quest["visibility"] == "private"
+            and not (participant and participant["status"] != "blocked")
+            and not manager):
         await callback.answer(tr(language, "quest_not_found"), show_alert=True)
         return
-    duration_seconds = int(quest.get("duration_seconds") or 0)
-    duration = "—" if duration_seconds == 0 else f"{duration_seconds // 60} min"
-    chat_title = quest.get("chat_title") or ("Bot" if not quest.get("chat_id") else str(quest["chat_id"]))
-    text = tr(
-        language,
-        "quest_details",
-        title=quest["title"],
-        description=quest["description"] or "—",
-        status=_status_name(language, quest["status"]),
-        visibility=tr(language, f"visibility_{quest['visibility']}"),
-        start=format_datetime(quest["start_at"], language),
-        stages=int(quest.get("stage_count", 0)),
-        progression=tr(language, f"progression_{quest['progression']}"),
-        duration=duration,
-        chat=chat_title,
-    )
-    joined = bool(participant and participant["status"] != "blocked")
+
+    participants = await db.participant_count(quest_id)
     if callback.message:
-        await callback.message.edit_text(text, reply_markup=quest_detail(language, quest, joined))
+        await copy_quest_cover(bot, quest, callback.message.chat.id)
+        await safe_edit(
+            callback,
+            quest_preview(quest, language, participants),
+            reply_markup=quest_detail(
+                language,
+                quest,
+                joined=bool(participant and participant["status"] != "blocked"),
+                from_my_quests=from_my_quests,
+            ),
+        )
     await callback.answer()
 
 
 @router.callback_query(F.data.startswith("quest:join:"))
-async def join_quest_callback(callback: CallbackQuery, db: Database, bot: Bot) -> None:
+async def request_quest_join(callback: CallbackQuery, db: Database) -> None:
     if not await ensure_private_callback(callback, db):
         return
     try:
@@ -204,10 +255,53 @@ async def join_quest_callback(callback: CallbackQuery, db: Database, bot: Bot) -
     if not quest or quest["visibility"] != "public":
         await callback.answer(tr(language, "quest_not_found"), show_alert=True)
         return
-    result = await db.join_quest(quest_id, callback.from_user.id, None, utc_now())
-    code = result["code"]
+    if quest.get("paused_at"):
+        await callback.answer(tr(language, "quest_paused_notice"), show_alert=True)
+        return
+    if quest["status"] not in {"scheduled", "active"}:
+        await callback.answer(tr(language, "join_closed"), show_alert=True)
+        return
+    participant = await db.participant(quest_id, callback.from_user.id)
+    if participant:
+        if participant["status"] == "blocked":
+            suffix = (
+                tr(language, "reason_line", reason=participant.get("ban_reason"))
+                if participant.get("ban_reason")
+                else ""
+            )
+            await callback.answer(tr(language, "blocked_notice", reason=suffix), show_alert=True)
+        else:
+            await callback.answer(tr(language, "already_joined"), show_alert=True)
+        return
+    participants = await db.participant_count(quest_id)
+    if callback.message:
+        await safe_edit(
+            callback,
+            quest_preview(quest, language, participants),
+            reply_markup=join_confirmation_keyboard(language, quest_id),
+        )
+    await callback.answer(tr(language, "join_confirmation_prompt"))
+
+
+@router.callback_query(F.data.startswith("quest:joinconfirm:"))
+async def confirm_quest_join(callback: CallbackQuery, db: Database, bot: Bot) -> None:
+    if not await ensure_private_callback(callback, db):
+        return
+    parts = callback.data.split(":", 3)
+    if len(parts) < 3:
+        await callback.answer()
+        return
+    try:
+        quest_id = int(parts[2])
+    except ValueError:
+        await callback.answer()
+        return
+    token = parts[3] if len(parts) == 4 else None
+    language = await db.get_language(callback.from_user.id)
+    joined = await db.join_quest(quest_id, callback.from_user.id, token, utc_now())
+    code = joined["code"]
     if code == "globally_banned":
-        reason = result.get("reason")
+        reason = joined.get("reason")
         suffix = tr(language, "reason_line", reason=reason) if reason else ""
         await callback.answer(tr(language, "global_blocked", reason=suffix), show_alert=True)
         return
@@ -216,18 +310,38 @@ async def join_quest_callback(callback: CallbackQuery, db: Database, bot: Bot) -
         return
     if code == "blocked":
         participant = await db.participant(quest_id, callback.from_user.id)
-        suffix = tr(language, "reason_line", reason=participant.get("ban_reason")) if participant and participant.get("ban_reason") else ""
+        suffix = (
+            tr(language, "reason_line", reason=participant.get("ban_reason"))
+            if participant and participant.get("ban_reason")
+            else ""
+        )
         await callback.answer(tr(language, "blocked_notice", reason=suffix), show_alert=True)
+        return
+    if code == "paused":
+        await callback.answer(tr(language, "quest_paused_notice"), show_alert=True)
         return
     if code == "closed":
         await callback.answer(tr(language, "join_closed"), show_alert=True)
         return
+    if code == "invalid_token":
+        await callback.answer(tr(language, "private_link_invalid"), show_alert=True)
+        return
     if code != "joined":
+        await callback.answer(tr(language, "quest_not_found"), show_alert=True)
+        return
+
+    quest = await db.get_quest(quest_id)
+    if not quest:
         await callback.answer(tr(language, "quest_not_found"), show_alert=True)
         return
     await db.log_action(callback.from_user.id, "participant.joined", "quest", quest_id)
     if callback.message:
         await callback.message.answer(tr(language, "join_success"))
+        await safe_edit(
+            callback,
+            quest_preview(quest, language, await db.participant_count(quest_id)),
+            reply_markup=quest_detail(language, quest, joined=True),
+        )
     if quest.get("chat_id"):
         if quest["status"] == "active":
             invite_link = await get_chat_invite_for_participant(bot, db, quest, callback.from_user.id)
@@ -239,15 +353,38 @@ async def join_quest_callback(callback: CallbackQuery, db: Database, bot: Bot) -
             )
         else:
             await bot.send_message(callback.from_user.id, tr(language, "invite_at_start"))
-    if callback.message:
-        try:
-            await callback.message.edit_reply_markup(reply_markup=quest_detail(language, quest, joined=True))
-        except TelegramAPIError:
-            pass
     if quest["status"] == "active":
         me = await bot.get_me()
         await send_current_stage_after_join(bot, db, quest, callback.from_user.id, me.username or "")
     await callback.answer()
+
+
+@router.callback_query(F.data.startswith("quest:joincancel:"))
+async def cancel_quest_join(callback: CallbackQuery, db: Database) -> None:
+    if not await ensure_private_callback(callback, db):
+        return
+    try:
+        quest_id = int(callback.data.rsplit(":", 1)[1])
+    except ValueError:
+        await callback.answer()
+        return
+    language = await db.get_language(callback.from_user.id)
+    quest = await db.get_quest(quest_id)
+    participant = await db.participant(quest_id, callback.from_user.id) if quest else None
+    if quest and quest["visibility"] == "public":
+        if callback.message:
+            await safe_edit(
+                callback,
+                quest_preview(quest, language, await db.participant_count(quest_id)),
+                reply_markup=quest_detail(
+                    language,
+                    quest,
+                    joined=bool(participant and participant["status"] != "blocked"),
+                ),
+            )
+    elif callback.message:
+        await safe_edit(callback, tr(language, "join_cancelled"), reply_markup=home_keyboard(language))
+    await callback.answer(tr(language, "join_cancelled"))
 
 
 @router.callback_query(F.data.startswith("quest:chatinvite:"))
@@ -289,7 +426,11 @@ async def show_leaderboard(callback: CallbackQuery, db: Database) -> None:
     if quest["visibility"] == "private" and not await ensure_private_callback(callback, db):
         return
     participant = await db.participant(quest_id, callback.from_user.id)
-    if quest["visibility"] == "private" and not participant and not await can_manage_quest(db, callback.from_user.id, quest):
+    if (
+        quest["visibility"] == "private"
+        and not (participant and participant["status"] != "blocked")
+        and not await can_manage_quest(db, callback.from_user.id, quest)
+    ):
         await callback.answer(tr(language, "quest_not_found"), show_alert=True)
         return
     rows = await db.leaderboard(quest_id)
@@ -311,8 +452,10 @@ async def show_leaderboard(callback: CallbackQuery, db: Database) -> None:
                 )
             )
         text += "\n\n" + "\n".join(rendered)
+    role = await db.get_role(callback.from_user.id)
+    markup = admin_home_keyboard(language) if role in {"admin", "superadmin"} else home_keyboard(language)
     if callback.message:
-        await callback.message.edit_text(text, reply_markup=home_keyboard(language))
+        await safe_edit(callback, text, reply_markup=markup)
     await callback.answer()
 
 
@@ -321,7 +464,8 @@ async def ratings_overview(callback: CallbackQuery, db: Database) -> None:
     language = await db.get_language(callback.from_user.id)
     role = await db.get_role(callback.from_user.id)
     if callback.message:
-        await callback.message.edit_text(
+        await safe_edit(
+            callback,
             tr(language, "ratings_overview_title"),
             reply_markup=ratings_overview_keyboard(language, role),
         )
@@ -359,14 +503,20 @@ async def aggregate_leaderboard(callback: CallbackQuery, db: Database) -> None:
                 )
             )
         text += "\n\n" + "\n".join(rendered)
+    role = await db.get_role(callback.from_user.id)
+    return_home = (
+        button(tr(language, "btn_admin_home"), "admin:home")
+        if role in {"admin", "superadmin"}
+        else button(tr(language, "btn_home"), "menu:home")
+    )
     markup = InlineKeyboardMarkup(
         inline_keyboard=[
             [button(tr(language, "btn_back"), "ratings:overview")],
-            [button(tr(language, "btn_home"), "menu:home")],
+            [return_home],
         ]
     )
     if callback.message:
-        await callback.message.edit_text(text, reply_markup=markup)
+        await safe_edit(callback, text, reply_markup=markup)
     await callback.answer()
 
 
@@ -404,13 +554,19 @@ async def leaderboard_quest_list(callback: CallbackQuery, db: Database) -> None:
         nav.append(button("▶", f"ratings:list:{scope}:{page + 1}"))
     if nav:
         rows.append(nav)
-    rows.append([button(tr(language, "btn_home"), "menu:home")])
+    role = await db.get_role(callback.from_user.id)
+    if role in {"admin", "superadmin"}:
+        rows.append([button(tr(language, "btn_admin_home"), "admin:home")])
+    else:
+        rows.append([button(tr(language, "btn_home"), "menu:home")])
     title_key = "btn_managed_ratings" if scope == "managed" else "btn_public_quest_ratings"
     text = tr(language, title_key)
     if not quests:
         text += f"\n\n{tr(language, 'empty_quests')}"
     if callback.message:
-        await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+        await safe_edit(
+            callback, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows)
+        )
     await callback.answer()
 
 
@@ -430,8 +586,69 @@ async def manage_quest_callback(callback: CallbackQuery, db: Database) -> None:
         await callback.answer(tr(language, "quest_not_found"), show_alert=True)
         return
     if callback.message:
-        await callback.message.edit_text(quest["title"], reply_markup=manage_quest(language, quest, role or "admin"))
+        await safe_edit(
+            callback,
+            quest_preview(quest, language, await db.participant_count(quest_id)),
+            reply_markup=manage_quest(language, quest, role or "admin"),
+        )
     await callback.answer()
+
+
+@router.callback_query(F.data.startswith("manage:pause:"))
+async def pause_quest_callback(callback: CallbackQuery, db: Database) -> None:
+    if not await ensure_private_callback(callback, db):
+        return
+    try:
+        quest_id = int(callback.data.rsplit(":", 1)[1])
+    except ValueError:
+        await callback.answer()
+        return
+    quest = await db.get_quest(quest_id)
+    language = await db.get_language(callback.from_user.id)
+    if not quest or not await can_manage_quest(db, callback.from_user.id, quest):
+        await callback.answer(tr(language, "quest_not_found"), show_alert=True)
+        return
+    if not await db.pause_quest(quest_id, callback.from_user.id, utc_now()):
+        await callback.answer(tr(language, "error_generic"), show_alert=True)
+        return
+    updated = await db.get_quest(quest_id)
+    role = await db.get_role(callback.from_user.id)
+    if callback.message and updated:
+        await safe_edit(
+            callback,
+            quest_preview(updated, language, await db.participant_count(quest_id)),
+            reply_markup=manage_quest(language, updated, role or "admin"),
+        )
+    await callback.answer(tr(language, "pause_success"), show_alert=True)
+
+
+@router.callback_query(F.data.startswith("manage:resume:"))
+async def resume_quest_callback(callback: CallbackQuery, db: Database) -> None:
+    if not await ensure_private_callback(callback, db):
+        return
+    try:
+        quest_id = int(callback.data.rsplit(":", 1)[1])
+    except ValueError:
+        await callback.answer()
+        return
+    quest = await db.get_quest(quest_id)
+    language = await db.get_language(callback.from_user.id)
+    if not quest or not await can_manage_quest(db, callback.from_user.id, quest):
+        await callback.answer(tr(language, "quest_not_found"), show_alert=True)
+        return
+    shifted = await db.resume_quest(quest_id, callback.from_user.id, utc_now())
+    if shifted is None:
+        await callback.answer(tr(language, "error_generic"), show_alert=True)
+        return
+    updated = await db.get_quest(quest_id)
+    role = await db.get_role(callback.from_user.id)
+    if callback.message and updated:
+        await safe_edit(
+            callback,
+            quest_preview(updated, language, await db.participant_count(quest_id)),
+            reply_markup=manage_quest(language, updated, role or "admin"),
+        )
+    await callback.answer(tr(language, "resume_success"), show_alert=True)
 
 
 async def _editable_stage_list(db: Database, quest_id: int) -> list[dict]:
@@ -463,7 +680,8 @@ async def edit_questions_list(callback: CallbackQuery, db: Database) -> None:
     if not stages:
         text += f"\n\n{tr(language, 'no_editable_stages')}"
     if callback.message:
-        await callback.message.edit_text(
+        await safe_edit(
+            callback,
             text,
             reply_markup=editable_stages_keyboard(language, quest_id, stages),
         )
@@ -492,7 +710,8 @@ async def edit_stage_options(callback: CallbackQuery, db: Database) -> None:
         await callback.answer(tr(language, "stage_not_editable"), show_alert=True)
         return
     if callback.message:
-        await callback.message.edit_text(
+        await safe_edit(
+            callback,
             tr(language, "edit_stage_title", number=stage_order),
             reply_markup=edit_stage_actions_keyboard(
                 language, quest_id, stage_order, stage["answer_mode"] == "auto"
@@ -713,6 +932,9 @@ async def _process_answer(message: Message, quest_id: int, db: Database, bot: Bo
     if code in {"not_joined", "closed"}:
         await message.answer(tr(language, "no_active_question"))
         return
+    if code == "paused":
+        await message.answer(tr(language, "quest_paused_notice"))
+        return
     if code == "blocked":
         participant = await db.participant(quest_id, message.from_user.id)
         suffix = tr(language, "reason_line", reason=participant.get("ban_reason")) if participant and participant.get("ban_reason") else ""
@@ -768,6 +990,9 @@ async def select_answer_quest(callback: CallbackQuery, state: FSMContext, db: Da
         return
     stage = await db.current_open_stage(quest_id, callback.from_user.id)
     language = await db.get_language(callback.from_user.id)
+    if stage and stage.get("paused_at"):
+        await callback.answer(tr(language, "quest_paused_notice"), show_alert=True)
+        return
     if not stage or stage.get("session_status") != "open":
         await callback.answer(tr(language, "no_active_question"), show_alert=True)
         return

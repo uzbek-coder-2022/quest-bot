@@ -48,6 +48,9 @@ CREATE TABLE IF NOT EXISTS quests (
     start_at TEXT NOT NULL,
     duration_seconds INTEGER NOT NULL DEFAULT 0,
     chat_id INTEGER,
+    cover_chat_id INTEGER,
+    cover_message_id INTEGER,
+    paused_at TEXT,
     cleanup_done INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
@@ -194,9 +197,28 @@ CREATE INDEX IF NOT EXISTS idx_chat_members_active ON chat_members(chat_id, is_m
 """
 
 
+QUEST_LEADERBOARD_QUERY = (
+    "SELECT p.user_id,p.status,p.joined_at,p.completed_at,u.full_name,u.username,"
+    "COUNT(DISTINCT CASE WHEN ps.status='correct' THEN ps.stage_id END) AS solved "
+    "FROM quest_participants p JOIN users u ON u.telegram_id=p.user_id "
+    "LEFT JOIN participant_stages ps ON ps.quest_id=p.quest_id AND ps.user_id=p.user_id "
+    "WHERE p.quest_id=? "
+    "GROUP BY p.quest_id,p.user_id,p.status,p.joined_at,p.completed_at,u.full_name,u.username "
+    "ORDER BY solved DESC,CASE WHEN p.completed_at IS NULL THEN 1 ELSE 0 END,p.completed_at,p.joined_at"
+)
+
+
 def utc_now() -> str:
     """Return an ISO-8601 UTC timestamp for persistence in either backend."""
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def _as_utc_datetime(value: str) -> datetime:
+    """Parse stored timestamps consistently, treating legacy naive values as UTC."""
+    result = datetime.fromisoformat(value)
+    if result.tzinfo is None:
+        result = result.replace(tzinfo=timezone.utc)
+    return result.astimezone(timezone.utc)
 
 
 def normalize_exact_answer(value: str) -> str:
@@ -274,6 +296,15 @@ class Database:
                     await connection.execute(
                         "ALTER TABLE stages ADD COLUMN IF NOT EXISTS source_message_id BIGINT"
                     )
+                    await connection.execute(
+                        "ALTER TABLE quests ADD COLUMN IF NOT EXISTS cover_chat_id BIGINT"
+                    )
+                    await connection.execute(
+                        "ALTER TABLE quests ADD COLUMN IF NOT EXISTS cover_message_id BIGINT"
+                    )
+                    await connection.execute(
+                        "ALTER TABLE quests ADD COLUMN IF NOT EXISTS paused_at TEXT"
+                    )
             except BaseException:
                 await self.close()
                 raise
@@ -289,6 +320,14 @@ class Database:
                 await connection.execute("ALTER TABLE stages ADD COLUMN source_chat_id INTEGER")
             if "source_message_id" not in stage_columns:
                 await connection.execute("ALTER TABLE stages ADD COLUMN source_message_id INTEGER")
+            cursor = await connection.execute("PRAGMA table_info(quests)")
+            quest_columns = {str(row["name"]) for row in await cursor.fetchall()}
+            if "cover_chat_id" not in quest_columns:
+                await connection.execute("ALTER TABLE quests ADD COLUMN cover_chat_id INTEGER")
+            if "cover_message_id" not in quest_columns:
+                await connection.execute("ALTER TABLE quests ADD COLUMN cover_message_id INTEGER")
+            if "paused_at" not in quest_columns:
+                await connection.execute("ALTER TABLE quests ADD COLUMN paused_at TEXT")
             await connection.commit()
 
     async def close(self) -> None:
@@ -417,7 +456,8 @@ class Database:
             await connection.execute("BEGIN IMMEDIATE")
             cursor = await connection.execute(
                 "INSERT INTO quests(owner_id,title,description,visibility,invite_token,status,progression,start_at,"
-                "duration_seconds,chat_id,created_at,updated_at) VALUES(?,?,?,?,?,'scheduled',?,?,?,?,?,?)",
+                "duration_seconds,chat_id,cover_chat_id,cover_message_id,created_at,updated_at) "
+                "VALUES(?,?,?,?,?,'scheduled',?,?,?,?,?,?,?,?)",
                 (
                     owner_id,
                     quest["title"],
@@ -428,6 +468,8 @@ class Database:
                     quest["start_at"],
                     int(quest.get("duration_seconds", 0)),
                     quest.get("chat_id"),
+                    quest.get("cover_chat_id"),
+                    quest.get("cover_message_id"),
                     now,
                     now,
                 ),
@@ -527,6 +569,29 @@ class Database:
         async with self._connection() as connection:
             cursor = await connection.execute(query, values)
             return [dict(row) for row in await cursor.fetchall()]
+
+    async def list_user_quests(self, user_id: int, offset: int = 0, limit: int = 20) -> list[dict[str, Any]]:
+        """Return non-blocked joined quests, including private quests."""
+        async with self._connection() as connection:
+            cursor = await connection.execute(
+                "SELECT q.*,p.status AS participant_status,p.joined_at AS participant_joined_at,"
+                "(SELECT COUNT(*) FROM stages s WHERE s.quest_id=q.id) AS stage_count "
+                "FROM quest_participants p JOIN quests q ON q.id=p.quest_id "
+                "WHERE p.user_id=? AND p.status!='blocked' "
+                "ORDER BY p.joined_at DESC,q.id DESC LIMIT ? OFFSET ?",
+                (user_id, limit, offset),
+            )
+            return [dict(row) for row in await cursor.fetchall()]
+
+    async def participant_count(self, quest_id: int) -> int:
+        """Count joined users, excluding participants currently blocked."""
+        async with self._connection() as connection:
+            cursor = await connection.execute(
+                "SELECT COUNT(*) AS n FROM quest_participants WHERE quest_id=? AND status!='blocked'",
+                (quest_id,),
+            )
+            row = await cursor.fetchone()
+            return int(row["n"])
 
     async def list_quest_stages(self, quest_id: int) -> list[dict[str, Any]]:
         async with self._connection() as connection:
@@ -658,35 +723,42 @@ class Database:
     async def list_scheduled_quests_due(self, now: str) -> list[dict[str, Any]]:
         async with self._connection() as connection:
             cursor = await connection.execute(
-                "SELECT * FROM quests WHERE status='scheduled' AND start_at<=? ORDER BY start_at", (now,)
+                "SELECT * FROM quests WHERE status='scheduled' AND paused_at IS NULL AND start_at<=? ORDER BY start_at", (now,)
             )
             return [dict(row) for row in await cursor.fetchall()]
 
     async def list_active_quests(self) -> list[dict[str, Any]]:
         async with self._connection() as connection:
-            cursor = await connection.execute("SELECT * FROM quests WHERE status='active' ORDER BY id")
+            cursor = await connection.execute("SELECT * FROM quests WHERE status='active' AND paused_at IS NULL ORDER BY id")
             return [dict(row) for row in await cursor.fetchall()]
 
     async def mark_quest_active(self, quest_id: int) -> bool:
         async with self._connection() as connection:
             cursor = await connection.execute(
-                "UPDATE quests SET status='active', updated_at=? WHERE id=? AND status='scheduled'",
+                "UPDATE quests SET status='active', updated_at=? WHERE id=? AND status='scheduled' AND paused_at IS NULL",
                 (utc_now(), quest_id),
             )
             await connection.commit()
             return cursor.rowcount == 1
 
-    async def set_quest_status(self, quest_id: int, status: str) -> list[int]:
+    async def set_quest_status(
+        self, quest_id: int, status: str, only_if_unpaused: bool = False
+    ) -> list[int] | None:
         if status not in {"scheduled", "active", "completed", "archived"}:
             raise ValueError("Invalid quest status")
         now = utc_now()
         async with self._connection() as connection:
             await connection.execute("BEGIN IMMEDIATE")
-            await connection.execute(
-                "UPDATE quests SET status=?, updated_at=?, completed_at=CASE WHEN ?='completed' THEN ? ELSE completed_at END "
-                "WHERE id=?",
-                (status, now, status, now, quest_id),
+            cursor = await connection.execute(
+                "UPDATE quests SET status=?, updated_at=?, "
+                "paused_at=CASE WHEN ? IN ('completed','archived') THEN NULL ELSE paused_at END, "
+                "completed_at=CASE WHEN ?='completed' THEN ? ELSE completed_at END WHERE id=?"
+                + (" AND paused_at IS NULL" if only_if_unpaused else ""),
+                (status, now, status, status, now, quest_id),
             )
+            if only_if_unpaused and cursor.rowcount != 1:
+                await connection.rollback()
+                return None
             cursor = await connection.execute(
                 "SELECT user_id FROM quest_participants WHERE quest_id=? AND status IN ('joined','active')",
                 (quest_id,),
@@ -699,10 +771,85 @@ class Database:
             await connection.commit()
             return user_ids
 
+    async def pause_quest(self, quest_id: int, actor_id: int, now: str | None = None) -> bool:
+        """Pause a scheduled or active quest without changing its lifecycle status."""
+        now = now or utc_now()
+        async with self._connection() as connection:
+            await connection.execute("BEGIN IMMEDIATE")
+            cursor = await connection.execute(
+                "UPDATE quests SET paused_at=?,updated_at=? "
+                "WHERE id=? AND status IN ('scheduled','active') AND paused_at IS NULL",
+                (now, now, quest_id),
+            )
+            if cursor.rowcount != 1:
+                await connection.rollback()
+                return False
+            await connection.execute(
+                "INSERT INTO audit_logs(actor_id,action,entity_type,entity_id,details,created_at) "
+                "VALUES(?,?,?,?,?,?)",
+                (actor_id, "quest.paused", "quest", str(quest_id), "{}", now),
+            )
+            await connection.commit()
+            return True
+
+    async def resume_quest(self, quest_id: int, actor_id: int, now: str | None = None) -> int | None:
+        """Resume and shift all quest schedules/deadlines by the pause duration."""
+        now = now or utc_now()
+        now_dt = _as_utc_datetime(now)
+        async with self._connection() as connection:
+            await connection.execute("BEGIN IMMEDIATE")
+            cursor = await connection.execute(
+                "SELECT start_at,paused_at,status FROM quests WHERE id=?", (quest_id,)
+            )
+            row = await cursor.fetchone()
+            if not row or not row["paused_at"] or row["status"] not in {"scheduled", "active"}:
+                await connection.rollback()
+                return None
+            paused_dt = _as_utc_datetime(str(row["paused_at"]))
+            shift_seconds = max(0, int((now_dt - paused_dt).total_seconds()))
+            if shift_seconds:
+                shift = timedelta(seconds=shift_seconds)
+                quest_start = (_as_utc_datetime(str(row["start_at"])) + shift).isoformat()
+                await connection.execute(
+                    "UPDATE quests SET start_at=?,paused_at=NULL,updated_at=? WHERE id=?",
+                    (quest_start, now, quest_id),
+                )
+                cursor = await connection.execute(
+                    "SELECT id,starts_at FROM stages WHERE quest_id=?", (quest_id,)
+                )
+                for stage in await cursor.fetchall():
+                    await connection.execute(
+                        "UPDATE stages SET starts_at=? WHERE id=?",
+                        ((_as_utc_datetime(str(stage["starts_at"])) + shift).isoformat(), stage["id"]),
+                    )
+                cursor = await connection.execute(
+                    "SELECT id,started_at FROM participant_stages "
+                "WHERE quest_id=? AND status IN ('open','pending_review')",
+                    (quest_id,),
+                )
+                for session in await cursor.fetchall():
+                    await connection.execute(
+                        "UPDATE participant_stages SET started_at=? WHERE id=?",
+                        ((_as_utc_datetime(str(session["started_at"])) + shift).isoformat(), session["id"]),
+                    )
+            else:
+                await connection.execute(
+                    "UPDATE quests SET paused_at=NULL,updated_at=? WHERE id=?", (now, quest_id)
+                )
+            await connection.execute(
+                "INSERT INTO audit_logs(actor_id,action,entity_type,entity_id,details,created_at) "
+                "VALUES(?,?,?,?,?,?)",
+                (actor_id, "quest.resumed", "quest", str(quest_id),
+                 json.dumps({"shift_seconds": shift_seconds}), now),
+            )
+            await connection.commit()
+            return shift_seconds
+
     async def claim_cleanup(self, quest_id: int) -> bool:
         async with self._connection() as connection:
             cursor = await connection.execute(
-                "UPDATE quests SET cleanup_done=1 WHERE id=? AND cleanup_done=0", (quest_id,)
+                "UPDATE quests SET cleanup_done=1 WHERE id=? AND cleanup_done=0 "
+                "AND status='active' AND paused_at IS NULL", (quest_id,)
             )
             await connection.commit()
             return cursor.rowcount == 1
@@ -719,6 +866,13 @@ class Database:
     async def claim_stage_announcement(self, quest_id: int, stage_id: int) -> bool:
         async with self._connection() as connection:
             await connection.execute("BEGIN IMMEDIATE")
+            cursor = await connection.execute(
+                "SELECT status,paused_at FROM quests WHERE id=?", (quest_id,)
+            )
+            quest = await cursor.fetchone()
+            if not quest or quest["status"] != "active" or quest["paused_at"]:
+                await connection.rollback()
+                return False
             cursor = await connection.execute(
                 "INSERT OR IGNORE INTO announced_stages(quest_id,stage_id,announced_at) VALUES(?,?,?)",
                 (quest_id, stage_id, utc_now()),
@@ -743,6 +897,9 @@ class Database:
             if quest["status"] not in {"scheduled", "active"}:
                 await connection.rollback()
                 return {"code": "closed", "quest": quest}
+            if quest.get("paused_at"):
+                await connection.rollback()
+                return {"code": "paused", "quest": quest}
             cursor = await connection.execute("SELECT is_banned, ban_reason FROM users WHERE telegram_id=?", (user_id,))
             user_row = await cursor.fetchone()
             if user_row and user_row["is_banned"]:
@@ -776,12 +933,14 @@ class Database:
         async with self._connection() as connection:
             await connection.execute("BEGIN IMMEDIATE")
             cursor = await connection.execute(
-                "SELECT p.status,p.current_stage,q.status AS quest_status FROM quest_participants p "
+                "SELECT p.status,p.current_stage,q.status AS quest_status,q.paused_at FROM quest_participants p "
                 "JOIN quests q ON q.id=p.quest_id WHERE p.quest_id=? AND p.user_id=?",
                 (quest_id, user_id),
             )
             participant = await cursor.fetchone()
-            if not participant or participant["quest_status"] != "active" or participant["status"] not in {"joined", "active"} or int(participant["current_stage"]) >= int(stage["stage_order"]):
+            if (not participant or participant["quest_status"] != "active" or participant["paused_at"]
+                    or participant["status"] not in {"joined", "active"}
+                    or int(participant["current_stage"]) >= int(stage["stage_order"])):
                 await connection.rollback()
                 return False
             await connection.execute(
@@ -813,7 +972,8 @@ class Database:
             await connection.execute("BEGIN IMMEDIATE")
             cursor = await connection.execute(
                 "SELECT p.user_id,p.current_stage FROM quest_participants p JOIN quests q ON q.id=p.quest_id "
-                "WHERE p.quest_id=? AND q.status='active' AND p.status IN ('joined','active') AND p.current_stage<?",
+                "WHERE p.quest_id=? AND q.status='active' AND q.paused_at IS NULL "
+                "AND p.status IN ('joined','active') AND p.current_stage<?",
                 (quest_id, order),
             )
             participants = await cursor.fetchall()
@@ -862,7 +1022,7 @@ class Database:
         async with self._connection() as connection:
             cursor = await connection.execute(
                 "SELECT s.*, ps.started_at, ps.status AS session_status, p.status AS participant_status, "
-                "q.status AS quest_status, q.title AS quest_title, q.progression, q.visibility "
+                "q.status AS quest_status, q.paused_at, q.title AS quest_title, q.progression, q.visibility "
                 "FROM quest_participants p JOIN quests q ON q.id=p.quest_id "
                 "JOIN participant_stages ps ON ps.quest_id=p.quest_id AND ps.user_id=p.user_id "
                 "JOIN stages s ON s.id=ps.stage_id "
@@ -876,7 +1036,7 @@ class Database:
         async with self._connection() as connection:
             await connection.execute("BEGIN IMMEDIATE")
             cursor = await connection.execute(
-                "SELECT q.status AS quest_status,q.progression,q.title,q.start_at,q.duration_seconds,p.status AS participant_status,"
+                "SELECT q.status AS quest_status,q.paused_at,q.progression,q.title,q.start_at,q.duration_seconds,p.status AS participant_status,"
                 "p.current_stage,s.id AS stage_id,s.stage_order,s.answer_mode,s.correct_answer,s.max_attempts,s.time_limit_seconds,"
                 "ps.status AS session_status,ps.started_at "
                 "FROM quests q JOIN quest_participants p ON p.quest_id=q.id "
@@ -893,6 +1053,9 @@ class Database:
             if item["participant_status"] == "blocked":
                 await connection.rollback()
                 return {"code": "blocked"}
+            if item["paused_at"]:
+                await connection.rollback()
+                return {"code": "paused", "quest_title": item["title"]}
             if item["participant_status"] not in {"active", "joined"} or item["quest_status"] != "active":
                 await connection.rollback()
                 return {"code": "closed"}
@@ -1016,7 +1179,7 @@ class Database:
         async with self._connection() as connection:
             await connection.execute("BEGIN IMMEDIATE")
             cursor = await connection.execute(
-                "SELECT a.*,s.stage_order,s.max_attempts,q.progression,q.title,p.status AS participant_status,"
+                "SELECT a.*,s.stage_order,s.max_attempts,q.progression,q.title,q.paused_at,p.status AS participant_status,"
                 "p.current_stage AS participant_current_stage "
                 "FROM answers a JOIN stages s ON s.id=a.stage_id JOIN quests q ON q.id=a.quest_id "
                 "JOIN quest_participants p ON p.quest_id=a.quest_id AND p.user_id=a.user_id "
@@ -1028,6 +1191,9 @@ class Database:
                 await connection.rollback()
                 return {"code": "not_pending"}
             item = dict(row)
+            if item["paused_at"]:
+                await connection.rollback()
+                return {"code": "paused", "quest_title": item["title"]}
             obsolete = int(item["participant_current_stage"]) > int(item["stage_order"])
             verdict = "correct" if accepted else "wrong"
             await connection.execute(
@@ -1115,7 +1281,8 @@ class Database:
                 "q.title,u.language FROM participant_stages ps JOIN stages s ON s.id=ps.stage_id "
                 "JOIN quests q ON q.id=ps.quest_id JOIN users u ON u.telegram_id=ps.user_id "
                 "JOIN quest_participants p ON p.quest_id=ps.quest_id AND p.user_id=ps.user_id "
-                "WHERE ps.status='open' AND p.status='active' AND s.time_limit_seconds>0 AND q.status='active'"
+                "WHERE ps.status='open' AND p.status='active' AND s.time_limit_seconds>0 "
+                "AND q.status='active' AND q.paused_at IS NULL"
             )
             rows = [dict(row) for row in await cursor.fetchall()]
         return [
@@ -1126,6 +1293,13 @@ class Database:
     async def expire_stage(self, quest_id: int, user_id: int, stage_id: int, now: str) -> bool:
         async with self._connection() as connection:
             await connection.execute("BEGIN IMMEDIATE")
+            cursor = await connection.execute(
+                "SELECT paused_at,status FROM quests WHERE id=?", (quest_id,)
+            )
+            quest = await cursor.fetchone()
+            if not quest or quest["status"] != "active" or quest["paused_at"]:
+                await connection.rollback()
+                return False
             cursor = await connection.execute(
                 "UPDATE participant_stages SET status='timeout',completed_at=? "
                 "WHERE quest_id=? AND user_id=? AND stage_id=? AND status='open'",
@@ -1183,15 +1357,7 @@ class Database:
 
     async def leaderboard(self, quest_id: int) -> list[dict[str, Any]]:
         async with self._connection() as connection:
-            cursor = await connection.execute(
-                "SELECT p.user_id,p.status,p.joined_at,p.completed_at,u.full_name,u.username,"
-                "COUNT(DISTINCT CASE WHEN ps.status='correct' THEN ps.stage_id END) AS solved "
-                "FROM quest_participants p JOIN users u ON u.telegram_id=p.user_id "
-                "LEFT JOIN participant_stages ps ON ps.quest_id=p.quest_id AND ps.user_id=p.user_id "
-                "WHERE p.quest_id=? GROUP BY p.quest_id,p.user_id "
-                "ORDER BY solved DESC,CASE WHEN p.completed_at IS NULL THEN 1 ELSE 0 END,p.completed_at,p.joined_at",
-                (quest_id,),
-            )
+            cursor = await connection.execute(QUEST_LEADERBOARD_QUERY, (quest_id,))
             return [dict(row) for row in await cursor.fetchall()]
 
     async def aggregate_leaderboard(
@@ -1236,7 +1402,8 @@ class Database:
                 await connection.rollback()
                 return False
             cursor = await connection.execute(
-                "UPDATE quests SET status='completed',completed_at=?,updated_at=? WHERE id=? AND status='active'",
+                "UPDATE quests SET status='completed',completed_at=?,updated_at=? "
+                "WHERE id=? AND status='active' AND paused_at IS NULL",
                 (now, now, quest_id),
             )
             if cursor.rowcount == 1:
@@ -1418,8 +1585,9 @@ class Database:
     async def get_ticket(self, ticket_id: int) -> dict[str, Any] | None:
         async with self._connection() as connection:
             cursor = await connection.execute(
-                "SELECT t.*,u.language,u.username,u.full_name FROM support_tickets t "
-                "JOIN users u ON u.telegram_id=t.user_id WHERE t.id=?",
+                "SELECT t.*,u.language,u.username,u.full_name,q.title AS quest_title,q.owner_id AS quest_owner_id "
+                "FROM support_tickets t JOIN users u ON u.telegram_id=t.user_id "
+                "LEFT JOIN quests q ON q.id=t.quest_id WHERE t.id=?",
                 (ticket_id,),
             )
             row = await cursor.fetchone()
@@ -1457,26 +1625,47 @@ class Database:
         async with self._connection() as connection:
             cursor = await connection.execute(
                 "SELECT q.id,q.title,q.owner_id FROM quests q JOIN quest_participants p ON p.quest_id=q.id "
-                "WHERE p.user_id=? ORDER BY p.joined_at DESC LIMIT 30",
+                "WHERE p.user_id=? AND p.status!='blocked' ORDER BY p.joined_at DESC LIMIT 30",
                 (user_id,),
             )
             return [dict(row) for row in await cursor.fetchall()]
 
     async def statistics(self) -> dict[str, int]:
-        queries = {
-            "users": "SELECT COUNT(*) AS n FROM users",
-            "admins": "SELECT COUNT(*) AS n FROM admins",
-            "quests": "SELECT COUNT(*) AS n FROM quests",
-            "active": "SELECT COUNT(*) AS n FROM quests WHERE status='active'",
-            "completed": "SELECT COUNT(*) AS n FROM quests WHERE status='completed'",
-            "participants": "SELECT COUNT(*) AS n FROM quest_participants",
+        """Collect user activity, language, quest, and participation metrics."""
+        now = _as_utc_datetime(utc_now())
+        cutoff_7d = (now - timedelta(days=7)).isoformat()
+        cutoff_30d = (now - timedelta(days=30)).isoformat()
+        queries: dict[str, tuple[str, tuple[Any, ...]]] = {
+            "users": ("SELECT COUNT(*) AS n FROM users", ()),
+            "new_users_30d": ("SELECT COUNT(*) AS n FROM users WHERE created_at>=?", (cutoff_30d,)),
+            "active_users_7d": ("SELECT COUNT(*) AS n FROM users WHERE last_seen_at>=?", (cutoff_7d,)),
+            "active_users_30d": ("SELECT COUNT(*) AS n FROM users WHERE last_seen_at>=?", (cutoff_30d,)),
+            "language_uz": ("SELECT COUNT(*) AS n FROM users WHERE language='uz'", ()),
+            "language_ru": ("SELECT COUNT(*) AS n FROM users WHERE language='ru'", ()),
+            "language_en": ("SELECT COUNT(*) AS n FROM users WHERE language='en'", ()),
+            "admins": ("SELECT COUNT(*) AS n FROM admins", ()),
+            "quests": ("SELECT COUNT(*) AS n FROM quests", ()),
+            "active": ("SELECT COUNT(*) AS n FROM quests WHERE status='active' AND paused_at IS NULL", ()),
+            "paused": ("SELECT COUNT(*) AS n FROM quests WHERE paused_at IS NOT NULL", ()),
+            "completed": ("SELECT COUNT(*) AS n FROM quests WHERE completed_at IS NOT NULL", ()),
+            "participants": ("SELECT COUNT(*) AS n FROM quest_participants WHERE status!='blocked'", ()),
+            "participating_users": (
+                "SELECT COUNT(DISTINCT user_id) AS n FROM quest_participants WHERE status!='blocked'", ()
+            ),
+            "completed_participations": (
+                "SELECT COUNT(*) AS n FROM quest_participants WHERE status='completed'", ()
+            ),
         }
         result: dict[str, int] = {}
         async with self._connection() as connection:
-            for key, query in queries.items():
-                cursor = await connection.execute(query)
+            for key, (query, parameters) in queries.items():
+                cursor = await connection.execute(query, parameters)
                 row = await cursor.fetchone()
-                result[key] = int(row["n"])
+                result[key] = int(row["n"] or 0)
+        result["participation_completion_percent"] = (
+            round(100 * result["completed_participations"] / result["participants"])
+            if result["participants"] else 0
+        )
         return result
 
     async def latest_logs(self, limit: int = 20) -> list[dict[str, Any]]:

@@ -11,10 +11,12 @@ from aiogram.types import (
     InlineKeyboardMarkup,
     Message,
 )
+from aiogram.utils.formatting import Bold, Text
 
 from ..database import Database
 from ..keyboards import button, support_start_keyboard, ticket_reply_keyboard
 from ..localization import tr
+from ..presentation import support_history, support_notification, support_reply
 from ..states import SupportFlow
 
 router = Router(name="support")
@@ -45,9 +47,21 @@ async def _notify_admins(message: Message, db: Database, ticket_id: int, text: s
     sender_name = user.get("full_name") or user.get("username") or str(ticket["user_id"])
     for admin_id in await db.support_admin_recipients(ticket_id):
         language = await db.get_language(admin_id)
-        notice = tr(language, "support_notification", ticket=ticket_id, user=sender_name, message=text)
+        if ticket.get("target_admin_id"):
+            source = tr(
+                language,
+                "support_source_quest_admin",
+                quest=ticket.get("quest_title") or "—",
+            )
+        else:
+            source = tr(language, "support_source_superadmin")
+        notice = support_notification(ticket_id, source, sender_name, text)
         try:
-            await message.bot.send_message(admin_id, notice, reply_markup=ticket_reply_keyboard(language, ticket_id))
+            await message.bot.send_message(
+                admin_id,
+                **notice.as_kwargs(),
+                reply_markup=ticket_reply_keyboard(language, ticket_id),
+            )
         except TelegramAPIError:
             continue
 
@@ -129,7 +143,7 @@ async def create_ticket_message(message: Message, state: FSMContext, db: Databas
     )
     await db.log_action(message.from_user.id, "support.ticket.created", "support_ticket", ticket_id)
     await state.clear()
-    await message.answer(tr(language, "support_created"), reply_markup=ticket_reply_keyboard(language, ticket_id))
+    await message.answer(tr(language, "support_created"))
     await _notify_admins(message, db, ticket_id, text)
 
 
@@ -162,16 +176,41 @@ async def show_ticket_history(callback: CallbackQuery, db: Database) -> None:
         await callback.answer(tr(language, "quest_not_found"), show_alert=True)
         return
     messages = await db.ticket_messages(ticket_id)
-    content = "\n\n".join(f"{item['sender_id']}: {item['message']}" for item in messages)
-    text = tr(
+    labelled_messages: list[tuple[str, str]] = []
+    for item in messages:
+        sender_id = int(item["sender_id"])
+        if sender_id == int(ticket["user_id"]):
+            sender_label = tr(language, "support_you")
+        elif ticket.get("target_admin_id") and sender_id == int(ticket["target_admin_id"]):
+            sender_label = tr(
+                language,
+                "support_source_quest_admin",
+                quest=ticket.get("quest_title") or "—",
+            )
+        elif await db.get_role(sender_id) == "superadmin":
+            sender_label = tr(language, "support_source_superadmin")
+        else:
+            sender_label = tr(language, "role_admin")
+        message_text = str(item["message"])
+        if len(message_text) > 250:
+            message_text = message_text[:247] + "..."
+        labelled_messages.append((sender_label, message_text))
+    labelled_messages = labelled_messages[-10:]
+    header = tr(
         language,
         "ticket_history",
         ticket=ticket_id,
         status=tr(language, "ticket_open" if ticket["status"] == "open" else "ticket_closed"),
-        messages=content or "—",
-    )
+        messages="",
+    ).strip()
+    history = support_history(labelled_messages)
+    if not labelled_messages:
+        history = Text("—")
     if callback.message:
-        await callback.message.edit_text(text[:4000], reply_markup=ticket_reply_keyboard(language, ticket_id))
+        await callback.message.edit_text(
+            **Text(Bold(header), "\n\n", history).as_kwargs(),
+            reply_markup=ticket_reply_keyboard(language, ticket_id),
+        )
     await callback.answer()
 
 
@@ -241,12 +280,20 @@ async def admin_ticket_reply(message: Message, state: FSMContext, db: Database) 
         return
     await state.clear()
     user_language = ticket["language"]
+    if ticket.get("target_admin_id") and int(ticket["target_admin_id"]) == message.from_user.id:
+        source = tr(
+            user_language,
+            "support_source_quest_admin",
+            quest=ticket.get("quest_title") or "—",
+        )
+    else:
+        source = tr(user_language, "support_source_superadmin")
     try:
         await message.bot.send_message(
             int(ticket["user_id"]),
-            tr(user_language, "support_reply_to_user", ticket=ticket_id, message=text),
+            **support_reply(source, text, ticket_id).as_kwargs(),
             reply_markup=ticket_reply_keyboard(user_language, ticket_id),
         )
     except TelegramAPIError:
         pass
-    await message.answer(tr(language, "support_created"))
+    await message.answer(tr(language, "support_admin_reply_sent"))

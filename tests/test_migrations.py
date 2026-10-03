@@ -10,11 +10,14 @@ from quest_bot.database import SCHEMA, Database
 
 
 class DatabaseMigrationTests(unittest.IsolatedAsyncioTestCase):
-    async def test_existing_sqlite_schema_gets_archive_reference_columns(self) -> None:
+    async def test_existing_sqlite_schema_gets_archive_cover_and_pause_columns(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "old.sqlite3"
-            old_schema = SCHEMA.replace(
-                "    source_chat_id INTEGER,\n    source_message_id INTEGER,\n", ""
+            old_schema = (
+                SCHEMA.replace("    source_chat_id INTEGER,\n    source_message_id INTEGER,\n", "")
+                .replace("    cover_chat_id INTEGER,\n", "")
+                .replace("    cover_message_id INTEGER,\n", "")
+                .replace("    paused_at TEXT,\n", "")
             )
             async with aiosqlite.connect(path) as connection:
                 await connection.executescript(old_schema)
@@ -51,6 +54,9 @@ class DatabaseMigrationTests(unittest.IsolatedAsyncioTestCase):
             stage = await db.get_stage(quest_id, 1)
             self.assertEqual(stage["source_chat_id"], -1001234567890)
             self.assertEqual(stage["source_message_id"], 42)
+            quest = await db.get_quest(quest_id)
+            self.assertIsNone(quest["cover_chat_id"])
+            self.assertIsNone(quest["paused_at"])
             await db.close()
 
 

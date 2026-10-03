@@ -18,8 +18,14 @@ class FakeBot:
 
 
 class FakeDatabase:
+    def __init__(self) -> None:
+        self.seen_users: list[tuple[int, str | None, str]] = []
+
     async def get_language(self, user_id: int) -> str:
         return "en"
+
+    async def ensure_user(self, user_id: int, username: str | None, full_name: str) -> None:
+        self.seen_users.append((user_id, username, full_name))
 
 
 class ErrorReportingTests(unittest.IsolatedAsyncioTestCase):
@@ -47,6 +53,37 @@ class ErrorReportingTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("update_id=17", record)
         self.assertIn("user_id=41", record)
         self.assertNotIn("private user content", record)
+
+    async def test_activity_touch_updates_private_user_but_ignores_group_messages(self) -> None:
+        middleware = UpdateLoggingMiddleware()
+        database = FakeDatabase()
+
+        for chat_type, chat_id in (("private", 41), ("group", -100)):
+            message = Message(
+                message_id=3,
+                date=datetime.now(timezone.utc),
+                chat=Chat(id=chat_id, type=chat_type),
+                from_user=User(
+                    id=41,
+                    is_bot=False,
+                    first_name="Test",
+                    last_name="Player",
+                    username="tester",
+                ),
+                text="private user content",
+            )
+            update = Update(update_id=17, message=message)
+
+            async def next_handler(event, data):
+                return "handled"
+
+            await middleware(
+                next_handler,
+                update,
+                {"event_update": update, "db": database},
+            )
+
+        self.assertEqual(database.seen_users, [(41, "tester", "Test Player")])
 
     async def test_unhandled_private_update_notifies_user_and_redacted_superadmin_report(
         self,

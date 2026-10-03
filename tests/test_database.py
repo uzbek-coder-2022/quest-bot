@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 
 from quest_bot.database import Database, utc_now
+from quest_bot.localization import tr
 
 
 class DatabaseFlowTests(unittest.IsolatedAsyncioTestCase):
@@ -19,7 +20,9 @@ class DatabaseFlowTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self) -> None:
         self.temp_dir.cleanup()
 
-    async def create_quest(self, answer_mode: str = "auto", attempts: int = 2) -> int:
+    async def create_quest(
+        self, answer_mode: str = "auto", attempts: int = 2, time_limit: int = 0
+    ) -> int:
         quest = {
             "title": "Test quest",
             "description": "Description",
@@ -36,7 +39,7 @@ class DatabaseFlowTests(unittest.IsolatedAsyncioTestCase):
                 "answer_mode": answer_mode,
                 "correct_answer": "Exact",
                 "max_attempts": attempts,
-                "time_limit_seconds": 0,
+                "time_limit_seconds": time_limit,
                 "starts_at": self.start_at,
             },
             {
@@ -147,6 +150,228 @@ class DatabaseFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(participant["status"], "active")
         self.assertEqual(participant["current_stage"], 2)
 
+    async def test_pausing_freezes_stage_timer_and_shifts_every_deadline_on_resume(self) -> None:
+        quest_id = await self.create_quest(time_limit=1200)
+        await self.db.set_quest_status(quest_id, "active")
+        await self.db.join_quest(quest_id, 20, None, "2026-10-01T00:00:00+00:00")
+        stage = await self.db.get_stage(quest_id, 1)
+        self.assertTrue(
+            await self.db.activate_stage_for_participant(
+                quest_id, 20, stage, "2026-10-01T00:10:00+00:00"
+            )
+        )
+
+        paused_at = "2026-10-01T00:20:00+00:00"
+        self.assertTrue(await self.db.pause_quest(quest_id, 1, paused_at))
+        self.assertFalse(await self.db.pause_quest(quest_id, 1, "2026-10-01T00:21:00+00:00"))
+        self.assertEqual(await self.db.list_active_quests(), [])
+        self.assertEqual(await self.db.timed_out_sessions("2026-10-01T01:00:00+00:00"), [])
+        self.assertFalse(
+            await self.db.expire_stage(quest_id, 20, int(stage["id"]), "2026-10-01T01:00:00+00:00")
+        )
+        answer = await self.db.submit_answer(
+            quest_id, 20, "Exact", "2026-10-01T01:00:00+00:00"
+        )
+        self.assertEqual(answer["code"], "paused")
+        await self.db.ensure_user(21, "next_player", "Next Player")
+        joined = await self.db.join_quest(
+            quest_id, 21, None, "2026-10-01T01:00:00+00:00"
+        )
+        self.assertEqual(joined["code"], "paused")
+
+        resumed_at = "2026-10-01T01:20:00+00:00"
+        self.assertEqual(await self.db.resume_quest(quest_id, 1, resumed_at), 3600)
+        self.assertIsNone(await self.db.resume_quest(quest_id, 1, resumed_at))
+        quest = await self.db.get_quest(quest_id)
+        stage = await self.db.get_stage(quest_id, 1)
+        self.assertEqual(quest["start_at"], "2026-10-01T01:00:00+00:00")
+        self.assertEqual(stage["starts_at"], "2026-10-01T01:00:00+00:00")
+        async with self.db._connection() as connection:
+            cursor = await connection.execute(
+                "SELECT started_at FROM participant_stages WHERE quest_id=? AND user_id=20 AND stage_id=?",
+                (quest_id, stage["id"]),
+            )
+            session = await cursor.fetchone()
+        self.assertEqual(session["started_at"], "2026-10-01T01:10:00+00:00")
+        self.assertEqual(len(await self.db.list_active_quests()), 1)
+        self.assertEqual(await self.db.timed_out_sessions("2026-10-01T01:25:00+00:00"), [])
+        self.assertEqual(len(await self.db.timed_out_sessions("2026-10-01T01:31:00+00:00")), 1)
+
+    async def test_pause_shifts_pending_review_timer_before_rejection_reopens_stage(self) -> None:
+        quest_id = await self.create_quest(answer_mode="manual", time_limit=1200)
+        await self.db.set_quest_status(quest_id, "active")
+        await self.db.join_quest(quest_id, 20, None, "2026-10-01T00:00:00+00:00")
+        stage = await self.db.get_stage(quest_id, 1)
+        self.assertTrue(
+            await self.db.activate_stage_for_participant(
+                quest_id, 20, stage, "2026-10-01T00:10:00+00:00"
+            )
+        )
+        answer = await self.db.submit_answer(
+            quest_id, 20, "needs review", "2026-10-01T00:15:00+00:00"
+        )
+        self.assertEqual(answer["code"], "pending")
+        self.assertTrue(await self.db.pause_quest(quest_id, 1, "2026-10-01T00:20:00+00:00"))
+        paused_review = await self.db.review_answer(
+            answer["answer_id"], 1, False, "2026-10-01T01:00:00+00:00"
+        )
+        self.assertEqual(paused_review["code"], "paused")
+
+        self.assertEqual(
+            await self.db.resume_quest(quest_id, 1, "2026-10-01T01:20:00+00:00"),
+            3600,
+        )
+        reviewed = await self.db.review_answer(
+            answer["answer_id"], 1, False, "2026-10-01T01:21:00+00:00"
+        )
+        self.assertEqual(reviewed["code"], "reviewed")
+        self.assertEqual(reviewed["exhausted"], False)
+        self.assertEqual(await self.db.timed_out_sessions("2026-10-01T01:25:00+00:00"), [])
+        self.assertEqual(len(await self.db.timed_out_sessions("2026-10-01T01:31:00+00:00")), 1)
+
+    async def test_quest_cover_is_persisted_as_telegram_message_references(self) -> None:
+        quest = {
+            "title": "Covered quest",
+            "description": "An archived cover photo",
+            "visibility": "public",
+            "progression": "immediate",
+            "start_at": self.start_at,
+            "duration_seconds": 0,
+            "chat_id": None,
+            "cover_chat_id": -1001234567890,
+            "cover_message_id": 4321,
+            "invite_token": "cover-reference-token",
+        }
+        quest_id = await self.db.create_quest(
+            1,
+            quest,
+            [{
+                "question": "Question",
+                "answer_mode": "auto",
+                "correct_answer": "Answer",
+                "max_attempts": 1,
+                "time_limit_seconds": 0,
+                "starts_at": self.start_at,
+            }],
+        )
+        saved = await self.db.get_quest(quest_id)
+        self.assertEqual(saved["cover_chat_id"], -1001234567890)
+        self.assertEqual(saved["cover_message_id"], 4321)
+
+    async def test_paused_scheduled_quest_is_not_due_and_start_is_shifted(self) -> None:
+        quest = {
+            "title": "Paused schedule",
+            "description": "",
+            "visibility": "public",
+            "progression": "scheduled",
+            "start_at": "2030-01-01T00:00:00+00:00",
+            "duration_seconds": 3600,
+            "chat_id": None,
+            "invite_token": "pause-scheduled-token",
+        }
+        stages = [{
+            "question": "Question",
+            "answer_mode": "auto",
+            "correct_answer": "Answer",
+            "max_attempts": 1,
+            "time_limit_seconds": 0,
+            "starts_at": "2030-01-01T00:30:00+00:00",
+        }]
+        quest_id = await self.db.create_quest(1, quest, stages)
+        self.assertTrue(await self.db.pause_quest(quest_id, 1, "2029-12-31T23:00:00+00:00"))
+        self.assertEqual(await self.db.list_scheduled_quests_due("2030-01-02T00:00:00+00:00"), [])
+        self.assertEqual(
+            await self.db.resume_quest(quest_id, 1, "2030-01-01T01:00:00+00:00"),
+            7200,
+        )
+        quest = await self.db.get_quest(quest_id)
+        stage = await self.db.get_stage(quest_id, 1)
+        self.assertEqual(quest["start_at"], "2030-01-01T02:00:00+00:00")
+        self.assertEqual(stage["starts_at"], "2030-01-01T02:30:00+00:00")
+        self.assertEqual(await self.db.list_scheduled_quests_due("2030-01-01T01:59:59+00:00"), [])
+        self.assertEqual(len(await self.db.list_scheduled_quests_due("2030-01-01T02:00:00+00:00")), 1)
+
+    async def test_joined_quest_list_includes_private_quests_and_counts_participants(self) -> None:
+        quest = {
+            "title": "Private joined quest",
+            "description": "Only participants see this",
+            "visibility": "private",
+            "progression": "scheduled",
+            "start_at": self.start_at,
+            "duration_seconds": 0,
+            "chat_id": None,
+            "invite_token": "private-list-token",
+        }
+        quest_id = await self.db.create_quest(
+            1,
+            quest,
+            [{
+                "question": "Question",
+                "answer_mode": "auto",
+                "correct_answer": "Answer",
+                "max_attempts": 1,
+                "time_limit_seconds": 0,
+                "starts_at": self.start_at,
+            }],
+        )
+        self.assertEqual(
+            (await self.db.join_quest(quest_id, 20, "private-list-token", utc_now()))["code"],
+            "joined",
+        )
+        listed = await self.db.list_user_quests(20)
+        self.assertEqual([item["id"] for item in listed], [quest_id])
+        self.assertEqual(listed[0]["visibility"], "private")
+        self.assertEqual(await self.db.participant_count(quest_id), 1)
+        await self.db.set_participant_block(quest_id, 20, "blocked", True)
+        self.assertEqual(await self.db.list_user_quests(20), [])
+        self.assertEqual(await self.db.participant_count(quest_id), 0)
+
+    async def test_per_quest_leaderboard_returns_grouped_user_details(self) -> None:
+        quest_id = await self.create_quest()
+        await self.activate_and_join(quest_id)
+        result = await self.db.submit_answer(quest_id, 20, "Exact", utc_now())
+        self.assertEqual(result["code"], "correct")
+        rows = await self.db.leaderboard(quest_id)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["full_name"], "Test Player")
+        self.assertEqual(rows[0]["username"], "player")
+        self.assertEqual(rows[0]["solved"], 1)
+
+    async def test_statistics_include_activity_languages_and_completion_metrics(self) -> None:
+        await self.db.ensure_user(21, "old_user", "Old User")
+        async with self.db._connection() as connection:
+            await connection.execute(
+                "UPDATE users SET created_at=?,last_seen_at=?,language='ru' WHERE telegram_id=21",
+                ("2026-01-01T00:00:00+00:00", "2026-01-01T00:00:00+00:00"),
+            )
+            await connection.commit()
+        quest_id = await self.create_quest()
+        await self.db.set_quest_status(quest_id, "active")
+        await self.db.join_quest(quest_id, 20, None, utc_now())
+        await self.db.set_participant_block(quest_id, 20, None, False)
+        async with self.db._connection() as connection:
+            await connection.execute(
+                "UPDATE quest_participants SET status='completed' WHERE quest_id=? AND user_id=20",
+                (quest_id,),
+            )
+            await connection.commit()
+
+        stats = await self.db.statistics()
+        self.assertEqual(stats["users"], 3)
+        self.assertEqual(stats["new_users_30d"], 2)
+        self.assertEqual(stats["paused"], 0)
+        self.assertEqual(stats["active_users_7d"], 2)
+        self.assertEqual(stats["active_users_30d"], 2)
+        self.assertEqual(stats["language_uz"], 2)
+        self.assertEqual(stats["language_ru"], 1)
+        self.assertEqual(stats["participants"], 1)
+        self.assertEqual(stats["participating_users"], 1)
+        self.assertEqual(stats["completed_participations"], 1)
+        self.assertEqual(stats["participation_completion_percent"], 100)
+        rendered = tr("en", "stats", **stats)
+        self.assertNotIn("{paused}", rendered)
+        self.assertNotIn("{participation_completion_percent}", rendered)
+
     async def test_private_quest_requires_invite_token(self) -> None:
         quest = {
             "title": "Private quest",
@@ -171,6 +396,7 @@ class DatabaseFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(denied["code"], "invalid_token")
         allowed = await self.db.join_quest(quest_id, 20, "private-token", utc_now())
         self.assertEqual(allowed["code"], "joined")
+        self.assertEqual((await self.db.list_user_quests(20))[0]["id"], quest_id)
 
     async def test_stage_timeout_is_checked_when_answer_arrives(self) -> None:
         quest = {

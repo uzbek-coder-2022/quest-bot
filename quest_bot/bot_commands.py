@@ -20,6 +20,7 @@ PUBLIC_COMMANDS = (
     BotCommand(command="start", description="Open the bot / Bosh menyu"),
     BotCommand(command="menu", description="Main menu"),
     BotCommand(command="quests", description="Browse public quests"),
+    BotCommand(command="myquests", description="Show quests you have joined"),
     BotCommand(command="support", description="Contact an administrator"),
     BotCommand(command="language", description="Change interface language"),
     BotCommand(command="help", description="Usage guide"),

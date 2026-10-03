@@ -10,15 +10,15 @@ The first release runs entirely inside Telegram. Production deployments use Post
 
 ### A. Participant experience
 - `/start`, the main menu, `/help`, and language selection.
-- Browse public quests by status: scheduled, active, completed, or archived.
+- Browse public quests by status: scheduled, active, completed, or archived; revisit joined quests, including private quests, from a personal quest list.
 - Pagination size configurable by a superadmin: 5, 10, 20, or 50 records.
-- Join public quests in the bot; join private quests through a bot deep link.
+- Join public quests in the bot and private quests through a bot deep link. Joining always requires explicit confirmation after a preview showing title, description, stage count, start time, optional cover photo, and participant count.
 - Submit answers in a private chat with the bot.
 - Preserve each quest's leaderboard, ordered by correctly solved stages, completion time, and then join time.
 - Aggregate rankings across public quests for the current calendar week, month, and year in `Asia/Tashkent`. Each correctly solved stage earns one point; break ties by the number of public quests completed in that period. The week begins Monday; months and years begin on their first calendar day.
 
 ### B. Quest creation and participation
-- Quest fields: title, description, public/private visibility, start time, overall duration, number of stages, and the chat in which questions are published.
+- Quest fields: title, description, public/private visibility, optional cover photo, start time, overall duration, number of stages, and the chat in which questions are published. Copy cover photos into the configured private archive channel and retain Telegram chat/message references only; do not download media files.
 - Each stage has a text, photo, or video question, automatic or manual answer checking, an attempt limit, and an optional time limit. Text/media questions are copied into a dedicated private Telegram archive channel; the database stores the question text/caption, answer metadata, and Telegram chat/message references, never media files.
 - Questions and their media can be edited before the quest starts. Once active, only stages not yet delivered to participants or announced in a quest chat can be edited. Delivered stages remain unchanged. Automatic-answer stages also allow the correct answer to be corrected while the stage remains unreleased.
 - Stage progression modes:
@@ -28,16 +28,17 @@ The first release runs entirely inside Telegram. Production deployments use Post
 - Answers requiring manual review are sent with review controls to the quest owner and superadmins.
 - When a participant exhausts the attempt limit or a stage time limit, that participant is marked `failed` for the quest.
 - A quest ends when its overall duration expires, an admin finishes it, or all existing participants reach a terminal status. A quest with no participants remains open until its overall duration expires or an admin finishes it.
+- An authorized quest admin can pause or resume a scheduled or active quest. While paused, the scheduler must not start quests, release stages, expire participants, or complete the quest. On resume, shift the quest start/deadline, all stage schedules, and open participant-stage timers by the paused duration. Joining, answering, and manual review are held while paused.
 
 ### C. Admins and superadmins
 - Superadmins are configured by Telegram user ID in `.env`; each superadmin must open the bot with `/start`.
 - `QUESTION_ARCHIVE_CHANNEL_ID` is configured in `.env`. The bot must be an administrator with posting permission in that private channel.
 - A superadmin can add or remove admins by numeric Telegram user ID.
 - An admin can manage only quests they created; superadmins can view and manage every quest.
-- Quest management includes leaderboards, participants, manually reviewed answers, and finishing a quest.
+- Quest management includes leaderboards, participants, manually reviewed answers, pausing/resuming, question editing, and finishing a quest. Admin subflows provide navigation back to the admin panel.
 - An admin can block a participant from a specific quest, optionally provide a reason, and notify the participant. The block can also be reversed.
 - Only superadmins can archive and unarchive quests.
-- The superadmin panel includes admin management, all quests, statistics, audit logs, pagination settings, managed group/channels, and ZIP data export.
+- The superadmin panel includes admin management, all quests, audit logs, pagination settings, managed group/channels, and ZIP data export. Statistics include total users, new users in the last 30 days, 7-/30-day active users, language distribution, quest counts, participation counts, and completion metrics.
 
 ### D. Group and channel integration
 - Superadmins register managed chats. A quest can publish to one registered group/channel or run in the bot only.
@@ -53,7 +54,7 @@ The first release runs entirely inside Telegram. Production deployments use Post
 
 ### F. Support tickets, audit, and runtime logs
 - A user can open a support conversation with a superadmin or an admin of a quest they joined.
-- Messages in a ticket are relayed in both directions through the bot.
+- Messages in a ticket are relayed in both directions through the bot. Replies identify the specific quest administrator or superadmin and ticket; user-facing sent acknowledgements omit reply buttons, while admin notifications keep an inline reply action.
 - Important admin actions are written to the audit log. Superadmins can view recent entries and export data.
 - Runtime activity is written to a rotating `log` file and errors with tracebacks to `log_err`; systemd also captures console logs.
 - Unhandled Telegram update errors are reported to configured superadmins with safe update identifiers and a redacted traceback. The affected user receives a localized generic notice in a private chat. Expected validation failures are not treated as software errors.
@@ -62,7 +63,8 @@ The first release runs entirely inside Telegram. Production deployments use Post
 
 | Action | Participant | Admin | Superadmin |
 |---|---:|---:|---:|
-| Browse and join public quests | Yes | Yes | Yes |
+| Browse and join public quests with explicit confirmation | Yes | Yes | Yes |
+| View private quests already joined | Yes | Yes | Yes |
 | Create a quest | No | Yes | Yes |
 | Manage a quest | No | Own quests only | All quests |
 | Review manual answers | No | Own quests only | All quests |
@@ -72,7 +74,7 @@ The first release runs entirely inside Telegram. Production deployments use Post
 
 ## 4. Status and time rules
 
-- Quest lifecycle: `scheduled` → `active` → `completed`; a superadmin can move a quest to `archived` or unarchive it.
+- Quest lifecycle: `scheduled` → `active` → `completed`; a superadmin can move a quest to `archived` or unarchive it. Pause is stored separately from lifecycle status, preserving whether the quest was scheduled or active.
 - User-entered times use `Asia/Tashkent`; the database stores UTC ISO 8601 timestamps.
 - Overall and stage time limits are entered in minutes; `0` means no limit.
 - In scheduled mode, stage start times must be strictly increasing and, when an overall duration is set, must not extend past the quest end time.

@@ -5,17 +5,19 @@ A Telegram quest bot built with aiogram 3. The interface is available in Uzbek, 
 ## Features
 
 - Only admins and superadmins can create quests.
-- Configure quest title and description, public/private visibility, start time, stages, and overall duration.
+- Configure quest title and description, public/private visibility, optional cover photo, start time, stages, and overall duration.
 - Set a question, attempt limit, time limit, and automatic or admin review for each stage.
 - Choose immediate progression after a correct answer or scheduled stage releases.
-- Browse and join public quests, filter by status, and view per-quest leaderboards.
+- Browse public quests and view all quests a user has joined, including private quests. Joining always requires a separate confirmation after a preview of the description, stage count, start time, cover photo (when present), and participant count.
 - View aggregate public-quest leaderboards for the current Tashkent calendar week, month, and year. Correctly solved stages earn one point; completed public quests break ties.
 - Edit question text/media and automatic answers before release. Once a quest is active, only undelivered stages remain editable.
-- Archive text, photo, and video questions in a private Telegram channel and deliver them with Telegram message copies; no media files are downloaded or stored in the database.
+- Archive text, photo, and video questions plus optional quest cover photos in a private Telegram channel, then deliver them with Telegram message copies; no media files are downloaded or stored in the database.
 - Invite users to private quests through a bot deep link.
 - Publish questions to a Telegram group or channel; participants always submit answers privately to the bot.
+- Pause and resume scheduled or active quests. While paused, the scheduler does not advance that quest; quest schedules, overall deadlines, and open stage timers all shift by the pause duration.
 - Block a participant from a particular quest, optionally with a reason and a notification.
-- Superadmin panel for admin management, all quests, archiving, statistics, audit logs, chat settings, pagination, and ZIP export.
+- Superadmin panel for admin management, all quests, archiving, user totals/new and active counts, language distribution, quest participation/completion metrics, audit logs, chat settings, pagination, and ZIP export.
+- Support replies identify whether they came from a specific quest administrator or a superadmin; sent acknowledgements do not show an unnecessary reply button, while admin notifications retain their reply action.
 - Private support conversations with superadmins or the admins of quests a user joined.
 
 See [`plan.md`](plan.md) for the complete requirements, behavior, and Telegram API limitations.
@@ -71,7 +73,7 @@ SERVICE_STOP_TIMEOUT_SECONDS=1800
 
 URL-encode reserved characters in the database username or password. For example, encode `@` as `%40`. For a hosted PostgreSQL provider, include its required SSL query parameters (commonly `?sslmode=require`). `DATABASE_URL` is required by `deploy.sh`; the application also supports a local SQLite fallback for development and tests by leaving `DATABASE_URL` empty and setting `DATABASE_PATH=data/quest_bot.sqlite3`.
 
-Create a dedicated **private Telegram channel** for question archives, add the bot as an administrator with permission to post messages, and set its numeric ID in `QUESTION_ARCHIVE_CHANNEL_ID`. The bot checks this configuration at startup. Questions are copied into the channel when created; the database stores the question text/caption, answer metadata, and archive chat/message IDs, not media files. At delivery, `copy_message` copies the archived post to the participant privately and, when configured, to the quest chat according to the existing progression rules. Media is never downloaded to the server or stored in the database.
+Create a dedicated **private Telegram channel** for question archives, add the bot as an administrator with permission to post messages, and set its numeric ID in `QUESTION_ARCHIVE_CHANNEL_ID`. The bot checks this configuration at startup. Questions and optional quest cover photos are copied into the channel when created; the database stores text, answer metadata, and archive chat/message IDs, not media files. At delivery, `copy_message` copies the archived post to the participant privately and, when configured, to the quest chat according to the existing progression rules. Media is never downloaded to the server or stored in the database.
 
 `BACKUP_UPLOAD_TIMEOUT_SECONDS` controls how long the bot waits while sending a backup; `SERVICE_STOP_TIMEOUT_SECONDS` controls how long systemd allows graceful shutdown and backup delivery. The bot keeps aiogram's default `https://api.telegram.org` base URL. Backup files are streamed from disk rather than loaded into memory.
 
@@ -138,7 +140,9 @@ Questions are published to the group/channel, but answers are sent privately to 
 - Open **Edit questions** from a scheduled or active quest to update an unreleased stage's text/media and (for automatic-answer stages) its correct answer. Before the quest starts, all stages can be edited. After it starts, delivered stages are locked and only unreleased stages can be changed.
 - The public **Leaderboards** menu provides current-week, current-month, and current-year aggregate rankings across public quests, alongside the existing individual-quest ratings. Period boundaries use `Asia/Tashkent` (Monday week start, local month/year start).
 - Only superadmins can archive quests.
-- After creating a private quest, the bot provides its join deep link. To retrieve it again, use **Get quest invite link** in the quest management view.
+- Before a user joins any quest, the bot shows a confirmation screen with the title, description, start time, stage count, participant count, and optional cover photo. After creating a private quest, the bot provides its join deep link. To retrieve it again, use **Get quest invite link** in the quest management view.
+- Users can open **My joined quests** (or `/myquests`) to revisit quests they participate in, including private quests.
+- Pause/resume is available in a quest's management view. Resuming shifts scheduled starts, the overall deadline, and active participant stage timers by the time spent paused. Admin subflows provide a direct return to the admin panel.
 - A participant in a quest attached to a chat receives an individual one-person invite link: scheduled-quest participants receive it after start-time cleanup, while participants joining an active quest receive it immediately. The **One-person chat invite** button can retrieve it again. The link is created with `member_limit=1` and no expiration. One stored link is reused for each participant.
 
 ## Time and answer rules
@@ -157,6 +161,7 @@ Questions are published to the group/channel, but answers are sent privately to 
 | `/start` | Open the bot or join through a quest invitation link | Everyone |
 | `/menu` | Open the main menu | Everyone |
 | `/quests` | Browse public quests | Everyone |
+| `/myquests` | Show quests you have joined | Everyone |
 | `/admin` | Open the admin panel | Registered bot admins in private chats |
 | `/support` | Contact a superadmin or quest admin | Everyone |
 | `/language` | Change the interface language | Everyone |
@@ -174,7 +179,7 @@ Run the test suite after installing the requirements:
 .venv/bin/python -m unittest discover -s tests -v
 ```
 
-The tests cover SQLite quest flows, PostgreSQL SQL/schema compatibility, private-quest tokens, answer attempts, manual review, role settings, and related rules. PostgreSQL integration should also be verified against the server configured in `.env` before launch.
+The tests cover SQLite quest flows, PostgreSQL SQL/schema compatibility, private-quest consent and viewing, archived cover references, pause/resume clock shifting, ratings, statistics, support attribution, answer attempts, manual review, role settings, and related rules. PostgreSQL integration should also be verified against the server configured in `.env` before launch.
 
 ## Security checklist
 

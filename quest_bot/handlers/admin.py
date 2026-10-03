@@ -12,14 +12,15 @@ from aiogram.types import (
     InlineKeyboardMarkup,
     Message,
 )
+from aiogram.utils.formatting import Bold, Text
 
 from ..bot_commands import clear_app_admin_commands, set_app_admin_commands
 from ..database import Database, utc_now
 from ..keyboards import (
+    admin_home_keyboard,
     admin_list_keyboard,
     admin_panel,
     button,
-    home_keyboard,
     manage_chat_keyboard,
     managed_chats_keyboard,
     page_sizes_keyboard,
@@ -31,16 +32,19 @@ from ..keyboards import (
 from ..localization import tr
 from ..services import answer_deep_link, send_stage_to_user
 from ..states import ModerationFlow, SuperadminFlow
-from ..utils import can_manage_quest, display_name, ensure_private_callback
+from ..utils import can_manage_quest, display_name, ensure_private_callback, safe_edit
 
 router = Router(name="admin")
 
 
 def _role_kb(language: str, quest_id: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[[
-        button(tr(language, "btn_confirm"), f"manage:finish-confirmed:{quest_id}"),
-        button(tr(language, "btn_cancel"), f"manage:quest:{quest_id}"),
-    ]])
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            button(tr(language, "btn_confirm"), f"manage:finish-confirmed:{quest_id}"),
+            button(tr(language, "btn_cancel"), f"manage:quest:{quest_id}"),
+        ],
+        [button(tr(language, "btn_admin_home"), "admin:home")],
+    ])
 
 
 def _chat_text(language: str, chat: dict) -> str:
@@ -88,7 +92,7 @@ async def admin_command(message: Message, db: Database) -> None:
 
 
 @router.callback_query(F.data == "admin:home")
-async def admin_home(callback: CallbackQuery, db: Database) -> None:
+async def admin_home(callback: CallbackQuery, db: Database, state: FSMContext) -> None:
     if not await ensure_private_callback(callback, db):
         return
     language = await db.get_language(callback.from_user.id)
@@ -96,8 +100,9 @@ async def admin_home(callback: CallbackQuery, db: Database) -> None:
     if role not in {"admin", "superadmin"}:
         await callback.answer(tr(language, "admin_only"), show_alert=True)
         return
+    await state.clear()
     if callback.message:
-        await callback.message.edit_text(tr(language, "admin_panel"), reply_markup=admin_panel(language, role))
+        await safe_edit(callback, tr(language, "admin_panel"), reply_markup=admin_panel(language, role))
     await callback.answer()
 
 
@@ -112,7 +117,7 @@ async def show_admins(callback: CallbackQuery, db: Database) -> None:
         for admin in admins
     )
     if callback.message:
-        await callback.message.edit_text(text, reply_markup=admin_list_keyboard(language, admins))
+        await safe_edit(callback, text, reply_markup=admin_list_keyboard(language, admins))
     await callback.answer()
 
 
@@ -123,7 +128,9 @@ async def add_admin_start(callback: CallbackQuery, state: FSMContext, db: Databa
     language = await db.get_language(callback.from_user.id)
     await state.set_state(SuperadminFlow.add_admin_id)
     if callback.message:
-        await callback.message.answer(tr(language, "ask_admin_id"))
+        await callback.message.answer(
+            tr(language, "ask_admin_id"), reply_markup=admin_home_keyboard(language)
+        )
     await callback.answer()
 
 
@@ -143,14 +150,14 @@ async def add_admin_id_received(message: Message, state: FSMContext, db: Databas
     if added:
         await set_app_admin_commands(message.bot, admin_id)
         await db.log_action(message.from_user.id, "admin.added", "admin", admin_id)
-        await message.answer(tr(language, "admin_added"))
+        await message.answer(tr(language, "admin_added"), reply_markup=admin_home_keyboard(language))
         try:
             target_language = await db.get_language(admin_id)
             await message.bot.send_message(admin_id, tr(target_language, "admin_panel"), reply_markup=admin_panel(target_language, "admin"))
         except TelegramAPIError:
             pass
     else:
-        await message.answer(tr(language, "admin_only"))
+        await message.answer(tr(language, "admin_only"), reply_markup=admin_home_keyboard(language))
 
 
 @router.callback_query(F.data.startswith("super:removeadmin:"))
@@ -176,7 +183,7 @@ async def remove_admin_callback(callback: CallbackQuery, db: Database, bot: Bot)
             f"{tr(language, 'role_admin' if item['role'] == 'admin' else 'role_superadmin')} · {item.get('full_name') or item.get('username') or '—'} · {item['telegram_id']}"
             for item in admins
         )
-        await callback.message.edit_text(text, reply_markup=admin_list_keyboard(language, admins))
+        await safe_edit(callback, text, reply_markup=admin_list_keyboard(language, admins))
 
 
 @router.callback_query(F.data == "super:noop")
@@ -191,7 +198,11 @@ async def show_stats(callback: CallbackQuery, db: Database) -> None:
     language = await db.get_language(callback.from_user.id)
     stats = await db.statistics()
     if callback.message:
-        await callback.message.edit_text(tr(language, "stats", **stats), reply_markup=home_keyboard(language))
+        await safe_edit(
+            callback,
+            Text(Bold(tr(language, "btn_stats")), "\n\n", tr(language, "stats", **stats)),
+            reply_markup=admin_home_keyboard(language),
+        )
     await callback.answer()
 
 
@@ -210,7 +221,7 @@ async def show_logs(callback: CallbackQuery, db: Database) -> None:
             for row in rows
         )
     if callback.message:
-        await callback.message.edit_text(text[:4000], reply_markup=home_keyboard(language))
+        await safe_edit(callback, text[:4000], reply_markup=admin_home_keyboard(language))
     await callback.answer()
 
 
@@ -222,7 +233,7 @@ async def show_settings(callback: CallbackQuery, db: Database) -> None:
     size = int(await db.settings_get("page_size", "10"))
     text = tr(language, "settings_page_size", size=size)
     if callback.message:
-        await callback.message.edit_text(text, reply_markup=settings_keyboard(language, size))
+        await safe_edit(callback, text, reply_markup=settings_keyboard(language, size))
     await callback.answer()
 
 
@@ -233,7 +244,11 @@ async def choose_page_size(callback: CallbackQuery, db: Database) -> None:
     language = await db.get_language(callback.from_user.id)
     current = int(await db.settings_get("page_size", "10"))
     if callback.message:
-        await callback.message.edit_text(tr(language, "choose_page_size"), reply_markup=page_sizes_keyboard(language, current))
+        await safe_edit(
+            callback,
+            tr(language, "choose_page_size"),
+            reply_markup=page_sizes_keyboard(language, current),
+        )
     await callback.answer()
 
 
@@ -253,7 +268,11 @@ async def set_page_size(callback: CallbackQuery, db: Database) -> None:
     await db.log_action(callback.from_user.id, "settings.page_size.updated", "setting", "page_size", {"value": size})
     language = await db.get_language(callback.from_user.id)
     if callback.message:
-        await callback.message.edit_text(tr(language, "settings_page_size", size=size), reply_markup=settings_keyboard(language, size))
+        await safe_edit(
+            callback,
+            tr(language, "settings_page_size", size=size),
+            reply_markup=settings_keyboard(language, size),
+        )
     await callback.answer()
 
 
@@ -276,7 +295,7 @@ async def show_managed_chats(callback: CallbackQuery, db: Database) -> None:
     if not chats:
         text += f"\n\n{tr(language, 'chats_empty')}"
     if callback.message:
-        await callback.message.edit_text(text, reply_markup=managed_chats_keyboard(language, chats))
+        await safe_edit(callback, text, reply_markup=managed_chats_keyboard(language, chats))
     await callback.answer()
 
 
@@ -287,7 +306,9 @@ async def add_chat_start(callback: CallbackQuery, state: FSMContext, db: Databas
     language = await db.get_language(callback.from_user.id)
     await state.set_state(SuperadminFlow.add_chat_id)
     if callback.message:
-        await callback.message.answer(tr(language, "ask_chat_id"))
+        await callback.message.answer(
+            tr(language, "ask_chat_id"), reply_markup=admin_home_keyboard(language)
+        )
     await callback.answer()
 
 
@@ -312,7 +333,9 @@ async def add_chat_id_received(message: Message, state: FSMContext, db: Database
     await db.register_chat(chat_id, title, chat.type, message.from_user.id)
     await db.log_action(message.from_user.id, "managed_chat.added", "chat", chat_id, {"title": title})
     await state.clear()
-    await message.answer(tr(language, "chat_added", title=title))
+    await message.answer(
+        tr(language, "chat_added", title=title), reply_markup=admin_home_keyboard(language)
+    )
 
 
 @router.callback_query(F.data.startswith("super:chat:"))
@@ -330,7 +353,9 @@ async def show_chat(callback: CallbackQuery, db: Database) -> None:
         await callback.answer(tr(language, "chat_not_found"), show_alert=True)
         return
     if callback.message:
-        await callback.message.edit_text(_chat_text(language, chat), reply_markup=manage_chat_keyboard(language, chat))
+        await safe_edit(
+            callback, _chat_text(language, chat), reply_markup=manage_chat_keyboard(language, chat)
+        )
     await callback.answer()
 
 
@@ -362,7 +387,9 @@ async def toggle_cleanup(callback: CallbackQuery, db: Database, bot: Bot) -> Non
     await db.log_action(callback.from_user.id, "chat.cleanup.toggled", "chat", chat_id, {"enabled": value})
     chat = await db.get_managed_chat(chat_id)
     if callback.message and chat:
-        await callback.message.edit_text(_chat_text(language, chat), reply_markup=manage_chat_keyboard(language, chat))
+        await safe_edit(
+            callback, _chat_text(language, chat), reply_markup=manage_chat_keyboard(language, chat)
+        )
     await callback.answer()
 
 
@@ -381,7 +408,7 @@ async def show_whitelist(callback: CallbackQuery, db: Database) -> None:
     if not users:
         text += f"\n\n{tr(language, 'no_whitelist')}"
     if callback.message:
-        await callback.message.edit_text(text, reply_markup=whitelist_keyboard(language, chat_id, users))
+        await safe_edit(callback, text, reply_markup=whitelist_keyboard(language, chat_id, users))
     await callback.answer()
 
 
@@ -437,7 +464,11 @@ async def remove_whitelist(callback: CallbackQuery, db: Database) -> None:
     language = await db.get_language(callback.from_user.id)
     users = await db.chat_whitelist(chat_id)
     if callback.message:
-        await callback.message.edit_text(tr(language, "whitelist_title"), reply_markup=whitelist_keyboard(language, chat_id, users))
+        await safe_edit(
+            callback,
+            tr(language, "whitelist_title"),
+            reply_markup=whitelist_keyboard(language, chat_id, users),
+        )
     await callback.answer(tr(language, "whitelist_removed"))
 
 
@@ -465,7 +496,11 @@ async def show_participants(callback: CallbackQuery, db: Database) -> None:
         start = max(0, page) * 20
         text += f" ({start + 1}–{min(start + 20, len(participants))}/{len(participants)})"
     if callback.message:
-        await callback.message.edit_text(text, reply_markup=participants_keyboard(language, quest_id, participants, page, 20))
+        await safe_edit(
+            callback,
+            text,
+            reply_markup=participants_keyboard(language, quest_id, participants, page, 20),
+        )
     await callback.answer()
 
 
@@ -503,7 +538,10 @@ async def participant_moderation(callback: CallbackQuery, state: FSMContext, db:
     await state.update_data(moderation_quest_id=quest_id, moderation_user_id=user_id)
     await state.set_state(ModerationFlow.ban_reason)
     if callback.message:
-        kb = InlineKeyboardMarkup(inline_keyboard=[[button(tr(language, "btn_skip"), "moderation:skip")]])
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [button(tr(language, "btn_skip"), "moderation:skip")],
+            [button(tr(language, "btn_admin_home"), "admin:home")],
+        ])
         await callback.message.answer(tr(language, "ask_ban_reason"), reply_markup=kb)
     await callback.answer()
 
@@ -534,7 +572,10 @@ async def _apply_participant_ban(message: Message, state: FSMContext, db: Databa
         except TelegramAPIError:
             pass
     await state.clear()
-    await message.answer(tr(language, "blocked_success" if success else "error_generic"))
+    await message.answer(
+        tr(language, "blocked_success" if success else "error_generic"),
+        reply_markup=admin_home_keyboard(language),
+    )
 
 
 @router.message(ModerationFlow.ban_reason)
@@ -570,7 +611,9 @@ async def skip_ban_reason(callback: CallbackQuery, state: FSMContext, db: Databa
         pass
     await state.clear()
     if callback.message:
-        await callback.message.answer(tr(language, "blocked_success"))
+        await callback.message.answer(
+            tr(language, "blocked_success"), reply_markup=admin_home_keyboard(language)
+        )
     await callback.answer()
 
 
@@ -621,6 +664,9 @@ async def review_answer(callback: CallbackQuery, db: Database, bot: Bot) -> None
         return
     accepted = decision == "yes"
     result = await db.review_answer(answer_id, callback.from_user.id, accepted, utc_now())
+    if result["code"] == "paused":
+        await callback.answer(tr(language, "quest_paused_notice"), show_alert=True)
+        return
     if result["code"] != "reviewed":
         await callback.answer(tr(language, "no_pending"), show_alert=True)
         return
@@ -690,7 +736,9 @@ async def finish_quest_callback(callback: CallbackQuery, db: Database, bot: Bot)
         except TelegramAPIError:
             pass
     if callback.message:
-        await callback.message.edit_text(tr(language, "quest_finished"), reply_markup=home_keyboard(language))
+        await safe_edit(
+            callback, tr(language, "quest_finished"), reply_markup=admin_home_keyboard(language)
+        )
     await callback.answer()
 
 
@@ -719,7 +767,9 @@ async def archive_quest_callback(callback: CallbackQuery, db: Database, bot: Bot
         except TelegramAPIError:
             pass
     if callback.message:
-        await callback.message.edit_text(tr(language, "quest_archived"), reply_markup=home_keyboard(language))
+        await safe_edit(
+            callback, tr(language, "quest_archived"), reply_markup=admin_home_keyboard(language)
+        )
     await callback.answer()
 
 
@@ -747,7 +797,9 @@ async def unarchive_quest_callback(callback: CallbackQuery, db: Database) -> Non
     await db.set_quest_status(quest_id, status)
     await db.log_action(callback.from_user.id, "quest.unarchived", "quest", quest_id, {"status": status})
     if callback.message:
-        await callback.message.edit_text(tr(language, "quest_unarchived"), reply_markup=home_keyboard(language))
+        await safe_edit(
+            callback, tr(language, "quest_unarchived"), reply_markup=admin_home_keyboard(language)
+        )
     await callback.answer()
 
 

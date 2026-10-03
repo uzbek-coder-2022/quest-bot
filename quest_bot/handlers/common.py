@@ -3,18 +3,24 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
 
 from aiogram import Bot, F, Router
 from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
+from aiogram.utils.formatting import Bold, Italic, Text
 
 from ..config import Settings
 from ..database import Database
-from ..keyboards import language_keyboard, main_menu
+from ..keyboards import (
+    admin_home_keyboard,
+    join_confirmation_keyboard,
+    language_keyboard,
+    main_menu,
+)
 from ..localization import tr
-from ..services import get_chat_invite_for_participant, send_current_stage_after_join
+from ..presentation import copy_quest_cover, quest_preview
+from ..services import delete_archived_message
 
 router = Router(name="common")
 logger = logging.getLogger(__name__)
@@ -33,8 +39,8 @@ async def _join_from_payload(
     user = message.from_user
     if not user:
         return False
-    token = None
-    quest_id = None
+    token: str | None = None
+    quest_id: int | None = None
     try:
         if payload.startswith("play_"):
             quest_id = int(payload.removeprefix("play_"))
@@ -46,50 +52,53 @@ async def _join_from_payload(
     except (ValueError, TypeError):
         return False
 
-    joined = await db.join_quest(quest_id, user.id, token, datetime.now(timezone.utc).replace(microsecond=0).isoformat())
     language = await db.get_language(user.id)
-    code = joined["code"]
-    if code == "not_found":
-        await message.answer(tr(language, "quest_not_found"))
+    quest = (
+        await db.get_quest_by_token(quest_id, token)
+        if token is not None
+        else await db.get_quest(quest_id)
+    )
+    if not quest:
+        await message.answer(
+            tr(language, "private_link_invalid" if token is not None else "quest_not_found")
+        )
         return True
-    quest = joined.get("quest")
-    if code == "invalid_token":
+    if quest["visibility"] == "private" and token is None:
         await message.answer(tr(language, "private_link_invalid"))
         return True
-    if code == "globally_banned":
-        reason = joined.get("reason")
+
+    banned, reason = await db.is_globally_banned(user.id)
+    if banned:
         suffix = tr(language, "reason_line", reason=reason) if reason else ""
         await message.answer(tr(language, "global_blocked", reason=suffix))
         return True
-    if code == "blocked":
-        participant = await db.participant(quest_id, user.id)
-        reason = participant.get("ban_reason") if participant else None
-        suffix = tr(language, "reason_line", reason=reason) if reason else ""
-        await message.answer(tr(language, "blocked_notice", reason=suffix))
+    if quest.get("paused_at"):
+        await message.answer(tr(language, "quest_paused_notice"))
         return True
-    if code == "closed":
+    if quest["status"] not in {"scheduled", "active"}:
         await message.answer(tr(language, "join_closed"))
         return True
-    if code == "already_joined":
-        await message.answer(tr(language, "already_joined"))
+
+    participant = await db.participant(quest_id, user.id)
+    if participant:
+        if participant["status"] == "blocked":
+            suffix = (
+                tr(language, "reason_line", reason=participant.get("ban_reason"))
+                if participant.get("ban_reason")
+                else ""
+            )
+            await message.answer(tr(language, "blocked_notice", reason=suffix))
+        else:
+            await message.answer(tr(language, "already_joined"))
         return True
 
-    await message.answer(tr(language, "join_success"))
-    if quest and quest.get("chat_id"):
-        if quest["status"] == "active":
-            invite_link = await get_chat_invite_for_participant(bot, db, quest, user.id)
-            await message.answer(
-                tr(language, "invite_link_ready", link=invite_link)
-                if invite_link
-                else tr(language, "invite_unavailable")
-            )
-        else:
-            await message.answer(tr(language, "invite_at_start"))
-    if quest and quest["status"] == "active":
-        bot_identity = await bot.get_me()
-        await send_current_stage_after_join(bot, db, quest, user.id, bot_identity.username or "")
+    participant_count = await db.participant_count(quest_id)
+    await copy_quest_cover(bot, quest, user.id)
+    await message.answer(
+        **quest_preview(quest, language, participant_count).as_kwargs(),
+        reply_markup=join_confirmation_keyboard(language, quest_id, token),
+    )
     return True
-
 
 @router.message(CommandStart())
 async def start_command(
@@ -122,16 +131,35 @@ async def start_command(
             return
     role = await db.get_role(user.id)
     await message.answer(
-        f"{tr(language, 'welcome')}\n\n{tr(language, 'welcome_hint')}\n\n{tr(language, 'menu')}",
+        **Text(
+            Bold(tr(language, "welcome")),
+            "\n\n",
+            Italic(tr(language, "welcome_hint")),
+            "\n\n",
+            tr(language, "menu"),
+        ).as_kwargs(),
         reply_markup=main_menu(language, role),
     )
 
 
 @router.message(Command("cancel"))
 async def cancel_command(message: Message, db: Database, state: FSMContext) -> None:
+    data = await state.get_data()
     await state.clear()
+    if message.from_user:
+        for stage in [*data.get("stages", []), data.get("stage_draft", {})]:
+            await delete_archived_message(
+                message.bot, stage.get("source_chat_id"), stage.get("source_message_id")
+            )
+        await delete_archived_message(
+            message.bot, data.get("cover_chat_id"), data.get("cover_message_id")
+        )
     language = await db.get_language(message.from_user.id if message.from_user else 0)
-    await message.answer(tr(language, "cancelled"))
+    role = await db.get_role(message.from_user.id) if message.from_user else None
+    await message.answer(
+        tr(language, "cancelled"),
+        reply_markup=admin_home_keyboard(language) if role in {"admin", "superadmin"} else None,
+    )
 
 
 @router.message(Command("menu"))

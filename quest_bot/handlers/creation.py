@@ -14,8 +14,10 @@ from aiogram.types import CallbackQuery, Message
 from ..config import Settings
 from ..database import Database
 from ..keyboards import (
+    admin_home_keyboard,
     creation_answer_mode,
     creation_chat,
+    creation_cover_keyboard,
     creation_progression,
     creation_visibility,
 )
@@ -93,6 +95,8 @@ async def _save_stage_or_continue(message: Message, state: FSMContext, starts_at
         "start_at": data["start_at"],
         "duration_seconds": data["duration_seconds"],
         "chat_id": data.get("chat_id"),
+        "cover_chat_id": data.get("cover_chat_id"),
+        "cover_message_id": data.get("cover_message_id"),
         "invite_token": secrets.token_urlsafe(9),
     }
     created_id = await db.create_quest(message.from_user.id, quest_data, stages)
@@ -108,7 +112,7 @@ async def _save_stage_or_continue(message: Message, state: FSMContext, starts_at
         me = await bot.get_me()
         invite_url = answer_deep_link(me.username or "", {**quest_data, "id": created_id})
         result += f"\n\n{invite_url}"
-    await message.answer(result)
+    await message.answer(result, reply_markup=admin_home_keyboard(language))
 
 
 @router.callback_query(F.data == "create:start")
@@ -147,8 +151,48 @@ async def description_received(message: Message, state: FSMContext, db: Database
         await message.answer(tr(language, "invalid_text"))
         return
     await state.update_data(description=description)
+    await state.set_state(CreateQuest.cover_photo)
+    await message.answer(tr(language, "ask_cover_photo"), reply_markup=creation_cover_keyboard(language))
+
+
+@router.message(CreateQuest.cover_photo, F.photo)
+async def cover_photo_received(
+    message: Message, state: FSMContext, db: Database, settings: Settings
+) -> None:
+    if not message.from_user:
+        return
+    language = await db.get_language(message.from_user.id)
+    if not await _authorized(message, db):
+        await state.clear()
+        await message.answer(tr(language, "admin_only"))
+        return
+    try:
+        cover_chat_id, cover_message_id = await archive_question_message(
+            message.bot, message, settings.question_archive_channel_id
+        )
+    except TelegramAPIError:
+        logger.exception("Could not archive a quest cover from admin %s", message.from_user.id)
+        await message.answer(tr(language, "question_archive_failed"))
+        return
+    await state.update_data(cover_chat_id=cover_chat_id, cover_message_id=cover_message_id)
     await state.set_state(CreateQuest.visibility)
     await message.answer(tr(language, "ask_visibility"), reply_markup=creation_visibility(language))
+
+
+@router.message(CreateQuest.cover_photo)
+async def invalid_cover_photo(message: Message, db: Database) -> None:
+    language = await db.get_language(message.from_user.id if message.from_user else 0)
+    await message.answer(tr(language, "invalid_cover_photo"), reply_markup=creation_cover_keyboard(language))
+
+
+@router.callback_query(CreateQuest.cover_photo, F.data == "create:cover:skip")
+async def skip_cover_photo(callback: CallbackQuery, state: FSMContext, db: Database) -> None:
+    language = await db.get_language(callback.from_user.id)
+    await state.update_data(cover_chat_id=None, cover_message_id=None)
+    await state.set_state(CreateQuest.visibility)
+    if callback.message:
+        await callback.message.answer(tr(language, "ask_visibility"), reply_markup=creation_visibility(language))
+    await callback.answer()
 
 
 @router.callback_query(CreateQuest.visibility, F.data.startswith("create:visibility:"))
@@ -384,5 +428,8 @@ async def creation_cancel(callback: CallbackQuery, state: FSMContext, db: Databa
                 stage.get("source_chat_id"),
                 stage.get("source_message_id"),
             )
-        await callback.message.answer(tr(language, "cancelled"))
+        await delete_archived_message(
+            callback.message.bot, data.get("cover_chat_id"), data.get("cover_message_id")
+        )
+        await callback.message.answer(tr(language, "cancelled"), reply_markup=admin_home_keyboard(language))
     await callback.answer()
