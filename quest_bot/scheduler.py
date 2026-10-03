@@ -11,6 +11,11 @@ from aiogram.exceptions import TelegramAPIError
 
 from .config import Settings
 from .database import Database, utc_now
+from .error_reporting import (
+    build_error_report,
+    error_alert_key,
+    notify_superadmins_of_error,
+)
 from .localization import tr
 from .services import (
     cleanup_known_chat_members,
@@ -31,7 +36,9 @@ def _overall_deadline(quest: dict) -> datetime | None:
     return start_at + timedelta(seconds=duration)
 
 
-async def _notify_quest_end(bot: Bot, db: Database, quest_id: int, user_ids: list[int]) -> None:
+async def _notify_quest_end(
+    bot: Bot, db: Database, quest_id: int, user_ids: list[int]
+) -> None:
     for user_id in user_ids:
         try:
             language = await db.get_language(user_id)
@@ -40,7 +47,9 @@ async def _notify_quest_end(bot: Bot, db: Database, quest_id: int, user_ids: lis
             logger.info("Could not send quest end notice to %s", user_id)
 
 
-async def scheduler_tick(bot: Bot, db: Database, bot_username: str | None = None) -> None:
+async def scheduler_tick(
+    bot: Bot, db: Database, bot_username: str | None = None
+) -> None:
     """Run one idempotent pass over due quest events."""
     now = utc_now()
     now_dt = datetime.fromisoformat(now)
@@ -70,20 +79,31 @@ async def scheduler_tick(bot: Bot, db: Database, bot_username: str | None = None
         if deadline and now_dt >= deadline:
             user_ids = await db.set_quest_status(int(quest["id"]), "completed")
             expired_quest_ids.add(int(quest["id"]))
-            await db.log_action(None, "quest.time_limit.completed", "quest", quest["id"])
+            await db.log_action(
+                None, "quest.time_limit.completed", "quest", quest["id"]
+            )
             await _notify_quest_end(bot, db, int(quest["id"]), user_ids)
 
     for session in await db.timed_out_sessions(now):
         quest_id = int(session["quest_id"])
         if quest_id in expired_quest_ids:
             continue
-        expired = await db.expire_stage(quest_id, int(session["user_id"]), int(session["stage_id"]), now)
+        expired = await db.expire_stage(
+            quest_id, int(session["user_id"]), int(session["stage_id"]), now
+        )
         if expired:
             try:
-                await bot.send_message(int(session["user_id"]), tr(session["language"], "stage_timeout"))
+                await bot.send_message(
+                    int(session["user_id"]), tr(session["language"], "stage_timeout")
+                )
             except TelegramAPIError:
                 logger.info("Could not send timeout notice to %s", session["user_id"])
-            await db.log_action(None, "participant.stage.timeout", "quest_participant", f"{quest_id}:{session['user_id']}")
+            await db.log_action(
+                None,
+                "participant.stage.timeout",
+                "quest_participant",
+                f"{quest_id}:{session['user_id']}",
+            )
 
     for quest in await db.list_active_quests():
         if int(quest["id"]) in expired_quest_ids:
@@ -97,19 +117,29 @@ async def scheduler_tick(bot: Bot, db: Database, bot_username: str | None = None
             if stage and stage["starts_at"] <= now:
                 await release_stage(bot, db, quest, stage, bot_username, announce=True)
         if await db.maybe_complete_quest(int(quest["id"])):
-            user_ids = await db.all_participant_ids(int(quest["id"]), ("joined", "active"))
+            user_ids = await db.all_participant_ids(
+                int(quest["id"]), ("joined", "active")
+            )
             await _notify_quest_end(bot, db, int(quest["id"]), user_ids)
 
 
 async def scheduler_loop(bot: Bot, db: Database, settings: Settings) -> None:
     """Keep the event loop responsive while checking scheduled quest events."""
-    logger.info("Quest scheduler started with %s second interval", settings.scheduler_interval_seconds)
-    bot_username = (await bot.get_me()).username or ""
+    logger.info(
+        "Quest scheduler started with %s second interval",
+        settings.scheduler_interval_seconds,
+    )
+    bot_username: str | None = None
     while True:
         try:
+            if bot_username is None:
+                bot_username = (await bot.get_me()).username or ""
             await scheduler_tick(bot, db, bot_username)
         except asyncio.CancelledError:
             raise
-        except Exception:
+        except Exception as exc:
             logger.exception("Quest scheduler tick failed")
+            report = build_error_report(exc, settings, source="Quest scheduler")
+            dedupe_key = error_alert_key(exc, "Quest scheduler")
+            await notify_superadmins_of_error(bot, settings, report, dedupe_key)
         await asyncio.sleep(settings.scheduler_interval_seconds)

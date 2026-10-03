@@ -89,6 +89,10 @@ SERVICE_STOP_TIMEOUT_SECONDS="$("$VENV_DIR/bin/python" -c 'from quest_bot.config
 
 SERVICE_USER="$(id -un)"
 SERVICE_GROUP="$(id -gn)"
+LOG_DIR="/var/log/quest-bot"
+sudo install -d -o "$SERVICE_USER" -g "$SERVICE_GROUP" -m 0700 "$LOG_DIR"
+sudo -u "$SERVICE_USER" touch "$LOG_DIR/log" "$LOG_DIR/log_err"
+sudo -u "$SERVICE_USER" chmod 0600 "$LOG_DIR/log" "$LOG_DIR/log_err"
 UNIT_TEMP="$(mktemp)"
 trap 'rm -f "$UNIT_TEMP"' EXIT
 cat >"$UNIT_TEMP" <<EOF
@@ -110,10 +114,12 @@ KillSignal=SIGTERM
 UMask=0077
 Environment=PYTHONUNBUFFERED=1
 Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=QUEST_BOT_LOG_DIR=$LOG_DIR
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=read-only
+ReadWritePaths=$LOG_DIR
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true

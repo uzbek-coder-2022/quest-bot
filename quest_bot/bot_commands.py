@@ -49,6 +49,7 @@ async def set_app_admin_commands(bot: Bot, user_id: int) -> None:
         await bot.set_my_commands(
             list(APP_ADMIN_COMMANDS), scope=_private_admin_scope(user_id)
         )
+        logger.info("Set private administrator command scope for user %s", user_id)
     except TelegramAPIError:
         logger.exception(
             "Could not set administrator commands for Telegram user %s", user_id
@@ -59,6 +60,7 @@ async def clear_app_admin_commands(bot: Bot, user_id: int) -> None:
     """Remove a user's private override so they fall back to public commands."""
     try:
         await bot.delete_my_commands(scope=_private_admin_scope(user_id))
+        logger.info("Cleared private administrator command scope for user %s", user_id)
     except TelegramAPIError:
         logger.exception(
             "Could not clear administrator commands for Telegram user %s", user_id
@@ -72,5 +74,10 @@ async def configure_bot_commands(bot: Bot, admin_ids: Iterable[int]) -> None:
         list(GROUP_ADMIN_COMMANDS),
         scope=BotCommandScopeAllChatAdministrators(),
     )
-    for user_id in sorted({int(admin_id) for admin_id in admin_ids}):
+    configured_admin_ids = sorted({int(admin_id) for admin_id in admin_ids})
+    for user_id in configured_admin_ids:
         await set_app_admin_commands(bot, user_id)
+    logger.info(
+        "Configured public and administrator command scopes for %s app admins",
+        len(configured_admin_ids),
+    )

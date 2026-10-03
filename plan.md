@@ -48,10 +48,12 @@ The first release runs entirely inside Telegram. Production deployments use Post
 - Each participant who joins a quest with an attached Telegram chat receives an individual invite link. Participants who joined before the quest starts receive it after start-time cleanup; participants who join an already-active quest receive it immediately. The link can be retrieved from the bot again later. The bot creates invite links with `member_limit=1` and no `expire_date`; the link's one-person limit is consumed by the first successful join.
 - The invite link created for a participant is stored once and the same link is returned when requested again.
 
-### F. Support tickets and audit
+### F. Support tickets, audit, and runtime logs
 - A user can open a support conversation with a superadmin or an admin of a quest they joined.
 - Messages in a ticket are relayed in both directions through the bot.
 - Important admin actions are written to the audit log. Superadmins can view recent entries and export data.
+- Runtime activity is written to a rotating `log` file and errors with tracebacks to `log_err`; systemd also captures console logs.
+- Unhandled Telegram update errors are reported to configured superadmins with safe update identifiers and a redacted traceback. The affected user receives a localized generic notice in a private chat. Expected validation failures are not treated as software errors.
 
 ## 3. Roles and permissions
 

@@ -92,6 +92,8 @@ sudo systemctl restart quest-bot
 
 `./stop.sh` stops the service immediately but leaves it enabled for the next reboot. To disable automatic startup too, run `sudo systemctl disable --now quest-bot`. To use a different unit name, run `SERVICE_NAME=my-quest-bot ./deploy.sh` and later `SERVICE_NAME=my-quest-bot ./stop.sh` (or pass the name as an argument: `./stop.sh my-quest-bot`). After updating the checkout or changing dependencies, run `./deploy.sh` again to reinstall and restart the service.
 
+The application writes runtime and incoming-update records to `/var/log/quest-bot/log` and errors with tracebacks to `/var/log/quest-bot/log_err`. Both files rotate at 5 MB with five backups and are readable only by the service account. Logs are also available in `journalctl`. Incoming-update logs contain identifiers and update types, not message contents. Unhandled update, scheduler, and process errors are sent to configured superadmins; identical error alerts are throttled to one per minute while every occurrence remains in `log_err`. The affected user receives a localized generic error notice in private chat. Expected outcomes such as a wrong quest answer are not reported as software errors. Superadmins must have opened the bot with `/start` to receive alerts.
+
 ### 5. Database operations
 
 Back up PostgreSQL regularly. For a local database, a basic backup command is:

@@ -12,11 +12,18 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from quest_bot.bot_commands import clear_app_admin_commands, configure_bot_commands
 from quest_bot.config import Settings
 from quest_bot.database import Database
+from quest_bot.error_reporting import (
+    UpdateLoggingMiddleware,
+    build_error_report,
+    handle_update_error,
+    notify_superadmins_of_error,
+)
 from quest_bot.handlers import admin, chat, common, creation, quests, support
 from quest_bot.lifecycle import (
     backup_and_notify_superadmins_stopping,
     notify_superadmins_started,
 )
+from quest_bot.logging_setup import configure_logging
 from quest_bot.scheduler import scheduler_loop
 
 logger = logging.getLogger(__name__)
@@ -28,11 +35,13 @@ async def set_commands(bot: Bot, db: Database) -> None:
 
 
 async def main() -> None:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
-    settings = Settings.from_env()
+    configure_logging()
+    logger.info("Quest Bot process starting")
+    try:
+        settings = Settings.from_env()
+    except Exception:
+        logger.exception("Could not load bot configuration")
+        raise
     db = Database(
         settings.database_dsn,
         pool_min_size=settings.database_pool_min_size,
@@ -44,7 +53,9 @@ async def main() -> None:
     service_started = False
 
     try:
+        bot = Bot(settings.bot_token, default=DefaultBotProperties(parse_mode=None))
         await db.initialize()
+        logger.info("Database initialized successfully")
         previous_superadmin_ids = {
             int(admin["telegram_id"])
             for admin in await db.list_admins()
@@ -55,10 +66,11 @@ async def main() -> None:
             settings.superadmin_ids
         )
 
-        bot = Bot(settings.bot_token, default=DefaultBotProperties(parse_mode=None))
         dispatcher = Dispatcher(storage=MemoryStorage())
         dispatcher["db"] = db
         dispatcher["settings"] = settings
+        dispatcher.errors.register(handle_update_error)
+        dispatcher.update.outer_middleware(UpdateLoggingMiddleware())
 
         dispatcher.include_router(common.router)
         dispatcher.include_router(creation.router)
@@ -75,10 +87,18 @@ async def main() -> None:
         )
         service_started = True
         await notify_superadmins_started(bot, db, settings)
+        logger.info("Quest Bot is ready; starting Telegram polling")
         await dispatcher.start_polling(
             bot, allowed_updates=dispatcher.resolve_used_update_types()
         )
+    except Exception as exc:
+        logger.exception("Quest Bot process failed")
+        if bot:
+            report = build_error_report(exc, settings, source="Bot process")
+            await notify_superadmins_of_error(bot, settings, report)
+        raise
     finally:
+        logger.info("Quest Bot graceful shutdown started")
         if scheduler_task:
             scheduler_task.cancel()
             try:
