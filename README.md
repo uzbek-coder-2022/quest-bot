@@ -28,12 +28,7 @@ See [`plan.md`](plan.md) for the complete requirements, behavior, and Telegram A
 
 ### 1. Install server prerequisites
 
-On Debian or Ubuntu, install Python, virtual-environment support, the PostgreSQL client, and systemd/sudo as needed:
-
-```bash
-sudo apt update
-sudo apt install python3 python3-venv python3-pip postgresql-client
-```
+The deployment script requires Linux with systemd, `sudo`, Python 3.11 or newer, Python virtual-environment and pip support, and PostgreSQL client utilities including `pg_dump`. Install those prerequisites with your distribution's package manager. Package names and commands vary by distribution, so confirm the Linux distribution and version before following distribution-specific installation steps.
 
 If PostgreSQL runs on this server, install its server package too. Use a PostgreSQL client version that is the same as or newer than the server version. The deployment account needs sudo access for systemd; do **not** run `deploy.sh` with `sudo`.
 

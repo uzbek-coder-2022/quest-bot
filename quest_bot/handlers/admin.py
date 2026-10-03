@@ -603,6 +603,7 @@ async def show_participants(callback: CallbackQuery, db: Database) -> None:
         return
     quest = await db.get_quest(quest_id)
     language = await db.get_language(callback.from_user.id)
+    role = await db.get_role(callback.from_user.id)
     if not quest or not await can_manage_quest(db, callback.from_user.id, quest):
         await callback.answer(tr(language, "quest_not_found"), show_alert=True)
         return
@@ -621,10 +622,133 @@ async def show_participants(callback: CallbackQuery, db: Database) -> None:
             callback,
             text,
             reply_markup=participants_keyboard(
-                language, quest_id, participants, page, 20
+                language,
+                quest_id,
+                participants,
+                page,
+                20,
+                show_message_button=role == "superadmin",
             ),
         )
     await callback.answer()
+
+
+@router.callback_query(F.data.startswith("manage:participantmsg:"))
+async def begin_participant_message(
+    callback: CallbackQuery, state: FSMContext, db: Database
+) -> None:
+    if not await _require_superadmin(callback, db):
+        return
+    try:
+        _, _, quest_text, user_text, page_text = callback.data.split(":", 4)
+        quest_id, user_id, page = int(quest_text), int(user_text), max(0, int(page_text))
+    except ValueError:
+        await callback.answer()
+        return
+    if await state.get_state() is not None:
+        language = await db.get_language(callback.from_user.id)
+        await callback.answer(
+            tr(language, "participant_message_finish_current_flow"), show_alert=True
+        )
+        return
+    quest = await db.get_quest(quest_id)
+    participant = await db.participant(quest_id, user_id)
+    if not quest or not participant:
+        language = await db.get_language(callback.from_user.id)
+        await callback.answer(tr(language, "participant_message_unavailable"), show_alert=True)
+        return
+    language = await db.get_language(callback.from_user.id)
+    user = await db.get_user(user_id) or {}
+    user_name = display_name(user.get("full_name"), user.get("username"), user_id)
+    await state.update_data(
+        participant_message_quest_id=quest_id,
+        participant_message_user_id=user_id,
+        participant_message_page=page,
+    )
+    await state.set_state(SuperadminFlow.participant_message)
+    if callback.message:
+        await callback.message.answer(
+            tr(
+                language,
+                "ask_participant_message",
+                user=user_name,
+                title=quest["title"],
+            ),
+            reply_markup=admin_home_keyboard(language),
+        )
+    await callback.answer()
+
+
+@router.message(SuperadminFlow.participant_message)
+async def participant_message_received(
+    message: Message, state: FSMContext, db: Database, bot: Bot
+) -> None:
+    if not message.from_user:
+        return
+    language = await db.get_language(message.from_user.id)
+    if await db.get_role(message.from_user.id) != "superadmin":
+        await state.clear()
+        await message.answer(tr(language, "superadmin_only"))
+        return
+    text = (message.text or "").strip()
+    if not 1 <= len(text) <= 2000:
+        await message.answer(tr(language, "invalid_participant_message"))
+        return
+    data = await state.get_data()
+    try:
+        quest_id = int(data["participant_message_quest_id"])
+        user_id = int(data["participant_message_user_id"])
+        page = max(0, int(data.get("participant_message_page", 0)))
+    except (KeyError, TypeError, ValueError):
+        await state.clear()
+        await message.answer(tr(language, "error_generic"))
+        return
+    quest = await db.get_quest(quest_id)
+    participant = await db.participant(quest_id, user_id) if quest else None
+    if not quest or not participant:
+        await state.clear()
+        await message.answer(tr(language, "participant_message_unavailable"))
+        return
+    target_user = await db.get_user(user_id) or {}
+    target_name = display_name(
+        target_user.get("full_name"), target_user.get("username"), user_id
+    )
+    target_language = await db.get_language(user_id)
+    try:
+        await bot.send_rich_message(
+            user_id,
+            rich_message(
+                heading(
+                    tr(
+                        target_language,
+                        "participant_message_heading",
+                        title=quest["title"],
+                    ),
+                    size=2,
+                ),
+                paragraph(text),
+            ),
+        )
+    except TelegramAPIError:
+        await state.clear()
+        await message.answer(tr(language, "participant_message_delivery_failed"))
+        return
+    await db.log_action(
+        message.from_user.id,
+        "participant.message.sent",
+        "quest_participant",
+        f"{quest_id}:{user_id}",
+    )
+    await state.clear()
+    await message.answer(
+        tr(language, "participant_message_sent", user=target_name),
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [button(tr(language, "btn_back"), f"manage:participants:{quest_id}:{page}")],
+                [button(tr(language, "btn_admin_home"), "admin:home")],
+            ]
+        ),
+    )
 
 
 @router.callback_query(F.data.startswith("manage:participant:"))

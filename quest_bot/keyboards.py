@@ -372,7 +372,12 @@ def edit_done_keyboard(language: str, quest_id: int) -> InlineKeyboardMarkup:
 
 
 def participants_keyboard(
-    language: str, quest_id: int, participants: list[dict], page: int = 0, page_size: int = 20
+    language: str,
+    quest_id: int,
+    participants: list[dict],
+    page: int = 0,
+    page_size: int = 20,
+    show_message_button: bool = False,
 ) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
     start = max(0, page) * page_size
@@ -387,7 +392,20 @@ def participants_keyboard(
             "failed": "participant_failed",
             "blocked": "participant_blocked",
         }.get(participant["status"], "participant_active")
-        rows.append([button(f"👤 {label[:23]} · {tr(language, status_key)}", f"manage:participant:{quest_id}:{participant['user_id']}:{action}")])
+        row = [
+            button(
+                f"👤 {label[:23]} · {tr(language, status_key)}",
+                f"manage:participant:{quest_id}:{participant['user_id']}:{action}",
+            )
+        ]
+        if show_message_button:
+            row.append(
+                button(
+                    tr(language, "btn_message_participant"),
+                    f"manage:participantmsg:{quest_id}:{participant['user_id']}:{page}",
+                )
+            )
+        rows.append(row)
     nav = []
     if page > 0:
         nav.append(button("⬅️", f"manage:participants:{quest_id}:{page - 1}"))

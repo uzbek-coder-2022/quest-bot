@@ -7,6 +7,10 @@ from unittest.mock import AsyncMock
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.methods import EditMessageText
 
+from quest_bot.handlers.admin import (
+    begin_participant_message,
+    participant_message_received,
+)
 from quest_bot.handlers.common import _join_from_payload, cancel_command
 from quest_bot.handlers.creation import (
     cover_photo_received,
@@ -32,10 +36,11 @@ from quest_bot.keyboards import (
     admin_home_keyboard,
     join_confirmation_keyboard,
     manage_quest,
+    participants_keyboard,
     participating_quests_keyboard,
 )
 from quest_bot.presentation import guide_message, quest_preview, support_history
-from quest_bot.states import CreateQuest
+from quest_bot.states import CreateQuest, SuperadminFlow
 from quest_bot.utils import safe_edit
 
 
@@ -71,6 +76,9 @@ class FakeState:
 
     async def set_state(self, state) -> None:
         self.current_state = state
+
+    async def get_state(self):
+        return self.current_state
 
     async def clear(self) -> None:
         self.cleared = True
@@ -121,6 +129,105 @@ class FeatureFlowTests(unittest.IsolatedAsyncioTestCase):
         }
         quest.update(overrides)
         return quest
+
+    async def test_superadmin_can_message_a_blocked_quest_participant_safely(self) -> None:
+        class Db:
+            def __init__(self) -> None:
+                self.actions = []
+
+            async def get_language(self, user_id: int) -> str:
+                return "en"
+
+            async def get_role(self, user_id: int) -> str:
+                return "superadmin"
+
+            async def get_quest(self, quest_id: int) -> dict:
+                return {"id": quest_id, "title": "Night Quest"}
+
+            async def participant(self, quest_id: int, user_id: int) -> dict:
+                return {"status": "blocked"}
+
+            async def get_user(self, user_id: int) -> dict:
+                return {"full_name": "Player One", "username": "player"}
+
+            async def log_action(self, *args, **kwargs) -> None:
+                self.actions.append((args, kwargs))
+
+        db = Db()
+        state = FakeState()
+        bot = FakeBot()
+        callback = SimpleNamespace(
+            data="manage:participantmsg:17:42:2",
+            from_user=SimpleNamespace(id=1),
+            message=SimpleNamespace(
+                chat=SimpleNamespace(type="private"),
+                answer=AsyncMock(),
+            ),
+            answer=AsyncMock(),
+        )
+
+        await begin_participant_message(callback, state, db)
+
+        self.assertEqual(state.current_state, SuperadminFlow.participant_message)
+        self.assertIn("Player One", callback.message.answer.await_args.args[0])
+        message_text = "<b>This remains literal</b>"
+        message = SimpleNamespace(
+            from_user=SimpleNamespace(id=1),
+            text=message_text,
+            answer=AsyncMock(),
+        )
+
+        await participant_message_received(message, state, db, bot)
+
+        self.assertEqual(len(bot.messages), 1)
+        recipient, payload = bot.messages[0]
+        self.assertEqual(recipient, 42)
+        self.assertEqual(payload["rich_message"].blocks[0].text, "📩 Message from the superadmin · Night Quest")
+        self.assertEqual(payload["rich_message"].blocks[1].text, message_text)
+        self.assertEqual(db.actions[0][0][1:4], ("participant.message.sent", "quest_participant", "17:42"))
+        self.assertNotIn(message_text, str(db.actions))
+        self.assertTrue(state.cleared)
+        self.assertIn("Player One", message.answer.await_args.args[0])
+        self.assertEqual(
+            payload_markup := message.answer.await_args.kwargs["reply_markup"].inline_keyboard[0][0].callback_data,
+            "manage:participants:17:2",
+        )
+        self.assertTrue(payload_markup)
+
+    async def test_participant_message_button_is_exclusive_to_superadmin_keyboard(self) -> None:
+        participants = [{"user_id": 42, "full_name": "Player One", "status": "blocked"}]
+        admin_markup = participants_keyboard("en", 17, participants)
+        superadmin_markup = participants_keyboard(
+            "en", 17, participants, show_message_button=True
+        )
+
+        self.assertEqual(len(admin_markup.inline_keyboard[0]), 1)
+        self.assertEqual(len(superadmin_markup.inline_keyboard[0]), 2)
+        self.assertEqual(
+            superadmin_markup.inline_keyboard[0][1].callback_data,
+            "manage:participantmsg:17:42:0",
+        )
+
+    async def test_participant_message_callback_rejects_non_superadmin(self) -> None:
+        class Db:
+            async def get_language(self, user_id: int) -> str:
+                return "en"
+
+            async def get_role(self, user_id: int) -> str:
+                return "admin"
+
+        callback = SimpleNamespace(
+            data="manage:participantmsg:17:42:0",
+            from_user=SimpleNamespace(id=9),
+            message=SimpleNamespace(chat=SimpleNamespace(type="private")),
+            answer=AsyncMock(),
+        )
+        state = FakeState()
+
+        await begin_participant_message(callback, state, Db())
+
+        self.assertIsNone(state.current_state)
+        self.assertTrue(callback.answer.await_args.kwargs["show_alert"])
 
     async def test_private_deep_link_shows_full_preview_and_requires_explicit_confirmation(self) -> None:
         quest = self._quest()

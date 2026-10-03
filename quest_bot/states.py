@@ -50,3 +50,4 @@ class SuperadminFlow(StatesGroup):
     add_admin_id = State()
     add_chat_id = State()
     add_whitelist_id = State()
+    participant_message = State()
