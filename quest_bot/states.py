@@ -26,6 +26,15 @@ class EditStage(StatesGroup):
     answer = State()
 
 
+class AddStage(StatesGroup):
+    question = State()
+    answer_mode = State()
+    correct_answer = State()
+    max_attempts = State()
+    time_limit = State()
+    start_at = State()
+
+
 class EditQuestDetails(StatesGroup):
     title = State()
     description = State()

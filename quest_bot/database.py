@@ -753,6 +753,253 @@ class Database:
             row = await self._stage_editability_row(connection, quest_id, stage_order)
             return bool(row and self._stage_row_is_editable(row, now))
 
+    async def _stage_structure_rows(
+        self, connection: Any, quest_id: int
+    ) -> list[dict[str, Any]]:
+        cursor = await connection.execute(
+            "SELECT s.*,q.status AS quest_status,q.progression,q.start_at AS quest_start,"
+            "EXISTS(SELECT 1 FROM participant_stages ps WHERE ps.stage_id=s.id) AS already_delivered,"
+            "EXISTS(SELECT 1 FROM announced_stages a WHERE a.stage_id=s.id) AS already_announced "
+            "FROM quests q JOIN stages s ON s.quest_id=q.id "
+            "WHERE q.id=? ORDER BY s.stage_order",
+            (quest_id,),
+        )
+        return [dict(row) for row in await cursor.fetchall()]
+
+    async def stage_structure_options(
+        self, quest_id: int, now: str
+    ) -> tuple[list[dict[str, Any]], set[int], bool]:
+        """Return editable stages, removable suffixes, and whether append is allowed."""
+        async with self._connection() as connection:
+            stages = await self._stage_structure_rows(connection, quest_id)
+        editable_flags = [self._stage_row_is_editable(stage, now) for stage in stages]
+        editable_stages = [
+            stage for stage, editable in zip(stages, editable_flags) if editable
+        ]
+        removable_orders: set[int] = set()
+        if len(stages) > 1:
+            suffix_editable = True
+            for stage, editable in reversed(list(zip(stages, editable_flags))):
+                suffix_editable = suffix_editable and editable
+                if suffix_editable:
+                    removable_orders.add(int(stage["stage_order"]))
+        allow_add = bool(
+            stages and len(stages) < 30 and editable_flags[-1]
+        )
+        return editable_stages, removable_orders, allow_add
+
+    async def can_add_stage(self, quest_id: int, now: str) -> bool:
+        """Allow appending only while the current final stage is unreleased."""
+        async with self._connection() as connection:
+            stages = await self._stage_structure_rows(connection, quest_id)
+            return bool(
+                stages
+                and len(stages) < 30
+                and self._stage_row_is_editable(stages[-1], now)
+            )
+
+    async def can_remove_stage(self, quest_id: int, stage_order: int, now: str) -> bool:
+        """Allow removing an unreleased stage only when its entire suffix is unreleased."""
+        async with self._connection() as connection:
+            stages = await self._stage_structure_rows(connection, quest_id)
+        if len(stages) <= 1:
+            return False
+        start = next(
+            (index for index, stage in enumerate(stages) if int(stage["stage_order"]) == stage_order),
+            None,
+        )
+        return bool(
+            start is not None
+            and all(self._stage_row_is_editable(stage, now) for stage in stages[start:])
+        )
+
+    async def add_stage(
+        self,
+        quest_id: int,
+        stage: dict[str, Any],
+        actor_id: int,
+        now: str,
+    ) -> int | None:
+        """Append a configured stage while the final stage remains unreleased."""
+        answer_mode = stage.get("answer_mode")
+        if answer_mode not in {"auto", "manual"}:
+            raise ValueError("Invalid stage answer mode")
+        question = stage.get("question")
+        if not isinstance(question, str) or len(question) > 4096:
+            raise ValueError("Stage question must be text of at most 4096 characters")
+        correct_answer = stage.get("correct_answer")
+        if answer_mode == "auto" and (
+            not isinstance(correct_answer, str)
+            or not correct_answer.strip()
+            or len(correct_answer) > 300
+        ):
+            raise ValueError("Automatic stages require a correct answer of at most 300 characters")
+        if answer_mode == "manual":
+            correct_answer = None
+        max_attempts = int(stage.get("max_attempts", 0))
+        time_limit_seconds = int(stage.get("time_limit_seconds", -1))
+        if not 1 <= max_attempts <= 100:
+            raise ValueError("Stage attempts must be between 1 and 100")
+        if not 0 <= time_limit_seconds <= 31_536_000:
+            raise ValueError("Stage time limit must be between 0 and one year")
+        source_chat_id = int(stage["source_chat_id"])
+        source_message_id = int(stage["source_message_id"])
+        if source_message_id < 1:
+            raise ValueError("Stage source message ID must be positive")
+        starts_at = str(stage["starts_at"])
+        starts_at_dt = _as_utc_datetime(starts_at)
+        now_dt = _as_utc_datetime(now)
+
+        async with self._connection() as connection:
+            await connection.execute("BEGIN IMMEDIATE")
+            stages = await self._stage_structure_rows(connection, quest_id)
+            if (
+                not stages
+                or len(stages) >= 30
+                or not self._stage_row_is_editable(stages[-1], now)
+            ):
+                await connection.rollback()
+                return None
+            cursor = await connection.execute(
+                "SELECT status,start_at,duration_seconds,progression,paused_at FROM quests WHERE id=?",
+                (quest_id,),
+            )
+            quest = await cursor.fetchone()
+            if not quest:
+                await connection.rollback()
+                return None
+            progression = str(quest["progression"])
+            if progression == "scheduled":
+                previous_start = _as_utc_datetime(str(stages[-1]["starts_at"]))
+                if starts_at_dt <= previous_start:
+                    await connection.rollback()
+                    return None
+                if (
+                    quest["status"] == "active"
+                    and not quest["paused_at"]
+                    and starts_at_dt <= now_dt
+                ):
+                    await connection.rollback()
+                    return None
+            elif starts_at_dt != _as_utc_datetime(str(quest["start_at"])):
+                await connection.rollback()
+                return None
+            duration_seconds = int(quest["duration_seconds"] or 0)
+            if duration_seconds:
+                deadline = _as_utc_datetime(str(quest["start_at"])) + timedelta(
+                    seconds=duration_seconds
+                )
+                if starts_at_dt > deadline:
+                    await connection.rollback()
+                    return None
+
+            stage_order = max(int(item["stage_order"]) for item in stages) + 1
+            cursor = await connection.execute(
+                "INSERT INTO stages(quest_id,stage_order,question,answer_mode,correct_answer,"
+                "max_attempts,time_limit_seconds,starts_at,source_chat_id,source_message_id) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?)",
+                (
+                    quest_id,
+                    stage_order,
+                    question,
+                    answer_mode,
+                    correct_answer,
+                    max_attempts,
+                    time_limit_seconds,
+                    starts_at,
+                    source_chat_id,
+                    source_message_id,
+                ),
+            )
+            stage_id = int(cursor.lastrowid)
+            await connection.execute(
+                "INSERT INTO audit_logs(actor_id,action,entity_type,entity_id,details,created_at) "
+                "VALUES(?,?,?,?,?,?)",
+                (
+                    actor_id,
+                    "stage.created",
+                    "stage",
+                    str(stage_id),
+                    json.dumps(
+                        {"quest_id": quest_id, "stage_order": stage_order},
+                        ensure_ascii=False,
+                    ),
+                    now,
+                ),
+            )
+            await connection.commit()
+            return stage_order
+
+    async def remove_stage(
+        self, quest_id: int, stage_order: int, actor_id: int, now: str
+    ) -> dict[str, Any] | None:
+        """Delete an unreleased stage, compact its editable suffix, and return its archive reference."""
+        async with self._connection() as connection:
+            await connection.execute("BEGIN IMMEDIATE")
+            stages = await self._stage_structure_rows(connection, quest_id)
+            if len(stages) <= 1:
+                await connection.rollback()
+                return None
+            start = next(
+                (
+                    index
+                    for index, stage in enumerate(stages)
+                    if int(stage["stage_order"]) == stage_order
+                ),
+                None,
+            )
+            if start is None or not all(
+                self._stage_row_is_editable(stage, now) for stage in stages[start:]
+            ):
+                await connection.rollback()
+                return None
+
+            previous = stages[start]
+            await connection.execute("DELETE FROM stages WHERE id=?", (int(previous["id"]),))
+            await connection.execute(
+                "UPDATE stages SET stage_order=stage_order+1000 "
+                "WHERE quest_id=? AND stage_order>?",
+                (quest_id, stage_order),
+            )
+            await connection.execute(
+                "UPDATE stages SET stage_order=stage_order-1001 "
+                "WHERE quest_id=? AND stage_order>?",
+                (quest_id, stage_order + 1000),
+            )
+            new_stage_count = len(stages) - 1
+            if previous["quest_status"] == "active":
+                await connection.execute(
+                    "UPDATE quest_participants SET status='completed',completed_at=? "
+                    "WHERE quest_id=? AND status='active' AND current_stage>=? "
+                    "AND EXISTS(SELECT 1 FROM participant_stages ps "
+                    "JOIN stages s ON s.id=ps.stage_id "
+                    "WHERE ps.quest_id=quest_participants.quest_id "
+                    "AND ps.user_id=quest_participants.user_id AND s.stage_order=? "
+                    "AND ps.status='correct')",
+                    (now, quest_id, new_stage_count, new_stage_count),
+                )
+            await connection.execute(
+                "INSERT INTO audit_logs(actor_id,action,entity_type,entity_id,details,created_at) "
+                "VALUES(?,?,?,?,?,?)",
+                (
+                    actor_id,
+                    "stage.deleted",
+                    "stage",
+                    str(int(previous["id"])),
+                    json.dumps(
+                        {
+                            "quest_id": quest_id,
+                            "stage_order": stage_order,
+                            "stage_count": new_stage_count,
+                        },
+                        ensure_ascii=False,
+                    ),
+                    now,
+                ),
+            )
+            await connection.commit()
+            return previous
+
     async def update_stage_question(
         self,
         quest_id: int,

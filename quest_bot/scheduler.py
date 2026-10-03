@@ -19,6 +19,7 @@ from .error_reporting import (
 from .localization import tr
 from .services import (
     cleanup_known_chat_members,
+    notify_quest_end,
     release_stage,
     send_chat_invites_to_current_participants,
 )
@@ -34,17 +35,6 @@ def _overall_deadline(quest: dict) -> datetime | None:
     if start_at.tzinfo is None:
         start_at = start_at.replace(tzinfo=timezone.utc)
     return start_at + timedelta(seconds=duration)
-
-
-async def _notify_quest_end(
-    bot: Bot, db: Database, quest_id: int, user_ids: list[int]
-) -> None:
-    for user_id in user_ids:
-        try:
-            language = await db.get_language(user_id)
-            await bot.send_message(user_id, tr(language, "quest_ended"))
-        except TelegramAPIError:
-            logger.info("Could not send quest end notice to %s", user_id)
 
 
 async def scheduler_tick(
@@ -64,7 +54,7 @@ async def scheduler_tick(
             if user_ids is None:
                 continue
             await db.log_action(None, "quest.time_limit.completed", "quest", quest_id)
-            await _notify_quest_end(bot, db, quest_id, user_ids)
+            await notify_quest_end(bot, db, quest_id, user_ids)
             continue
         started_now = await db.mark_quest_active(quest_id)
         quest = await db.get_quest(quest_id)
@@ -88,7 +78,7 @@ async def scheduler_tick(
             await db.log_action(
                 None, "quest.time_limit.completed", "quest", quest["id"]
             )
-            await _notify_quest_end(bot, db, int(quest["id"]), user_ids)
+            await notify_quest_end(bot, db, int(quest["id"]), user_ids)
 
     for session in await db.timed_out_sessions(now):
         quest_id = int(session["quest_id"])
@@ -126,7 +116,7 @@ async def scheduler_tick(
             user_ids = await db.all_participant_ids(
                 int(quest["id"]), ("joined", "active")
             )
-            await _notify_quest_end(bot, db, int(quest["id"]), user_ids)
+            await notify_quest_end(bot, db, int(quest["id"]), user_ids)
 
 
 async def scheduler_loop(bot: Bot, db: Database, settings: Settings) -> None:

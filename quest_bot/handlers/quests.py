@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timedelta, timezone
 
 from aiogram import Bot, F, Router
 from aiogram.exceptions import TelegramAPIError
@@ -13,6 +14,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 from ..config import Settings
 from ..database import Database, utc_now
 from ..keyboards import (
+    add_stage_answer_mode_keyboard,
     admin_home_keyboard,
     admin_quest_filters,
     answer_quest_selector,
@@ -31,6 +33,7 @@ from ..keyboards import (
     participating_quests_keyboard,
     quest_detail,
     ratings_overview_keyboard,
+    remove_stage_confirmation_keyboard,
     review_keyboard,
 )
 from ..localization import tr
@@ -44,16 +47,19 @@ from ..presentation import (
 from ..rich_text import bold, heading, paragraph, photo_block, quote, rich_message
 from ..services import (
     archive_question_message,
+    archive_telegram_message,
     delete_archived_message,
     get_chat_invite_for_participant,
+    notify_quest_end,
     send_current_stage_after_join,
     send_stage_to_user,
 )
-from ..states import AnswerFlow, EditQuestDetails, EditStage
+from ..states import AddStage, AnswerFlow, EditQuestDetails, EditStage
 from ..utils import (
     can_manage_quest,
     display_name,
     ensure_private_callback,
+    parse_local_datetime,
     safe_edit,
 )
 
@@ -1186,14 +1192,15 @@ async def resume_quest_callback(callback: CallbackQuery, db: Database) -> None:
     await callback.answer(tr(language, "resume_success"), show_alert=True)
 
 
-async def _editable_stage_list(db: Database, quest_id: int) -> list[dict]:
-    now = utc_now()
-    stages = await db.list_quest_stages(quest_id)
-    editable = []
-    for stage in stages:
-        if await db.stage_is_editable(quest_id, int(stage["stage_order"]), now):
-            editable.append(stage)
-    return editable
+async def _stage_editor_keyboard(
+    db: Database, language: str, quest_id: int, now: str
+) -> tuple[list[dict], InlineKeyboardMarkup]:
+    stages, removable_orders, allow_add = await db.stage_structure_options(
+        quest_id, now
+    )
+    return stages, editable_stages_keyboard(
+        language, quest_id, stages, removable_orders, allow_add
+    )
 
 
 @router.callback_query(F.data.startswith("manage:editquestions:"))
@@ -1210,17 +1217,127 @@ async def edit_questions_list(callback: CallbackQuery, db: Database) -> None:
     if not quest or not await can_manage_quest(db, callback.from_user.id, quest):
         await callback.answer(tr(language, "quest_not_found"), show_alert=True)
         return
-    stages = await _editable_stage_list(db, quest_id)
+    stages, markup = await _stage_editor_keyboard(db, language, quest_id, utc_now())
     text = f"{quest['title']}\n\n{tr(language, 'edit_questions_title')}"
     if not stages:
         text += f"\n\n{tr(language, 'no_editable_stages')}"
     if callback.message:
-        await safe_edit(
-            callback,
-            text,
-            reply_markup=editable_stages_keyboard(language, quest_id, stages),
+        await safe_edit(callback, text, reply_markup=markup)
+    await callback.answer()
+
+
+@router.callback_query(F.data.regexp(r"^manage:addstage:\d+$"))
+async def begin_stage_addition(
+    callback: CallbackQuery, state: FSMContext, db: Database
+) -> None:
+    if not await ensure_private_callback(callback, db):
+        return
+    try:
+        quest_id = int(callback.data.rsplit(":", 1)[1])
+    except ValueError:
+        await callback.answer()
+        return
+    language = await db.get_language(callback.from_user.id)
+    quest = await db.get_quest(quest_id)
+    if not quest or not await can_manage_quest(db, callback.from_user.id, quest):
+        await callback.answer(tr(language, "quest_not_found"), show_alert=True)
+        return
+    stages = await db.list_quest_stages(quest_id)
+    if len(stages) >= 30:
+        await callback.answer(tr(language, "stage_limit_reached"), show_alert=True)
+        return
+    if not await db.can_add_stage(quest_id, utc_now()):
+        await callback.answer(tr(language, "stage_not_editable"), show_alert=True)
+        return
+    await state.clear()
+    await state.update_data(
+        edit_quest_id=quest_id,
+        edit_context="add_stage",
+        stage_draft={},
+    )
+    await state.set_state(AddStage.question)
+    if callback.message:
+        await callback.message.answer(
+            tr(language, "ask_question", number=len(stages) + 1),
+            reply_markup=edit_prompt_keyboard(language),
         )
     await callback.answer()
+
+
+@router.callback_query(F.data.startswith("manage:removestage:"))
+async def confirm_stage_removal_prompt(
+    callback: CallbackQuery, db: Database
+) -> None:
+    if not await ensure_private_callback(callback, db):
+        return
+    try:
+        _, _, quest_text, order_text = callback.data.split(":", 3)
+        quest_id, stage_order = int(quest_text), int(order_text)
+    except (ValueError, AttributeError):
+        await callback.answer()
+        return
+    language = await db.get_language(callback.from_user.id)
+    quest = await db.get_quest(quest_id)
+    if (
+        not quest
+        or not await can_manage_quest(db, callback.from_user.id, quest)
+        or not await db.can_remove_stage(quest_id, stage_order, utc_now())
+    ):
+        await callback.answer(tr(language, "stage_not_editable"), show_alert=True)
+        return
+    if callback.message:
+        await safe_edit(
+            callback,
+            tr(language, "confirm_remove_stage", number=stage_order),
+            reply_markup=remove_stage_confirmation_keyboard(
+                language, quest_id, stage_order
+            ),
+        )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("manage:removestageconfirm:"))
+async def remove_stage_confirmed(callback: CallbackQuery, db: Database) -> None:
+    if not await ensure_private_callback(callback, db):
+        return
+    try:
+        _, _, quest_text, order_text = callback.data.split(":", 3)
+        quest_id, stage_order = int(quest_text), int(order_text)
+    except (ValueError, AttributeError):
+        await callback.answer()
+        return
+    language = await db.get_language(callback.from_user.id)
+    quest = await db.get_quest(quest_id)
+    if not quest or not await can_manage_quest(db, callback.from_user.id, quest):
+        await callback.answer(tr(language, "quest_not_found"), show_alert=True)
+        return
+    previous = await db.remove_stage(
+        quest_id, stage_order, callback.from_user.id, utc_now()
+    )
+    if not previous:
+        await callback.answer(tr(language, "stage_not_editable"), show_alert=True)
+        return
+    bot = callback.message.bot if callback.message else callback.bot
+    await delete_archived_message(
+        bot, previous.get("source_chat_id"), previous.get("source_message_id")
+    )
+    if await db.maybe_complete_quest(quest_id):
+        user_ids = await db.all_participant_ids(quest_id, ("joined", "active"))
+        await notify_quest_end(bot, db, quest_id, user_ids)
+    stages = await db.list_quest_stages(quest_id)
+    editable, markup = await _stage_editor_keyboard(
+        db, language, quest_id, utc_now()
+    )
+    current_quest = await db.get_quest(quest_id)
+    title = current_quest["title"] if current_quest else quest["title"]
+    text = f"{title}\n\n{tr(language, 'edit_questions_title')}"
+    if not editable:
+        text += f"\n\n{tr(language, 'no_editable_stages')}"
+    if callback.message:
+        await safe_edit(callback, text, reply_markup=markup)
+    await callback.answer(
+        tr(language, "stage_removed", count=len(stages)), show_alert=True
+    )
 
 
 @router.callback_query(F.data.startswith("manage:editstage:"))
@@ -1367,6 +1484,328 @@ def _replacement_question_text(message: Message) -> str | None:
         caption = (message.caption or "").strip()
         return caption if len(caption) <= 1024 else None
     return None
+
+
+async def _stage_add_context(
+    user_id: int, state: FSMContext, db: Database
+) -> tuple[int, dict, list[dict], dict] | None:
+    data = await state.get_data()
+    try:
+        quest_id = int(data["edit_quest_id"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    quest = await db.get_quest(quest_id)
+    if not quest or not await can_manage_quest(db, user_id, quest):
+        return None
+    stages = await db.list_quest_stages(quest_id)
+    if not await db.can_add_stage(quest_id, utc_now()):
+        return None
+    return quest_id, quest, stages, data
+
+
+def _utc_datetime(value: str) -> datetime:
+    result = datetime.fromisoformat(value)
+    if result.tzinfo is None:
+        result = result.replace(tzinfo=timezone.utc)
+    return result.astimezone(timezone.utc)
+
+
+def _added_stage_start_is_valid(
+    quest: dict, stages: list[dict], starts_at: str, now: str
+) -> bool:
+    if not stages:
+        return False
+    new_start = _utc_datetime(starts_at)
+    if quest["progression"] == "scheduled":
+        if new_start <= _utc_datetime(str(stages[-1]["starts_at"])):
+            return False
+        if (
+            quest["status"] == "active"
+            and not quest.get("paused_at")
+            and new_start <= _utc_datetime(now)
+        ):
+            return False
+    elif new_start != _utc_datetime(str(quest["start_at"])):
+        return False
+    duration = int(quest.get("duration_seconds") or 0)
+    if duration:
+        deadline = _utc_datetime(str(quest["start_at"])) + timedelta(
+            seconds=duration
+        )
+        if new_start > deadline:
+            return False
+    return True
+
+
+async def _finish_stage_addition(
+    message: Message,
+    state: FSMContext,
+    db: Database,
+    settings: Settings,
+    starts_at: str,
+) -> None:
+    language = await db.get_language(message.from_user.id)
+    now = utc_now()
+    latest = await _stage_add_context(message.from_user.id, state, db)
+    if not latest:
+        await state.clear()
+        await message.answer(tr(language, "stage_not_editable"))
+        return
+    quest_id, quest, stages, data = latest
+    if not _added_stage_start_is_valid(quest, stages, starts_at, now):
+        await message.answer(tr(language, "stage_schedule_invalid"))
+        return
+    draft = data.get("stage_draft", {})
+    try:
+        source_chat_id = int(draft["input_chat_id"])
+        source_message_id = int(draft["input_message_id"])
+        question = str(draft["question"])
+        answer_mode = str(draft["answer_mode"])
+        correct_answer = draft.get("correct_answer")
+        max_attempts = int(draft["max_attempts"])
+        time_limit_seconds = int(draft["time_limit_seconds"])
+    except (KeyError, TypeError, ValueError):
+        await state.clear()
+        await message.answer(tr(language, "error_generic"))
+        return
+
+    try:
+        archive_chat_id, archive_message_id = await archive_telegram_message(
+            message.bot,
+            source_chat_id,
+            source_message_id,
+            settings.question_archive_channel_id,
+        )
+    except TelegramAPIError:
+        logger.exception(
+            "Could not archive an added stage question from admin %s",
+            message.from_user.id,
+        )
+        await message.answer(tr(language, "question_archive_failed"))
+        return
+
+    try:
+        new_order = await db.add_stage(
+            quest_id,
+            {
+                "question": question,
+                "answer_mode": answer_mode,
+                "correct_answer": correct_answer,
+                "max_attempts": max_attempts,
+                "time_limit_seconds": time_limit_seconds,
+                "starts_at": starts_at,
+                "source_chat_id": archive_chat_id,
+                "source_message_id": archive_message_id,
+            },
+            message.from_user.id,
+            now,
+        )
+    except Exception:
+        await delete_archived_message(message.bot, archive_chat_id, archive_message_id)
+        raise
+    if new_order is None:
+        await delete_archived_message(message.bot, archive_chat_id, archive_message_id)
+        await state.clear()
+        await message.answer(tr(language, "stage_not_editable"))
+        return
+
+    await state.clear()
+    total = len(await db.list_quest_stages(quest_id))
+    await message.answer(
+        tr(language, "stage_added", number=new_order, count=total),
+        reply_markup=edit_done_keyboard(language, quest_id),
+    )
+
+
+@router.message(AddStage.question)
+async def added_stage_question_received(
+    message: Message, state: FSMContext, db: Database
+) -> None:
+    if not message.from_user:
+        return
+    language = await db.get_language(message.from_user.id)
+    context = await _stage_add_context(message.from_user.id, state, db)
+    if not context:
+        await state.clear()
+        await message.answer(tr(language, "stage_not_editable"))
+        return
+    question = _replacement_question_text(message)
+    if question is None:
+        await message.answer(tr(language, "invalid_question"))
+        return
+    draft = {
+        "question": question,
+        "input_chat_id": message.chat.id,
+        "input_message_id": message.message_id,
+    }
+    await state.update_data(stage_draft=draft)
+    await state.set_state(AddStage.answer_mode)
+    await message.answer(
+        tr(language, "ask_answer_mode"),
+        reply_markup=add_stage_answer_mode_keyboard(language),
+    )
+
+
+@router.callback_query(
+    AddStage.answer_mode, F.data.startswith("manage:addstage:answer:")
+)
+async def added_stage_answer_mode_selected(
+    callback: CallbackQuery, state: FSMContext, db: Database
+) -> None:
+    if not await ensure_private_callback(callback, db):
+        return
+    mode = callback.data.rsplit(":", 1)[1]
+    if mode not in {"auto", "manual"}:
+        await callback.answer()
+        return
+    context = await _stage_add_context(callback.from_user.id, state, db)
+    language = await db.get_language(callback.from_user.id)
+    if not context:
+        await state.clear()
+        await callback.answer(tr(language, "stage_not_editable"), show_alert=True)
+        return
+    data = context[3]
+    draft = dict(data.get("stage_draft", {}))
+    draft["answer_mode"] = mode
+    if mode == "manual":
+        draft["correct_answer"] = None
+        await state.update_data(stage_draft=draft)
+        await state.set_state(AddStage.max_attempts)
+        if callback.message:
+            await callback.message.answer(
+                tr(language, "ask_attempts"),
+                reply_markup=edit_prompt_keyboard(language),
+            )
+    else:
+        await state.update_data(stage_draft=draft)
+        await state.set_state(AddStage.correct_answer)
+        if callback.message:
+            await callback.message.answer(
+                tr(language, "ask_correct_answer"),
+                reply_markup=edit_prompt_keyboard(language),
+            )
+    await callback.answer()
+
+
+@router.message(AddStage.correct_answer)
+async def added_stage_correct_answer_received(
+    message: Message, state: FSMContext, db: Database
+) -> None:
+    if not message.from_user:
+        return
+    language = await db.get_language(message.from_user.id)
+    if not await _stage_add_context(message.from_user.id, state, db):
+        await state.clear()
+        await message.answer(tr(language, "stage_not_editable"))
+        return
+    answer = (message.text or "").strip()
+    if not answer or len(answer) > 300:
+        await message.answer(tr(language, "invalid_correct_answer"))
+        return
+    data = await state.get_data()
+    draft = dict(data.get("stage_draft", {}))
+    draft["correct_answer"] = answer
+    await state.update_data(stage_draft=draft)
+    await state.set_state(AddStage.max_attempts)
+    await message.answer(
+        tr(language, "ask_attempts"),
+        reply_markup=edit_prompt_keyboard(language),
+    )
+
+
+@router.message(AddStage.max_attempts)
+async def added_stage_attempts_received(
+    message: Message, state: FSMContext, db: Database
+) -> None:
+    if not message.from_user:
+        return
+    language = await db.get_language(message.from_user.id)
+    if not await _stage_add_context(message.from_user.id, state, db):
+        await state.clear()
+        await message.answer(tr(language, "stage_not_editable"))
+        return
+    try:
+        attempts = int((message.text or "").strip())
+    except ValueError:
+        await message.answer(tr(language, "invalid_number"))
+        return
+    if not 1 <= attempts <= 100:
+        await message.answer(tr(language, "invalid_number"))
+        return
+    data = await state.get_data()
+    draft = dict(data.get("stage_draft", {}))
+    draft["max_attempts"] = attempts
+    await state.update_data(stage_draft=draft)
+    await state.set_state(AddStage.time_limit)
+    await message.answer(
+        tr(language, "ask_stage_time"),
+        reply_markup=edit_prompt_keyboard(language),
+    )
+
+
+@router.message(AddStage.time_limit)
+async def added_stage_time_limit_received(
+    message: Message,
+    state: FSMContext,
+    db: Database,
+    settings: Settings,
+) -> None:
+    if not message.from_user:
+        return
+    language = await db.get_language(message.from_user.id)
+    context = await _stage_add_context(message.from_user.id, state, db)
+    if not context:
+        await state.clear()
+        await message.answer(tr(language, "stage_not_editable"))
+        return
+    try:
+        minutes = int((message.text or "").strip())
+    except ValueError:
+        await message.answer(tr(language, "invalid_number"))
+        return
+    if not 0 <= minutes <= 525600:
+        await message.answer(tr(language, "invalid_number"))
+        return
+    _, quest, stages, data = context
+    draft = dict(data.get("stage_draft", {}))
+    draft["time_limit_seconds"] = minutes * 60
+    await state.update_data(stage_draft=draft)
+    if quest["progression"] == "scheduled":
+        await state.set_state(AddStage.start_at)
+        await message.answer(
+            tr(language, "ask_stage_start", number=len(stages) + 1),
+            reply_markup=edit_prompt_keyboard(language),
+        )
+        return
+    await _finish_stage_addition(
+        message, state, db, settings, str(quest["start_at"])
+    )
+
+
+@router.message(AddStage.start_at)
+async def added_stage_start_received(
+    message: Message,
+    state: FSMContext,
+    db: Database,
+    settings: Settings,
+) -> None:
+    if not message.from_user:
+        return
+    language = await db.get_language(message.from_user.id)
+    context = await _stage_add_context(message.from_user.id, state, db)
+    if not context:
+        await state.clear()
+        await message.answer(tr(language, "stage_not_editable"))
+        return
+    starts_at = parse_local_datetime(message.text or "")
+    if not starts_at:
+        await message.answer(tr(language, "invalid_datetime"))
+        return
+    _, quest, stages, _ = context
+    if not _added_stage_start_is_valid(quest, stages, starts_at, utc_now()):
+        await message.answer(tr(language, "stage_schedule_invalid"))
+        return
+    await _finish_stage_addition(message, state, db, settings, starts_at)
 
 
 @router.message(EditStage.question)

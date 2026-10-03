@@ -60,16 +60,43 @@ def stage_meta_message(
     )
 
 
+async def archive_telegram_message(
+    bot: Bot,
+    source_chat_id: int,
+    source_message_id: int,
+    archive_channel_id: int,
+) -> tuple[int, int]:
+    """Copy a text or media message into the private archive without downloading it."""
+    copied = await bot.copy_message(
+        chat_id=archive_channel_id,
+        from_chat_id=source_chat_id,
+        message_id=source_message_id,
+    )
+    return int(archive_channel_id), int(copied.message_id)
+
+
 async def archive_question_message(
     bot: Bot, message: Any, archive_channel_id: int
 ) -> tuple[int, int]:
-    """Copy a text or media question into the private archive without downloading it."""
-    copied = await bot.copy_message(
-        chat_id=archive_channel_id,
-        from_chat_id=message.chat.id,
-        message_id=message.message_id,
+    """Copy a received question into the private archive without downloading it."""
+    return await archive_telegram_message(
+        bot,
+        int(message.chat.id),
+        int(message.message_id),
+        archive_channel_id,
     )
-    return int(archive_channel_id), int(copied.message_id)
+
+
+async def notify_quest_end(
+    bot: Bot, db: Database, quest_id: int, user_ids: list[int]
+) -> None:
+    """Notify currently active participants that their quest has ended."""
+    for user_id in user_ids:
+        try:
+            language = await db.get_language(user_id)
+            await bot.send_message(user_id, tr(language, "quest_ended"))
+        except TelegramAPIError:
+            logger.info("Could not send quest end notice to %s", user_id)
 
 
 async def delete_archived_message(

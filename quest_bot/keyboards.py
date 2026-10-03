@@ -333,14 +333,78 @@ def confirm_cover_removal_keyboard(language: str, quest_id: int) -> InlineKeyboa
     ], [button(tr(language, "btn_admin_home"), "admin:home")]])
 
 
-def editable_stages_keyboard(language: str, quest_id: int, stages: list[dict]) -> InlineKeyboardMarkup:
-    rows = [
-        [button(tr(language, "stage_label", number=stage["stage_order"]), f"manage:editstage:{quest_id}:{stage['stage_order']}")]
-        for stage in stages
-    ]
+def editable_stages_keyboard(
+    language: str,
+    quest_id: int,
+    stages: list[dict],
+    removable_stage_orders: set[int] | None = None,
+    allow_add_stage: bool = False,
+) -> InlineKeyboardMarkup:
+    removable_stage_orders = removable_stage_orders or set()
+    rows = []
+    for stage in stages:
+        stage_order = int(stage["stage_order"])
+        row = [
+            button(
+                tr(language, "stage_label", number=stage_order),
+                f"manage:editstage:{quest_id}:{stage_order}",
+            )
+        ]
+        if stage_order in removable_stage_orders:
+            row.append(
+                button(
+                    tr(language, "btn_remove_stage"),
+                    f"manage:removestage:{quest_id}:{stage_order}",
+                    style="danger",
+                )
+            )
+        rows.append(row)
+    if allow_add_stage:
+        rows.append(
+            [
+                button(
+                    tr(language, "btn_add_stage"),
+                    f"manage:addstage:{quest_id}",
+                    style="success",
+                )
+            ]
+        )
     rows.append([button(tr(language, "btn_back"), f"manage:quest:{quest_id}")])
     rows.append([button(tr(language, "btn_admin_home"), "admin:home")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def remove_stage_confirmation_keyboard(
+    language: str, quest_id: int, stage_order: int
+) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                button(
+                    tr(language, "btn_confirm_remove_stage"),
+                    f"manage:removestageconfirm:{quest_id}:{stage_order}",
+                    style="danger",
+                ),
+                button(
+                    tr(language, "btn_cancel"),
+                    f"manage:editquestions:{quest_id}",
+                    style="primary",
+                ),
+            ],
+            [button(tr(language, "btn_admin_home"), "admin:home")],
+        ]
+    )
+
+
+def add_stage_answer_mode_keyboard(language: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [button(tr(language, "answer_auto"), "manage:addstage:answer:auto")],
+            [button(tr(language, "answer_manual"), "manage:addstage:answer:manual")],
+            [button(tr(language, "btn_cancel"), "manage:editcancel")],
+            [button(tr(language, "btn_admin_home"), "admin:home")],
+        ]
+    )
 
 
 def edit_stage_actions_keyboard(
