@@ -23,14 +23,14 @@ See [`plan.md`](plan.md) for the complete requirements, behavior, and Telegram A
 
 ### 1. Install server prerequisites
 
-On Debian or Ubuntu, install Python, virtual-environment support, PostgreSQL (if it will run on this server), and systemd/sudo as needed:
+On Debian or Ubuntu, install Python, virtual-environment support, the PostgreSQL client, and systemd/sudo as needed:
 
 ```bash
 sudo apt update
-sudo apt install python3 python3-venv python3-pip postgresql
+sudo apt install python3 python3-venv python3-pip postgresql-client
 ```
 
-If you use a hosted or remote PostgreSQL server, you do not need to install the PostgreSQL server package locally. The deployment account needs sudo access for systemd; do **not** run `deploy.sh` with `sudo`.
+If PostgreSQL runs on this server, install its server package too. Use a PostgreSQL client version that is the same as or newer than the server version. The deployment account needs sudo access for systemd; do **not** run `deploy.sh` with `sudo`.
 
 ### 2. Create a PostgreSQL database and role
 
@@ -61,9 +61,13 @@ DATABASE_URL=postgresql://quest_bot:your-password@127.0.0.1:5432/quest_bot
 DATABASE_POOL_MIN_SIZE=1
 DATABASE_POOL_MAX_SIZE=10
 SCHEDULER_INTERVAL_SECONDS=10
+BACKUP_UPLOAD_TIMEOUT_SECONDS=900
+SERVICE_STOP_TIMEOUT_SECONDS=1800
 ```
 
 URL-encode reserved characters in the database username or password. For example, encode `@` as `%40`. For a hosted PostgreSQL provider, include its required SSL query parameters (commonly `?sslmode=require`). `DATABASE_URL` is required by `deploy.sh`; the application also supports a local SQLite fallback for development and tests by leaving `DATABASE_URL` empty and setting `DATABASE_PATH=data/quest_bot.sqlite3`.
+
+`BACKUP_UPLOAD_TIMEOUT_SECONDS` controls how long the bot waits while sending a backup; `SERVICE_STOP_TIMEOUT_SECONDS` controls how long systemd allows graceful shutdown and backup delivery. The bot keeps aiogram's default `https://api.telegram.org` base URL. Backup files are streamed from disk rather than loaded into memory.
 
 ### 4. Install and start the service
 
@@ -73,7 +77,9 @@ Run this as the normal Linux account that owns the checkout and has sudo privile
 ./deploy.sh
 ```
 
-The script creates `.venv`, installs `requirements.txt`, sets `.env` permissions to owner-only, checks the PostgreSQL connection, creates the tables and configured superadmin records, then installs and starts `quest-bot.service`. The unit's working directory is the repository, so the application loads `.env` at startup; secrets are not copied into the systemd unit. The service runs as the deployment account, starts automatically on reboot, and restarts if the process exits unexpectedly.
+The script creates `.venv`, installs `requirements.txt`, sets `.env` permissions to owner-only, checks PostgreSQL and `pg_dump`, creates the tables and configured superadmin records, then installs and starts `quest-bot.service`. The unit's working directory is the repository, so the application loads `.env` at startup; secrets are not copied into the systemd unit. The service runs as the deployment account, starts automatically on reboot, and restarts if the process exits unexpectedly. It notifies configured superadmins after startup. On a graceful stop or restart, it notifies them, creates a full PostgreSQL custom-format dump, and sends the backup file to each superadmin.
+
+Backup sending uses the default Bot API endpoint and a streamed file upload. Each superadmin must have opened the bot with `/start` to receive notices and backup files. A forced kill, power loss, or `SIGKILL` cannot run shutdown backup hooks.
 
 Useful service commands:
 
@@ -94,7 +100,13 @@ Back up PostgreSQL regularly. For a local database, a basic backup command is:
 sudo -u postgres pg_dump quest_bot > quest_bot-$(date +%F).sql
 ```
 
-Keep the backup outside the repository and test restoring it. The bot initializes missing tables on startup; it does not automatically import data from a previous SQLite database.
+Keep manual backups outside the repository and test restoring them. The shutdown attachment uses PostgreSQL's custom format; restore it into an existing empty database with:
+
+```bash
+pg_restore --no-owner --no-acl --dbname=quest_bot quest-bot-database-backup-<timestamp>.dump
+```
+
+The bot initializes missing tables on startup; it does not automatically import data from a previous SQLite database.
 
 ## Connect a group or channel
 

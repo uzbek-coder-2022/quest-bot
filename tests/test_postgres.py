@@ -54,6 +54,8 @@ class PostgresCompatibilityTests(unittest.TestCase):
             "DATABASE_POOL_MIN_SIZE": "2",
             "DATABASE_POOL_MAX_SIZE": "12",
             "SCHEDULER_INTERVAL_SECONDS": "7",
+            "BACKUP_UPLOAD_TIMEOUT_SECONDS": "1200",
+            "SERVICE_STOP_TIMEOUT_SECONDS": "2400",
         }
         with patch.dict("os.environ", values):
             settings = Settings.from_env()
@@ -61,6 +63,8 @@ class PostgresCompatibilityTests(unittest.TestCase):
         self.assertEqual(settings.database_pool_min_size, 2)
         self.assertEqual(settings.database_pool_max_size, 12)
         self.assertEqual(settings.scheduler_interval_seconds, 7)
+        self.assertEqual(settings.backup_upload_timeout_seconds, 1200)
+        self.assertEqual(settings.service_stop_timeout_seconds, 2400)
 
     def test_cursor_description_uses_column_names(self) -> None:
         class RecordLike:

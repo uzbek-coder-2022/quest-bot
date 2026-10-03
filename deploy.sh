@@ -22,6 +22,9 @@ fi
 if ! command -v systemctl >/dev/null 2>&1; then
     fail "systemctl is unavailable; this deployment script requires a systemd server."
 fi
+if ! command -v pg_dump >/dev/null 2>&1; then
+    fail "pg_dump is required for shutdown backups. Install the matching PostgreSQL client package."
+fi
 if [[ "$PROJECT_DIR" =~ [[:space:]] ]]; then
     fail "The project path must not contain spaces: $PROJECT_DIR"
 fi
@@ -82,6 +85,7 @@ async def validate_database() -> None:
 asyncio.run(validate_database())
 print("Configuration is valid and the PostgreSQL schema is ready.")
 PY
+SERVICE_STOP_TIMEOUT_SECONDS="$("$VENV_DIR/bin/python" -c 'from quest_bot.config import Settings; print(Settings.from_env().service_stop_timeout_seconds)')"
 
 SERVICE_USER="$(id -un)"
 SERVICE_GROUP="$(id -gn)"
@@ -101,7 +105,7 @@ WorkingDirectory=$PROJECT_DIR
 ExecStart=$VENV_DIR/bin/python $PROJECT_DIR/main.py
 Restart=always
 RestartSec=5
-TimeoutStopSec=30
+TimeoutStopSec=$SERVICE_STOP_TIMEOUT_SECONDS
 KillSignal=SIGTERM
 UMask=0077
 Environment=PYTHONUNBUFFERED=1

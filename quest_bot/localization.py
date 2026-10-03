@@ -202,6 +202,31 @@ TEXTS: dict[str, dict[str, str]] = {
     "invite_link_ready": {"uz": "Chatga kirish uchun bir kishilik, muddatsiz havola:\n{link}\nHavolani olgan odam bilan shaxsiy ulashing.", "ru": "Одноразовая бессрочная ссылка в чат:\n{link}\nПередавайте её адресно.", "en": "One-person, non-expiring chat invite:\n{link}\nShare it privately with the intended person."},
     "invite_unavailable": {"uz": "Chatga havola yaratib bo‘lmadi. Botda invite link yaratish huquqi bo‘lishi kerak.", "ru": "Не удалось создать ссылку. Боту нужно право приглашать участников.", "en": "Could not create the invite. The bot needs permission to invite members."},
     "invite_at_start": {"uz": "Chatga kirish uchun havola kvest boshlanganda yuboriladi.", "ru": "Ссылка для входа в чат придёт после начала квеста.", "en": "The chat invite link will be sent when the quest starts."},
+    "service_started": {
+        "uz": "✅ Quest Bot ishga tushdi.",
+        "ru": "✅ Quest Bot запущен.",
+        "en": "✅ Quest Bot has started.",
+    },
+    "service_stopping": {
+        "uz": "⏹️ Quest Bot to‘xtatilmoqda. Ma’lumotlar bazasi zaxira nusxasi tayyorlanmoqda.",
+        "ru": "⏹️ Quest Bot останавливается. Создаётся резервная копия базы данных.",
+        "en": "⏹️ Quest Bot is stopping. A database backup is being prepared.",
+    },
+    "database_backup_caption": {
+        "uz": "Quest Bot ma’lumotlar bazasi zaxira nusxasi ({timestamp} UTC).",
+        "ru": "Резервная копия базы Quest Bot ({timestamp} UTC).",
+        "en": "Quest Bot database backup ({timestamp} UTC).",
+    },
+    "database_backup_failed": {
+        "uz": "Ma’lumotlar bazasi zaxira nusxasini yaratib bo‘lmadi. Server jurnalini tekshiring.",
+        "ru": "Не удалось создать резервную копию базы данных. Проверьте журнал сервера.",
+        "en": "The database backup could not be created. Check the server logs.",
+    },
+    "database_backup_delivery_failed": {
+        "uz": "Zaxira faylini yuborib bo‘lmadi. Server jurnalini tekshiring.",
+        "ru": "Не удалось отправить файл резервной копии. Проверьте журнал сервера.",
+        "en": "The backup file could not be delivered. Check the server logs.",
+    },
     "error_generic": {"uz": "Xatolik yuz berdi. Qayta urinib ko‘ring.", "ru": "Произошла ошибка. Попробуйте ещё раз.", "en": "Something went wrong. Please try again."},
 }
 

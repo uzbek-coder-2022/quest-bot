@@ -79,6 +79,8 @@ The first release runs entirely inside Telegram. Production deployments use Post
 - `quest_bot/handlers/` — common menu, quest creation, participant and leaderboard flows, admin tools, and support tickets.
 - `quest_bot/database.py` — PostgreSQL/SQLite persistence and transactions.
 - `quest_bot/postgres.py` — PostgreSQL driver compatibility for shared repository queries and schema.
+- `quest_bot/backups.py` — temporary PostgreSQL `pg_dump` or SQLite backups for delivery.
+- `quest_bot/lifecycle.py` — localized superadmin startup/shutdown notifications and backup delivery.
 - `quest_bot/scheduler.py` — quest starts, scheduled stages, and timeout handling.
 - `deploy.sh` — PostgreSQL validation and systemd service installation/startup.
 - `stop.sh` — safely stop the systemd service during troubleshooting.
@@ -93,8 +95,10 @@ The first release runs entirely inside Telegram. Production deployments use Post
 - A recipient can forward a one-person Telegram invite link to someone else. `member_limit=1` limits the first successful join, not who uses the link, so send it privately to the intended participant.
 - A private-quest bot deep link is a shareable quest invitation and is separate from a group/channel invite link.
 - Production configuration uses `DATABASE_URL` and PostgreSQL. Back up the PostgreSQL database regularly. Exports omit private quest tokens and secret chat invite URLs.
-- `deploy.sh` validates the PostgreSQL connection, initializes missing tables, seeds configured superadmins, and installs/enables a systemd service with automatic restart. Run it as the deployment user with sudo privileges, not as root.
+- `deploy.sh` validates the PostgreSQL connection and `pg_dump` client, initializes missing tables, seeds configured superadmins, and installs/enables a systemd service with automatic restart. Run it as the deployment user with sudo privileges, not as root.
+- The bot sends localized startup and graceful-shutdown notices to configured superadmins. During graceful shutdown it creates a full PostgreSQL custom-format dump and sends it as a streamed document; upload and systemd stop timeouts are configurable in `.env`.
 - Existing SQLite databases are not automatically migrated to PostgreSQL; any required data transfer must be planned separately.
+- A hard kill, power loss, or `SIGKILL` does not run shutdown backup hooks; schedule external/periodic PostgreSQL backups for disaster recovery.
 
 ## 7. Out of scope for the first release
 

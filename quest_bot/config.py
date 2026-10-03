@@ -18,6 +18,8 @@ class Settings:
     database_pool_min_size: int = 1
     database_pool_max_size: int = 10
     scheduler_interval_seconds: int = 10
+    backup_upload_timeout_seconds: int = 900
+    service_stop_timeout_seconds: int = 1800
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -45,12 +47,27 @@ class Settings:
             pool_min_size = int(os.getenv("DATABASE_POOL_MIN_SIZE", "1"))
             pool_max_size = int(os.getenv("DATABASE_POOL_MAX_SIZE", "10"))
             interval = int(os.getenv("SCHEDULER_INTERVAL_SECONDS", "10"))
+            backup_timeout = int(os.getenv("BACKUP_UPLOAD_TIMEOUT_SECONDS", "900"))
+            stop_timeout = int(os.getenv("SERVICE_STOP_TIMEOUT_SECONDS", "1800"))
         except ValueError as exc:
-            raise ValueError("Database pool sizes and scheduler interval must be integers") from exc
+            raise ValueError("Database, scheduler, and service timeout settings must be integers") from exc
         if pool_min_size < 1 or pool_max_size < pool_min_size:
             raise ValueError("Database pool sizes must satisfy 1 <= MIN_SIZE <= MAX_SIZE")
         if interval < 1:
             raise ValueError("SCHEDULER_INTERVAL_SECONDS must be at least 1")
+        if backup_timeout < 30:
+            raise ValueError("BACKUP_UPLOAD_TIMEOUT_SECONDS must be at least 30")
+        if stop_timeout < backup_timeout:
+            raise ValueError("SERVICE_STOP_TIMEOUT_SECONDS must be >= BACKUP_UPLOAD_TIMEOUT_SECONDS")
         if not database_url:
             Path(database_dsn).parent.mkdir(parents=True, exist_ok=True)
-        return cls(token, ids, database_dsn, pool_min_size, pool_max_size, interval)
+        return cls(
+            token,
+            ids,
+            database_dsn,
+            pool_min_size,
+            pool_max_size,
+            interval,
+            backup_timeout,
+            stop_timeout,
+        )
