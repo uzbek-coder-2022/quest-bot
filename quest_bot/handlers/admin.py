@@ -13,6 +13,7 @@ from aiogram.types import (
     Message,
 )
 
+from ..bot_commands import clear_app_admin_commands, set_app_admin_commands
 from ..database import Database, utc_now
 from ..keyboards import (
     admin_list_keyboard,
@@ -140,6 +141,7 @@ async def add_admin_id_received(message: Message, state: FSMContext, db: Databas
     added = await db.add_admin(admin_id, message.from_user.id)
     await state.clear()
     if added:
+        await set_app_admin_commands(message.bot, admin_id)
         await db.log_action(message.from_user.id, "admin.added", "admin", admin_id)
         await message.answer(tr(language, "admin_added"))
         try:
@@ -152,7 +154,7 @@ async def add_admin_id_received(message: Message, state: FSMContext, db: Databas
 
 
 @router.callback_query(F.data.startswith("super:removeadmin:"))
-async def remove_admin_callback(callback: CallbackQuery, db: Database) -> None:
+async def remove_admin_callback(callback: CallbackQuery, db: Database, bot: Bot) -> None:
     if not await _require_superadmin(callback, db):
         return
     try:
@@ -163,6 +165,7 @@ async def remove_admin_callback(callback: CallbackQuery, db: Database) -> None:
     removed = await db.remove_admin(admin_id)
     language = await db.get_language(callback.from_user.id)
     if removed:
+        await clear_app_admin_commands(bot, admin_id)
         await db.log_action(callback.from_user.id, "admin.removed", "admin", admin_id)
         await callback.answer(tr(language, "admin_removed"), show_alert=True)
     else:

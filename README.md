@@ -123,8 +123,8 @@ Questions are published to the group/channel, but answers are sent privately to 
 
 ## Admin guide
 
-- Superadmins and admins can open `/admin` or use the **Admin panel** menu in the bot's private chat.
-- To add an admin, a superadmin selects **Manage admins → Add** and sends the person's numeric Telegram ID. The new admin must open the bot with `/start` before creating quests or receiving bot messages.
+- Superadmins and admins can open `/admin` or use the **Admin panel** menu in the bot's private chat. The command menu shows `/admin` only to registered bot admins in their private chats; the handler also checks the user's role.
+- To add an admin, a superadmin selects **Manage admins → Add** and sends the person's numeric Telegram ID. The command menu is updated immediately. The new admin must open the bot with `/start` before creating quests or receiving bot messages.
 - Create a quest by following the **Create quest** wizard.
 - An admin can manage leaderboards, participants, and pending manual reviews for their own quests. Superadmins can manage every quest.
 - Only superadmins can archive quests.
@@ -142,17 +142,19 @@ Questions are published to the group/channel, but answers are sent privately to 
 
 ## Commands
 
-| Command | Purpose |
-|---|---|
-| `/start` | Open the bot or join through a quest invitation link |
-| `/menu` | Open the main menu |
-| `/quests` | Browse public quests |
-| `/admin` | Open the admin panel |
-| `/support` | Contact a superadmin or quest admin |
-| `/language` | Change the interface language |
-| `/help` | Show usage help |
-| `/cancel` | Cancel the current wizard or action |
-| `/chatid` | Show the current group or channel ID |
+| Command | Purpose | Shown in command menu to |
+|---|---|---|
+| `/start` | Open the bot or join through a quest invitation link | Everyone |
+| `/menu` | Open the main menu | Everyone |
+| `/quests` | Browse public quests | Everyone |
+| `/admin` | Open the admin panel | Registered bot admins in private chats |
+| `/support` | Contact a superadmin or quest admin | Everyone |
+| `/language` | Change the interface language | Everyone |
+| `/help` | Show usage help | Everyone |
+| `/cancel` | Cancel the current wizard or action | Everyone |
+| `/chatid` | Show the current group or channel ID | Telegram group admins and registered bot admins in private chats |
+
+Command-menu visibility is a Telegram UI convenience, not an authorization boundary. Admin actions still enforce bot roles in their handlers.
 
 ## Tests
 
