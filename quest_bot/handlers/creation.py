@@ -26,6 +26,7 @@ from ..services import (
     answer_deep_link,
     archive_question_message,
     delete_archived_message,
+    question_media_details,
 )
 from ..states import CreateQuest
 from ..utils import format_datetime, parse_local_datetime
@@ -304,6 +305,7 @@ async def question_received(
     if question is None:
         await message.answer(tr(language, "invalid_question"))
         return
+    question_media_type, question_file_id = question_media_details(message)
     if not await _authorized(message, db):
         await state.clear()
         await message.answer(tr(language, "admin_only"))
@@ -319,6 +321,8 @@ async def question_received(
     await state.update_data(
         stage_draft={
             "question": question,
+            "question_media_type": question_media_type,
+            "question_file_id": question_file_id,
             "source_chat_id": archive_chat_id,
             "source_message_id": archive_message_id,
         }

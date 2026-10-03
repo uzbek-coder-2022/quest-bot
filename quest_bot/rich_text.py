@@ -6,6 +6,7 @@ from collections.abc import Iterable, Sequence
 
 from aiogram.types import (
     InputMediaPhoto,
+    InputMediaVideo,
     InputRichBlockBlockQuotation,
     InputRichBlockDivider,
     InputRichBlockList,
@@ -13,6 +14,7 @@ from aiogram.types import (
     InputRichBlockParagraph,
     InputRichBlockPhoto,
     InputRichBlockSectionHeading,
+    InputRichBlockVideo,
     InputRichMessage,
     RichTextBold,
     RichTextItalic,
@@ -47,7 +49,22 @@ def photo_block(file_id: str) -> InputRichBlockPhoto:
     """Embed a previously received Telegram photo by its reusable file ID."""
     if not file_id.strip():
         raise ValueError("A photo block requires a non-empty Telegram file ID")
-    return InputRichBlockPhoto(photo=InputMediaPhoto(media=file_id))
+    return InputRichBlockPhoto(
+        photo=InputMediaPhoto(
+            media=file_id, parse_mode=None, show_caption_above_media=None
+        )
+    )
+
+
+def video_block(file_id: str) -> InputRichBlockVideo:
+    """Embed a previously received Telegram video by its reusable file ID."""
+    if not file_id.strip():
+        raise ValueError("A video block requires a non-empty Telegram file ID")
+    return InputRichBlockVideo(
+        video=InputMediaVideo(
+            media=file_id, parse_mode=None, show_caption_above_media=None
+        )
+    )
 
 
 def quote(*parts: RichTextUnion) -> InputRichBlockBlockQuotation:

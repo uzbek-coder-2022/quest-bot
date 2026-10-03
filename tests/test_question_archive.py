@@ -116,7 +116,7 @@ class QuestionArchiveTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(bot.messages[0][1].blocks[0].text, "Archive test")
         self.assertEqual(bot.messages[2][1].blocks[0].text, "Archive test")
 
-    async def test_text_stage_is_structured_and_keeps_question_markup_literal(self) -> None:
+    async def test_text_stage_is_one_structured_message_with_answer_instruction(self) -> None:
         message = stage_message(
             "en",
             {"title": "Literal quest"},
@@ -126,17 +126,63 @@ class QuestionArchiveTests(unittest.IsolatedAsyncioTestCase):
                 "max_attempts": 3,
                 "time_limit_seconds": 120,
             },
+            include_answer_instruction=True,
         )
 
         payload = message.model_dump(mode="json", exclude_none=True)
         self.assertEqual(payload["blocks"][0]["type"], "heading")
-        self.assertEqual(payload["blocks"][2]["type"], "blockquote")
+        self.assertEqual(payload["blocks"][1]["type"], "heading")
+        self.assertEqual(payload["blocks"][2]["type"], "list")
+        self.assertEqual(payload["blocks"][4]["type"], "blockquote")
         self.assertEqual(
-            payload["blocks"][2]["blocks"][0]["text"],
+            payload["blocks"][4]["blocks"][0]["text"],
             "Question with <b>literal markup</b>",
         )
+        self.assertEqual(payload["blocks"][6]["text"], "Send your answer as a text message here.")
         self.assertIn("Attempts", str(payload))
         self.assertIn("Time limit: 2 minutes", str(payload))
+
+    async def test_new_text_photo_and_video_questions_are_delivered_in_one_rich_message(self) -> None:
+        for media_type, file_id in (
+            ("text", None),
+            ("photo", "stored-photo-file-id"),
+            ("video", "stored-video-file-id"),
+        ):
+            bot = FakeBot()
+            db = FakeDatabase()
+            stage = {
+                "id": 15,
+                "stage_order": 1,
+                "question": "Question caption",
+                "question_media_type": media_type,
+                "question_file_id": file_id,
+                "source_chat_id": -10077,
+                "source_message_id": 503,
+                "answer_mode": "auto",
+                "correct_answer": "answer",
+                "max_attempts": 2,
+                "time_limit_seconds": 0,
+            }
+            db.stage = stage
+
+            delivered = await send_stage_to_user(
+                bot,
+                db,
+                {"id": 7, "title": "Unified quest"},
+                stage,
+                20,
+                "quest_test",
+            )
+
+            self.assertTrue(delivered)
+            self.assertEqual(bot.copies, [])
+            self.assertEqual(len(bot.messages), 1)
+            payload = bot.messages[0][1].model_dump(mode="json", exclude_none=True)
+            self.assertIn("Send your answer as a text message here.", str(payload))
+            if media_type == "photo":
+                self.assertIn("stored-photo-file-id", str(payload))
+            if media_type == "video":
+                self.assertIn("stored-video-file-id", str(payload))
 
     async def test_immediate_later_stages_are_not_copied_to_the_group(self) -> None:
         bot = FakeBot()

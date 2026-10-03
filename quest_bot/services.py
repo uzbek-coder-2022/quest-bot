@@ -12,7 +12,17 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, InputRichM
 
 from .database import Database, utc_now
 from .localization import tr
-from .rich_text import bold, bullet_list, divider, heading, quote, rich_message
+from .rich_text import (
+    bold,
+    bullet_list,
+    divider,
+    heading,
+    paragraph,
+    photo_block,
+    quote,
+    rich_message,
+    video_block,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -37,27 +47,55 @@ def _stage_details(language: str, stage: dict[str, Any]) -> list[list[Any]]:
 
 
 def stage_message(
-    language: str, quest: dict[str, Any], stage: dict[str, Any]
+    language: str,
+    quest: dict[str, Any],
+    stage: dict[str, Any],
+    *,
+    include_answer_instruction: bool = False,
 ) -> InputRichMessage:
-    """Build a safely structured stage prompt without parsing question text."""
-    return rich_message(
+    """Build one safely structured question, stage metadata, and optional answer instruction."""
+    blocks = [
         heading(str(quest["title"]), size=1),
         heading(tr(language, "stage_label", number=stage["stage_order"]), size=3),
-        quote(str(stage["question"])),
-        divider(),
         bullet_list(_stage_details(language, stage)),
-    )
+        divider(),
+    ]
+    media_type = stage.get("question_media_type", "legacy")
+    file_id = stage.get("question_file_id")
+    if media_type == "photo" and file_id:
+        blocks.append(photo_block(str(file_id)))
+    elif media_type == "video" and file_id:
+        blocks.append(video_block(str(file_id)))
+    question = str(stage.get("question") or "").strip()
+    if question:
+        blocks.append(quote(question))
+    if include_answer_instruction:
+        blocks.extend((divider(), paragraph(tr(language, "send_answer"))))
+    return rich_message(*blocks)
 
 
 def stage_meta_message(
     language: str, quest: dict[str, Any], stage: dict[str, Any]
 ) -> InputRichMessage:
-    """Build the metadata sent before copying an archived question/media message."""
+    """Build the metadata sent before copying a legacy archived question."""
     return rich_message(
         heading(str(quest["title"]), size=1),
         heading(tr(language, "stage_label", number=stage["stage_order"]), size=3),
         bullet_list(_stage_details(language, stage)),
     )
+
+
+def question_media_details(message: Any) -> tuple[str, str | None]:
+    """Return the supported question media type and reusable Telegram file ID."""
+    if getattr(message, "text", None) is not None:
+        return "text", None
+    photos = getattr(message, "photo", None)
+    if photos:
+        return "photo", str(photos[-1].file_id)
+    video = getattr(message, "video", None)
+    if video:
+        return "video", str(video.file_id)
+    return "legacy", None
 
 
 async def archive_telegram_message(
@@ -167,8 +205,23 @@ async def send_stage_to_user(
     language = await db.get_language(user_id)
     source_chat_id = stage.get("source_chat_id")
     source_message_id = stage.get("source_message_id")
+    media_type = stage.get("question_media_type", "legacy")
+    file_id = stage.get("question_file_id")
+    embeddable = media_type == "text" or (
+        media_type in {"photo", "video"}
+        and isinstance(file_id, str)
+        and bool(file_id.strip())
+    )
+    has_archive_reference = source_chat_id is not None and source_message_id is not None
     try:
-        if source_chat_id is not None and source_message_id is not None:
+        if embeddable or not has_archive_reference:
+            await bot.send_rich_message(
+                user_id,
+                stage_message(
+                    language, quest, stage, include_answer_instruction=True
+                ),
+            )
+        else:
             await bot.send_rich_message(
                 user_id, stage_meta_message(language, quest, stage)
             )
@@ -177,9 +230,7 @@ async def send_stage_to_user(
                 from_chat_id=int(source_chat_id),
                 message_id=int(source_message_id),
             )
-        else:
-            await bot.send_rich_message(user_id, stage_message(language, quest, stage))
-        await bot.send_message(user_id, tr(language, "send_answer"))
+            await bot.send_message(user_id, tr(language, "send_answer"))
         return True
     except TelegramForbiddenError:
         logger.info("Unable to DM user %s for quest %s", user_id, quest["id"])
@@ -214,7 +265,22 @@ async def announce_stage(
         reply_markup = answer_button(language, link)
         source_chat_id = stage.get("source_chat_id")
         source_message_id = stage.get("source_message_id")
-        if source_chat_id is not None and source_message_id is not None:
+        media_type = stage.get("question_media_type", "legacy")
+        file_id = stage.get("question_file_id")
+        embeddable = media_type == "text" or (
+            media_type in {"photo", "video"}
+            and isinstance(file_id, str)
+            and bool(file_id.strip())
+        )
+        has_archive_reference = source_chat_id is not None and source_message_id is not None
+        if embeddable or not has_archive_reference:
+            await bot.send_rich_message(
+                int(chat_id),
+                stage_message(language, quest, stage),
+                reply_markup=reply_markup,
+                disable_notification=False,
+            )
+        else:
             await bot.send_rich_message(
                 int(chat_id),
                 stage_meta_message(language, quest, stage),
@@ -224,13 +290,6 @@ async def announce_stage(
                 chat_id=int(chat_id),
                 from_chat_id=int(source_chat_id),
                 message_id=int(source_message_id),
-                reply_markup=reply_markup,
-                disable_notification=False,
-            )
-        else:
-            await bot.send_rich_message(
-                int(chat_id),
-                stage_message(language, quest, stage),
                 reply_markup=reply_markup,
                 disable_notification=False,
             )

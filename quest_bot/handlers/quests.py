@@ -51,6 +51,7 @@ from ..services import (
     delete_archived_message,
     get_chat_invite_for_participant,
     notify_quest_end,
+    question_media_details,
     send_current_stage_after_join,
     send_stage_to_user,
 )
@@ -59,6 +60,7 @@ from ..utils import (
     can_manage_quest,
     display_name,
     ensure_private_callback,
+    format_datetime,
     parse_local_datetime,
     safe_edit,
 )
@@ -548,6 +550,15 @@ async def show_leaderboard(callback: CallbackQuery, db: Database) -> None:
         name = display_name(
             item.get("full_name"), item.get("username"), item.get("user_id")
         )
+        completion = (
+            tr(
+                language,
+                "leaderboard_completion",
+                time=format_datetime(item["completed_at"], language),
+            )
+            if item.get("status") == "completed" and item.get("completed_at")
+            else ""
+        )
         rendered.append(
             tr(
                 language,
@@ -556,6 +567,7 @@ async def show_leaderboard(callback: CallbackQuery, db: Database) -> None:
                 name=name,
                 solved=item["solved"],
                 status=_participant_status(language, item["status"]),
+                completion=completion,
             )
         )
     text = activity_message(
@@ -1574,6 +1586,8 @@ async def _finish_stage_addition(
         source_chat_id = int(draft["input_chat_id"])
         source_message_id = int(draft["input_message_id"])
         question = str(draft["question"])
+        question_media_type = str(draft.get("question_media_type", "legacy"))
+        question_file_id = draft.get("question_file_id")
         answer_mode = str(draft["answer_mode"])
         correct_answer = draft.get("correct_answer")
         max_attempts = int(draft["max_attempts"])
@@ -1603,6 +1617,8 @@ async def _finish_stage_addition(
             quest_id,
             {
                 "question": question,
+                "question_media_type": question_media_type,
+                "question_file_id": question_file_id,
                 "answer_mode": answer_mode,
                 "correct_answer": correct_answer,
                 "max_attempts": max_attempts,
@@ -1647,8 +1663,11 @@ async def added_stage_question_received(
     if question is None:
         await message.answer(tr(language, "invalid_question"))
         return
+    question_media_type, question_file_id = question_media_details(message)
     draft = {
         "question": question,
+        "question_media_type": question_media_type,
+        "question_file_id": question_file_id,
         "input_chat_id": message.chat.id,
         "input_message_id": message.message_id,
     }
@@ -1833,6 +1852,7 @@ async def replacement_question_received(
     if question is None:
         await message.answer(tr(language, "invalid_question"))
         return
+    question_media_type, question_file_id = question_media_details(message)
     edit_context = await _message_edit_access(message, state, db)
     if not edit_context:
         return
@@ -1856,6 +1876,8 @@ async def replacement_question_received(
             archive_message_id,
             message.from_user.id,
             utc_now(),
+            question_media_type=question_media_type,
+            question_file_id=question_file_id,
         )
     except Exception:
         await delete_archived_message(message.bot, archive_chat_id, archive_message_id)

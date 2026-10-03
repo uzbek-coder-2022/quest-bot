@@ -50,6 +50,8 @@ class PostgresCompatibilityTests(unittest.TestCase):
         self.assertIn("telegram_id BIGINT PRIMARY KEY", schema)
         self.assertIn("source_chat_id BIGINT", schema)
         self.assertIn("source_message_id BIGINT", schema)
+        self.assertIn("question_media_type TEXT", schema)
+        self.assertIn("question_file_id TEXT", schema)
         self.assertIn("cover_chat_id BIGINT", schema)
         self.assertIn("cover_message_id BIGINT", schema)
         self.assertIn("cover_file_id TEXT", schema)

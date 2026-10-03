@@ -14,7 +14,14 @@ class DatabaseMigrationTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "old.sqlite3"
             old_schema = (
-                SCHEMA.replace("    source_chat_id INTEGER,\n    source_message_id INTEGER,\n", "")
+                SCHEMA.replace(
+                    "    source_chat_id INTEGER,\n    source_message_id INTEGER,\n",
+                    "",
+                )
+                .replace(
+                    "    question_media_type TEXT NOT NULL DEFAULT 'legacy' CHECK (question_media_type IN ('legacy','text','photo','video')),\n    question_file_id TEXT,\n",
+                    "",
+                )
                 .replace("    cover_chat_id INTEGER,\n", "")
                 .replace("    cover_message_id INTEGER,\n", "")
                 .replace("    cover_file_id TEXT,\n", "")
@@ -55,6 +62,8 @@ class DatabaseMigrationTests(unittest.IsolatedAsyncioTestCase):
             stage = await db.get_stage(quest_id, 1)
             self.assertEqual(stage["source_chat_id"], -1001234567890)
             self.assertEqual(stage["source_message_id"], 42)
+            self.assertEqual(stage["question_media_type"], "legacy")
+            self.assertIsNone(stage["question_file_id"])
             quest = await db.get_quest(quest_id)
             self.assertIsNone(quest["cover_chat_id"])
             self.assertIsNone(quest["cover_file_id"])

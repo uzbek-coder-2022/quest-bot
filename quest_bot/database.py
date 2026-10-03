@@ -70,6 +70,8 @@ CREATE TABLE IF NOT EXISTS stages (
     starts_at TEXT NOT NULL,
     source_chat_id INTEGER,
     source_message_id INTEGER,
+    question_media_type TEXT NOT NULL DEFAULT 'legacy' CHECK (question_media_type IN ('legacy','text','photo','video')),
+    question_file_id TEXT,
     UNIQUE (quest_id, stage_order)
 );
 
@@ -298,6 +300,12 @@ class Database:
                         "ALTER TABLE stages ADD COLUMN IF NOT EXISTS source_message_id BIGINT"
                     )
                     await connection.execute(
+                        "ALTER TABLE stages ADD COLUMN IF NOT EXISTS question_media_type TEXT NOT NULL DEFAULT 'legacy'"
+                    )
+                    await connection.execute(
+                        "ALTER TABLE stages ADD COLUMN IF NOT EXISTS question_file_id TEXT"
+                    )
+                    await connection.execute(
                         "ALTER TABLE quests ADD COLUMN IF NOT EXISTS cover_chat_id BIGINT"
                     )
                     await connection.execute(
@@ -324,6 +332,12 @@ class Database:
                 await connection.execute("ALTER TABLE stages ADD COLUMN source_chat_id INTEGER")
             if "source_message_id" not in stage_columns:
                 await connection.execute("ALTER TABLE stages ADD COLUMN source_message_id INTEGER")
+            if "question_media_type" not in stage_columns:
+                await connection.execute(
+                    "ALTER TABLE stages ADD COLUMN question_media_type TEXT NOT NULL DEFAULT 'legacy'"
+                )
+            if "question_file_id" not in stage_columns:
+                await connection.execute("ALTER TABLE stages ADD COLUMN question_file_id TEXT")
             cursor = await connection.execute("PRAGMA table_info(quests)")
             quest_columns = {str(row["name"]) for row in await cursor.fetchall()}
             if "cover_chat_id" not in quest_columns:
@@ -483,10 +497,20 @@ class Database:
             )
             quest_id = int(cursor.lastrowid)
             for index, stage in enumerate(stages, start=1):
+                question_media_type = stage.get("question_media_type", "legacy")
+                question_file_id = stage.get("question_file_id")
+                if question_media_type not in {"legacy", "text", "photo", "video"}:
+                    raise ValueError("Invalid stage question media type")
+                if question_media_type in {"photo", "video"} and not (
+                    isinstance(question_file_id, str) and question_file_id.strip()
+                ):
+                    raise ValueError("Media stages require a Telegram file ID")
+                if question_media_type in {"legacy", "text"} and question_file_id is not None:
+                    raise ValueError("Text and legacy stages cannot have a media file ID")
                 await connection.execute(
                     "INSERT INTO stages(quest_id,stage_order,question,answer_mode,correct_answer,max_attempts,"
-                    "time_limit_seconds,starts_at,source_chat_id,source_message_id) "
-                    "VALUES(?,?,?,?,?,?,?,?,?,?)",
+                    "time_limit_seconds,starts_at,source_chat_id,source_message_id,question_media_type,question_file_id) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
                     (
                         quest_id,
                         index,
@@ -498,6 +522,8 @@ class Database:
                         stage["starts_at"],
                         stage.get("source_chat_id"),
                         stage.get("source_message_id"),
+                        question_media_type,
+                        question_file_id,
                     ),
                 )
             await connection.execute(
@@ -827,6 +853,16 @@ class Database:
         question = stage.get("question")
         if not isinstance(question, str) or len(question) > 4096:
             raise ValueError("Stage question must be text of at most 4096 characters")
+        question_media_type = stage.get("question_media_type", "legacy")
+        question_file_id = stage.get("question_file_id")
+        if question_media_type not in {"legacy", "text", "photo", "video"}:
+            raise ValueError("Invalid stage question media type")
+        if question_media_type in {"photo", "video"} and not (
+            isinstance(question_file_id, str) and question_file_id.strip()
+        ):
+            raise ValueError("Media stages require a Telegram file ID")
+        if question_media_type in {"legacy", "text"} and question_file_id is not None:
+            raise ValueError("Text and legacy stages cannot have a media file ID")
         correct_answer = stage.get("correct_answer")
         if answer_mode == "auto" and (
             not isinstance(correct_answer, str)
@@ -896,8 +932,9 @@ class Database:
             stage_order = max(int(item["stage_order"]) for item in stages) + 1
             cursor = await connection.execute(
                 "INSERT INTO stages(quest_id,stage_order,question,answer_mode,correct_answer,"
-                "max_attempts,time_limit_seconds,starts_at,source_chat_id,source_message_id) "
-                "VALUES(?,?,?,?,?,?,?,?,?,?)",
+                "max_attempts,time_limit_seconds,starts_at,source_chat_id,source_message_id,"
+                "question_media_type,question_file_id) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     quest_id,
                     stage_order,
@@ -909,6 +946,8 @@ class Database:
                     starts_at,
                     source_chat_id,
                     source_message_id,
+                    question_media_type,
+                    question_file_id,
                 ),
             )
             stage_id = int(cursor.lastrowid)
@@ -1009,8 +1048,18 @@ class Database:
         source_message_id: int,
         actor_id: int,
         now: str,
+        question_media_type: str = "legacy",
+        question_file_id: str | None = None,
     ) -> dict[str, Any] | None:
         """Replace an unreleased question and return its prior archive reference."""
+        if question_media_type not in {"legacy", "text", "photo", "video"}:
+            raise ValueError("Invalid stage question media type")
+        if question_media_type in {"photo", "video"} and not (
+            isinstance(question_file_id, str) and question_file_id.strip()
+        ):
+            raise ValueError("Media stages require a Telegram file ID")
+        if question_media_type in {"legacy", "text"} and question_file_id is not None:
+            raise ValueError("Text and legacy stages cannot have a media file ID")
         async with self._connection() as connection:
             await connection.execute("BEGIN IMMEDIATE")
             editability = await self._stage_editability_row(connection, quest_id, stage_order)
@@ -1026,8 +1075,16 @@ class Database:
                 return None
             previous = dict(existing)
             await connection.execute(
-                "UPDATE stages SET question=?,source_chat_id=?,source_message_id=? WHERE id=?",
-                (question, source_chat_id, source_message_id, int(existing["id"])),
+                "UPDATE stages SET question=?,source_chat_id=?,source_message_id=?,"
+                "question_media_type=?,question_file_id=? WHERE id=?",
+                (
+                    question,
+                    source_chat_id,
+                    source_message_id,
+                    question_media_type,
+                    question_file_id,
+                    int(existing["id"]),
+                ),
             )
             await connection.execute(
                 "INSERT INTO audit_logs(actor_id,action,entity_type,entity_id,details,created_at) "
@@ -1675,10 +1732,35 @@ class Database:
             cursor = await connection.execute(
                 "SELECT p.*,u.username,u.full_name FROM quest_participants p "
                 "JOIN users u ON u.telegram_id=p.user_id WHERE p.quest_id=? "
-                "ORDER BY CASE p.status WHEN 'active' THEN 0 WHEN 'joined' THEN 1 ELSE 2 END,p.joined_at",
+                "ORDER BY CASE p.status WHEN 'active' THEN 0 WHEN 'joined' THEN 1 ELSE 2 END,"
+                "p.joined_at,p.user_id",
                 (quest_id,),
             )
             return [dict(row) for row in await cursor.fetchall()]
+
+    async def list_participants_page(
+        self, quest_id: int, page: int, page_size: int = 20
+    ) -> tuple[list[dict[str, Any]], int, int]:
+        """Return a stable participant page, total count, and clamped page index."""
+        page_size = max(1, min(int(page_size), 100))
+        requested_page = max(0, int(page))
+        async with self._connection() as connection:
+            cursor = await connection.execute(
+                "SELECT COUNT(*) AS total FROM quest_participants WHERE quest_id=?",
+                (quest_id,),
+            )
+            total = int((await cursor.fetchone())["total"])
+            last_page = max(0, (total - 1) // page_size)
+            current_page = min(requested_page, last_page)
+            cursor = await connection.execute(
+                "SELECT p.*,u.username,u.full_name FROM quest_participants p "
+                "JOIN users u ON u.telegram_id=p.user_id WHERE p.quest_id=? "
+                "ORDER BY CASE p.status WHEN 'active' THEN 0 WHEN 'joined' THEN 1 ELSE 2 END,"
+                "p.joined_at,p.user_id LIMIT ? OFFSET ?",
+                (quest_id, page_size, current_page * page_size),
+            )
+            participants = [dict(row) for row in await cursor.fetchall()]
+        return participants, total, current_page
 
     async def set_participant_block(self, quest_id: int, user_id: int, reason: str | None, blocked: bool) -> bool:
         async with self._connection() as connection:

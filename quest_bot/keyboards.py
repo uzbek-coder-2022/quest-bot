@@ -442,10 +442,18 @@ def participants_keyboard(
     page: int = 0,
     page_size: int = 20,
     show_message_button: bool = False,
+    total_count: int | None = None,
 ) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
-    start = max(0, page) * page_size
-    visible = participants[start : start + page_size]
+    page = max(0, page)
+    page_size = max(1, page_size)
+    start = page * page_size
+    total = len(participants) if total_count is None else max(0, total_count)
+    visible = (
+        participants[start : start + page_size]
+        if total_count is None
+        else participants[:page_size]
+    )
     for participant in visible:
         label = participant.get("full_name") or participant.get("username") or str(participant["user_id"])
         action = "unban" if participant["status"] == "blocked" else "ban"
@@ -473,7 +481,7 @@ def participants_keyboard(
     nav = []
     if page > 0:
         nav.append(button("⬅️", f"manage:participants:{quest_id}:{page - 1}"))
-    if start + page_size < len(participants):
+    if start + len(visible) < total:
         nav.append(button("➡️", f"manage:participants:{quest_id}:{page + 1}"))
     if nav:
         rows.append(nav)

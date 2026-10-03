@@ -63,10 +63,14 @@ class StageEditingTests(unittest.IsolatedAsyncioTestCase):
             501,
             1,
             before_start,
+            question_media_type="photo",
+            question_file_id="replacement-photo-id",
         )
         self.assertIsNone(previous["source_message_id"])
         stage = await self.db.get_stage(quest_id, 1)
         self.assertEqual(stage["question"], "Revised first question")
+        self.assertEqual(stage["question_media_type"], "photo")
+        self.assertEqual(stage["question_file_id"], "replacement-photo-id")
         self.assertEqual(stage["source_chat_id"], -1001234567890)
         self.assertEqual(stage["source_message_id"], 501)
 
@@ -174,11 +178,16 @@ class StageEditingTests(unittest.IsolatedAsyncioTestCase):
                 "starts_at": "2030-01-05T00:00:00+00:00",
                 "source_chat_id": -1001234567890,
                 "source_message_id": 503,
+                "question_media_type": "video",
+                "question_file_id": "added-stage-video-id",
             },
             1,
             now,
         )
         self.assertEqual(added_order, 3)
+        added_stage = await self.db.get_stage(quest_id, added_order)
+        self.assertEqual(added_stage["question_media_type"], "video")
+        self.assertEqual(added_stage["question_file_id"], "added-stage-video-id")
 
         previous = await self.db.update_stage_question(
             quest_id, 2, "Question 2 revised", -1001234567890, 502, 1, now

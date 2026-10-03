@@ -10,11 +10,13 @@ from aiogram.methods import EditMessageText
 from quest_bot.handlers.admin import (
     begin_participant_message,
     participant_message_received,
+    show_participants,
 )
 from quest_bot.handlers.common import _join_from_payload, cancel_command
 from quest_bot.handlers.creation import (
     cover_photo_received,
     description_received,
+    question_received,
     skip_cover_photo,
 )
 from quest_bot.handlers.quests import (
@@ -25,6 +27,7 @@ from quest_bot.handlers.quests import (
     my_quests_command,
     request_quest_join,
     select_answer_quest,
+    show_leaderboard,
     view_quest_callback,
 )
 from quest_bot.handlers.support import (
@@ -206,6 +209,68 @@ class FeatureFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             superadmin_markup.inline_keyboard[0][1].callback_data,
             "manage:participantmsg:17:42:0",
+        )
+
+    async def test_participant_pagination_requests_only_a_database_page_and_clamps_stale_page(self) -> None:
+        class Db:
+            def __init__(self) -> None:
+                self.calls: list[tuple[int, int, int]] = []
+
+            async def get_language(self, user_id: int) -> str:
+                return "en"
+
+            async def get_role(self, user_id: int) -> str:
+                return "superadmin"
+
+            async def get_quest(self, quest_id: int):
+                return {"id": quest_id, "owner_id": 2, "title": "Night Quest"}
+
+            async def list_participants_page(self, quest_id: int, page: int, page_size: int):
+                self.calls.append((quest_id, page, page_size))
+                return (
+                    [
+                        {
+                            "user_id": user_id,
+                            "full_name": f"Player {user_id}",
+                            "username": f"player{user_id}",
+                            "status": "joined",
+                        }
+                        for user_id in range(41, 46)
+                    ],
+                    45,
+                    2,
+                )
+
+        db = Db()
+        message = SimpleNamespace(
+            chat=SimpleNamespace(type="private"),
+            edit_text=AsyncMock(),
+        )
+        callback = SimpleNamespace(
+            data="manage:participants:17:999",
+            from_user=SimpleNamespace(id=1),
+            message=message,
+            answer=AsyncMock(),
+        )
+
+        await show_participants(callback, db)
+
+        self.assertEqual(db.calls, [(17, 999, 20)])
+        rich_message = message.edit_text.await_args.kwargs["rich_message"]
+        self.assertEqual(rich_message.blocks[1].text, "41–45/45")
+        markup = message.edit_text.await_args.kwargs["reply_markup"]
+        self.assertEqual(len(markup.inline_keyboard), 8)
+        self.assertEqual(
+            markup.inline_keyboard[-3][0].callback_data,
+            "manage:participants:17:1",
+        )
+        self.assertEqual(
+            markup.inline_keyboard[-4][1].callback_data,
+            "manage:participantmsg:17:45:2",
+        )
+        self.assertNotIn(
+            "manage:participants:17:3",
+            [button.callback_data for row in markup.inline_keyboard for button in row],
         )
 
     async def test_participant_message_callback_rejects_non_superadmin(self) -> None:
@@ -630,6 +695,89 @@ class FeatureFlowTests(unittest.IsolatedAsyncioTestCase):
             preview.kwargs["reply_markup"].inline_keyboard[-1][0].callback_data,
             "quest:mylist:private:1",
         )
+
+    async def test_leaderboard_renders_completion_time_in_the_viewer_timezone(self) -> None:
+        class Db:
+            async def get_language(self, user_id: int) -> str:
+                return "en"
+
+            async def get_quest(self, quest_id: int):
+                return {"id": quest_id, "visibility": "public", "title": "Night Quest"}
+
+            async def participant(self, quest_id: int, user_id: int):
+                return None
+
+            async def leaderboard(self, quest_id: int):
+                return [
+                    {
+                        "user_id": 42,
+                        "full_name": "Player One",
+                        "username": "playerone",
+                        "solved": 4,
+                        "status": "completed",
+                        "completed_at": "2026-10-03T07:30:00+00:00",
+                    },
+                    {
+                        "user_id": 43,
+                        "full_name": "Player Two",
+                        "username": "playertwo",
+                        "solved": 2,
+                        "status": "failed",
+                        "completed_at": "2026-10-03T07:30:00+00:00",
+                    },
+                ]
+
+            async def get_role(self, user_id: int) -> str:
+                return "user"
+
+        message = SimpleNamespace(edit_text=AsyncMock())
+        callback = SimpleNamespace(
+            data="quest:leaderboard:17",
+            from_user=SimpleNamespace(id=42),
+            message=message,
+            answer=AsyncMock(),
+        )
+
+        await show_leaderboard(callback, Db())
+
+        payload = message.edit_text.await_args.kwargs["rich_message"].model_dump(
+            mode="json", exclude_none=True
+        )
+        rendered = str(payload)
+        self.assertIn("completed: 2026-10-03 12:30", rendered)
+        self.assertNotIn("completed: 2026-10-03 12:30", rendered.split("Player Two")[1])
+
+    async def test_creation_records_question_media_type_and_reusable_file_id(self) -> None:
+        class Db:
+            async def get_language(self, user_id: int) -> str:
+                return "en"
+
+            async def get_role(self, user_id: int) -> str:
+                return "admin"
+
+        bot = FakeBot()
+        state = FakeState()
+        message = SimpleNamespace(
+            from_user=SimpleNamespace(id=90),
+            chat=SimpleNamespace(id=90),
+            message_id=1235,
+            text=None,
+            caption="Photo question caption",
+            photo=[SimpleNamespace(file_id="telegram-question-photo-id")],
+            video=None,
+            bot=bot,
+            answer=AsyncMock(),
+        )
+        settings = SimpleNamespace(question_archive_channel_id=-100777)
+
+        await question_received(message, state, Db(), settings)
+
+        draft = state.data["stage_draft"]
+        self.assertEqual(draft["question_media_type"], "photo")
+        self.assertEqual(draft["question_file_id"], "telegram-question-photo-id")
+        self.assertEqual(draft["question"], "Photo question caption")
+        self.assertEqual(draft["source_chat_id"], -100777)
+        self.assertEqual(draft["source_message_id"], 501)
 
     async def test_cover_photo_is_copied_to_private_archive_and_kept_as_message_reference(self) -> None:
         class Db:

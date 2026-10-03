@@ -170,7 +170,10 @@ class StageStructureUITests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def _run_stage_addition(
-        self, progression: str, answer_mode: str = "manual"
+        self,
+        progression: str,
+        answer_mode: str = "manual",
+        question_media: str = "text",
     ) -> tuple[FakeBot, StageAdditionDatabase, FakeState]:
         db = StageAdditionDatabase(progression)
         bot = FakeBot()
@@ -179,7 +182,17 @@ class StageStructureUITests(unittest.IsolatedAsyncioTestCase):
         callback = self._callback("manage:addstage:17", bot)
 
         await begin_stage_addition(callback, state, db)
-        question_message = self._message(bot, "New stage question", message_id=701)
+        question_message = self._message(
+            bot,
+            "New stage question" if question_media == "text" else None,
+            message_id=701,
+        )
+        if question_media in {"photo", "video"}:
+            question_message.caption = "New stage question"
+            if question_media == "photo":
+                question_message.photo = [SimpleNamespace(file_id="stage-photo-file-id")]
+            else:
+                question_message.video = SimpleNamespace(file_id="stage-video-file-id")
         await added_stage_question_received(question_message, state, db)
         self.assertEqual(state.current_state, AddStage.answer_mode)
         self.assertEqual(bot.copies, [])
@@ -220,7 +233,9 @@ class StageStructureUITests(unittest.IsolatedAsyncioTestCase):
         return bot, db, state
 
     async def test_add_stage_uses_full_manual_setup_and_archives_only_at_final_save(self) -> None:
-        bot, db, state = await self._run_stage_addition("immediate")
+        bot, db, state = await self._run_stage_addition(
+            "immediate", question_media="photo"
+        )
 
         self.assertTrue(state.cleared)
         self.assertEqual(len(bot.copies), 1)
@@ -231,6 +246,8 @@ class StageStructureUITests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(db.added), 1)
         added = db.added[0]
         self.assertEqual(added["stage_order"], 3)
+        self.assertEqual(added["question_media_type"], "photo")
+        self.assertEqual(added["question_file_id"], "stage-photo-file-id")
         self.assertEqual(added["answer_mode"], "manual")
         self.assertIsNone(added["correct_answer"])
         self.assertEqual(added["max_attempts"], 4)

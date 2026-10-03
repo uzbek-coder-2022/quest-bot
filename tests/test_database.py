@@ -63,6 +63,30 @@ class DatabaseFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(activated)
         return quest
 
+    async def test_participant_database_pagination_returns_stable_clamped_pages(self) -> None:
+        quest_id = await self.create_quest()
+        user_ids = list(range(20, 65))
+        for user_id in user_ids:
+            if user_id != 20:
+                await self.db.ensure_user(user_id, f"player{user_id}", f"Player {user_id}")
+            joined = await self.db.join_quest(quest_id, user_id, None, utc_now())
+            self.assertEqual(joined["code"], "joined")
+
+        first, total, first_page = await self.db.list_participants_page(quest_id, 0, 20)
+        second, second_total, second_page = await self.db.list_participants_page(quest_id, 1, 20)
+        last, last_total, last_page = await self.db.list_participants_page(quest_id, 99, 20)
+
+        self.assertEqual((total, first_page), (45, 0))
+        self.assertEqual((second_total, second_page), (45, 1))
+        self.assertEqual((last_total, last_page), (45, 2))
+        self.assertEqual(len(first), 20)
+        self.assertEqual(len(second), 20)
+        self.assertEqual(len(last), 5)
+        self.assertEqual(
+            [participant["user_id"] for participant in first + second + last],
+            user_ids,
+        )
+
     async def test_exact_answer_then_immediate_progression(self) -> None:
         quest_id = await self.create_quest()
         await self.activate_and_join(quest_id)

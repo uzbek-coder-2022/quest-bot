@@ -607,15 +607,15 @@ async def show_participants(callback: CallbackQuery, db: Database) -> None:
     if not quest or not await can_manage_quest(db, callback.from_user.id, quest):
         await callback.answer(tr(language, "quest_not_found"), show_alert=True)
         return
-    participants = await db.list_participants(quest_id)
+    participants, total, page = await db.list_participants_page(quest_id, page, 20)
     title = tr(language, "participants_title")
-    if not participants:
+    if not total:
         text = information_message(title, tr(language, "no_participants"))
     else:
-        start = max(0, page) * 20
+        start = page * 20
         text = information_message(
             title,
-            f"{start + 1}–{min(start + 20, len(participants))}/{len(participants)}",
+            f"{start + 1}–{min(start + len(participants), total)}/{total}",
         )
     if callback.message:
         await safe_edit(
@@ -628,6 +628,7 @@ async def show_participants(callback: CallbackQuery, db: Database) -> None:
                 page,
                 20,
                 show_message_button=role == "superadmin",
+                total_count=total,
             ),
         )
     await callback.answer()
