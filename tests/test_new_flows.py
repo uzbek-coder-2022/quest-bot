@@ -34,7 +34,7 @@ from quest_bot.keyboards import (
     manage_quest,
     participating_quests_keyboard,
 )
-from quest_bot.presentation import quest_preview
+from quest_bot.presentation import guide_message, quest_preview, support_history
 from quest_bot.states import CreateQuest
 from quest_bot.utils import safe_edit
 
@@ -50,6 +50,10 @@ class FakeBot:
 
     async def send_message(self, chat_id: int, **kwargs):
         self.messages.append((chat_id, kwargs))
+        return SimpleNamespace(message_id=800 + len(self.messages))
+
+    async def send_rich_message(self, chat_id: int, rich_message, **kwargs):
+        self.messages.append((chat_id, {"rich_message": rich_message, **kwargs}))
         return SimpleNamespace(message_id=800 + len(self.messages))
 
 
@@ -125,6 +129,7 @@ class FeatureFlowTests(unittest.IsolatedAsyncioTestCase):
         message = SimpleNamespace(
             from_user=SimpleNamespace(id=42),
             answer=AsyncMock(),
+            answer_rich=AsyncMock(),
             bot=bot,
         )
 
@@ -142,14 +147,15 @@ class FeatureFlowTests(unittest.IsolatedAsyncioTestCase):
                 "caption": "",
             }],
         )
-        answer = message.answer.await_args.kwargs
-        self.assertIn("Night Quest", answer["text"])
-        self.assertIn("A safe <b>literal</b> description", answer["text"])
-        self.assertIn("3", answer["text"])
-        self.assertIn("4", answer["text"])
-        self.assertIsNone(answer["parse_mode"])
-        self.assertTrue(answer["entities"])
-        buttons = answer["reply_markup"].inline_keyboard[0]
+        answer = message.answer_rich.await_args
+        preview = answer.args[0]
+        serialized = str(preview.model_dump(mode="json", exclude_none=True))
+        self.assertIn("Night Quest", serialized)
+        self.assertIn("A safe <b>literal</b> description", serialized)
+        self.assertIn("3", serialized)
+        self.assertIn("4", serialized)
+        self.assertEqual(preview.blocks[2].blocks[0].text, "A safe <b>literal</b> description")
+        buttons = answer.kwargs["reply_markup"].inline_keyboard[0]
         self.assertEqual(buttons[0].callback_data, "quest:joinconfirm:17:private-token")
         self.assertEqual(buttons[1].callback_data, "quest:joincancel:17")
         # The start-link handler only renders a preview; the confirmation callback performs the join.
@@ -178,6 +184,55 @@ class FeatureFlowTests(unittest.IsolatedAsyncioTestCase):
         callback.answer.assert_awaited_once()
         self.assertTrue(callback.answer.await_args.kwargs["show_alert"])
 
+    async def test_my_quests_visibility_filters_keep_their_page_and_query_scope(self) -> None:
+        class Db:
+            async def get_language(self, user_id: int) -> str:
+                return "en"
+
+            async def settings_get(self, key: str, default: str) -> str:
+                return "2"
+
+            async def list_user_quests(
+                self, user_id: int, offset: int, limit: int, visibility: str | None = None
+            ) -> list[dict]:
+                self.query = (user_id, offset, limit, visibility)
+                return [self._quest(12), self._quest(13)]
+
+            @staticmethod
+            def _quest(quest_id: int) -> dict:
+                return {"id": quest_id, "title": f"Private {quest_id}", "visibility": "private"}
+
+        db = Db()
+        message = SimpleNamespace(
+            chat=SimpleNamespace(type="private", id=42),
+            edit_text=AsyncMock(),
+        )
+        callback = SimpleNamespace(
+            data="quest:mylist:private:1",
+            from_user=SimpleNamespace(id=42),
+            message=message,
+            answer=AsyncMock(),
+        )
+
+        await my_quests_callback(callback, db)
+
+        self.assertEqual(db.query, (42, 2, 2, "private"))
+        markup = message.edit_text.await_args.kwargs["reply_markup"]
+        self.assertEqual(
+            [button.callback_data for button in markup.inline_keyboard[0]],
+            [
+                "quest:mylist:all:0",
+                "quest:mylist:public:0",
+                "quest:mylist:private:0",
+            ],
+        )
+        self.assertTrue(markup.inline_keyboard[0][2].text.startswith("✓ "))
+        self.assertEqual(
+            [button.callback_data for button in markup.inline_keyboard[-2]],
+            ["quest:mylist:private:0", "quest:mylist:private:2"],
+        )
+        callback.answer.assert_awaited_once()
+
     async def test_public_join_button_opens_details_before_any_join_write(self) -> None:
         quest = self._quest(
             visibility="public", cover_chat_id=None, cover_message_id=None
@@ -205,9 +260,10 @@ class FeatureFlowTests(unittest.IsolatedAsyncioTestCase):
         await request_quest_join(callback, db)
 
         preview = message.edit_text.await_args.kwargs
-        self.assertIn("Night Quest", preview["text"])
-        self.assertIn("A safe <b>literal</b> description", preview["text"])
-        self.assertIn("6", preview["text"])
+        content = str(preview["rich_message"].model_dump(mode="json", exclude_none=True))
+        self.assertIn("Night Quest", content)
+        self.assertIn("A safe <b>literal</b> description", content)
+        self.assertIn("6", content)
         buttons = preview["reply_markup"].inline_keyboard[0]
         self.assertEqual(buttons[0].callback_data, "quest:joinconfirm:17")
         self.assertEqual(buttons[1].callback_data, "quest:joincancel:17")
@@ -234,7 +290,8 @@ class FeatureFlowTests(unittest.IsolatedAsyncioTestCase):
         await cancel_quest_join(callback, Db(quest))
 
         self.assertEqual(callback.answer.await_args.args[0], "Joining the quest was cancelled.")
-        self.assertIn("Night Quest", message.edit_text.await_args.kwargs["text"])
+        content = message.edit_text.await_args.kwargs["rich_message"]
+        self.assertIn("Night Quest", str(content.model_dump(mode="json", exclude_none=True)))
         self.assertFalse(hasattr(Db, "join_quest"))
 
     async def test_explicit_confirmation_callback_is_the_join_action(self) -> None:
@@ -347,9 +404,18 @@ class FeatureFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(markup.inline_keyboard[0][0].callback_data, "quest:joinconfirm:17:token_value")
         self.assertEqual(markup.inline_keyboard[0][1].callback_data, "quest:joincancel:17")
         self.assertEqual(admin_home_keyboard("en").inline_keyboard[0][0].callback_data, "admin:home")
+        participating_markup = participating_quests_keyboard("en", [self._quest()])
         self.assertEqual(
-            participating_quests_keyboard("en", [self._quest()]).inline_keyboard[0][0].callback_data,
-            "quest:view:my:17",
+            [button.callback_data for button in participating_markup.inline_keyboard[0]],
+            [
+                "quest:mylist:all:0",
+                "quest:mylist:public:0",
+                "quest:mylist:private:0",
+            ],
+        )
+        self.assertEqual(
+            participating_markup.inline_keyboard[1][0].callback_data,
+            "quest:view:my:all:0:17",
         )
         manage_markup = manage_quest("en", self._quest(paused_at="2026-10-01T00:00:00+00:00"), "admin")
         callbacks = [button.callback_data for row in manage_markup.inline_keyboard for button in row]
@@ -372,7 +438,7 @@ class FeatureFlowTests(unittest.IsolatedAsyncioTestCase):
             edit_text=AsyncMock(),
         )
         callback = SimpleNamespace(
-            data="quest:view:my:17",
+            data="quest:view:my:private:1:17",
             from_user=SimpleNamespace(id=42),
             message=message,
             answer=AsyncMock(),
@@ -383,12 +449,12 @@ class FeatureFlowTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(bot.copies[0]["from_chat_id"], -100123)
         edited = message.edit_text.await_args.kwargs
-        self.assertIn("Night Quest", edited["text"])
-        self.assertIn("4", edited["text"])
-        self.assertIsNone(edited["parse_mode"])
+        content = str(edited["rich_message"].model_dump(mode="json", exclude_none=True))
+        self.assertIn("Night Quest", content)
+        self.assertIn("4", content)
         self.assertEqual(
             edited["reply_markup"].inline_keyboard[-1][0].callback_data,
-            "quest:mylist:0",
+            "quest:mylist:private:1",
         )
 
     async def test_cover_photo_is_copied_to_private_archive_and_kept_as_message_reference(self) -> None:
@@ -509,7 +575,10 @@ class FeatureFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(message.bot.messages), 1)
         recipient, notice = message.bot.messages[0]
         self.assertEqual(recipient, 90)
-        self.assertIn("Silver Quest", notice["text"])
+        self.assertIn(
+            "Silver Quest",
+            str(notice["rich_message"].model_dump(mode="json", exclude_none=True)),
+        )
         self.assertIsNotNone(notice["reply_markup"])
         self.assertEqual(
             notice["reply_markup"].inline_keyboard[0][0].callback_data,
@@ -552,8 +621,9 @@ class FeatureFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("reply_markup", message.answer.await_args.kwargs)
         self.assertEqual(len(bot.messages), 1)
         _, notice = bot.messages[0]
-        self.assertIn("#31", notice["text"])
-        self.assertIn("Superadmin", notice["text"])
+        notice_text = str(notice["rich_message"].model_dump(mode="json", exclude_none=True))
+        self.assertIn("#31", notice_text)
+        self.assertIn("Superadmin", notice_text)
         self.assertEqual(
             notice["reply_markup"].inline_keyboard[0][0].callback_data,
             "support:reply:31",
@@ -595,17 +665,54 @@ class FeatureFlowTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(bot.messages), 1)
             target, reply = bot.messages[0]
             self.assertEqual(target, 20)
-            self.assertIn(expected_source, reply["text"])
-            self.assertIn("#31", reply["text"])
+            reply_text = str(reply["rich_message"].model_dump(mode="json", exclude_none=True))
+            self.assertIn(expected_source, reply_text)
+            self.assertIn("#31", reply_text)
             self.assertIsNotNone(reply["reply_markup"])
             self.assertNotIn("reply_markup", message.answer.await_args.kwargs)
 
     async def test_safe_rich_text_keeps_user_markup_literal(self) -> None:
-        kwargs = quest_preview(self._quest(), "en", 4).as_kwargs()
-        self.assertIn("<b>literal</b>", kwargs["text"])
-        self.assertEqual(kwargs["parse_mode"], None)
-        self.assertTrue(any(entity.type == "blockquote" for entity in kwargs["entities"]))
-        self.assertTrue(any(entity.type == "bold" for entity in kwargs["entities"]))
+        preview = quest_preview(self._quest(), "en", 4)
+        self.assertEqual(preview.blocks[2].type, "blockquote")
+        self.assertEqual(
+            preview.blocks[2].blocks[0].text,
+            "A safe <b>literal</b> description",
+        )
+        serialized = str(preview.model_dump(mode="json", exclude_none=True))
+        self.assertIn("<b>literal</b>", serialized)
+
+    async def test_guide_renders_as_a_localized_rich_message_with_numbered_steps(self) -> None:
+        for language, expected_title in (("uz", "Yo‘riqnoma"), ("ru", "Инструкция"), ("en", "Guide")):
+            rich = guide_message(language)
+            payload = rich.model_dump(mode="json", exclude_none=True)
+            self.assertIn(expected_title, payload["blocks"][0]["text"])
+            self.assertEqual(payload["blocks"][1]["type"], "list")
+            self.assertEqual(payload["blocks"][1]["items"][0]["type"], "1")
+
+    async def test_support_history_formats_separate_literal_message_quotes(self) -> None:
+        history = support_history(
+            [("You", "<b>literal</b>"), ("Quest admin", "Thanks")],
+            "Ticket #31 (Open):",
+            "—",
+        )
+
+        payload = history.model_dump(mode="json", exclude_none=True)
+        self.assertEqual(payload["blocks"][0]["type"], "heading")
+        self.assertEqual(payload["blocks"][1]["type"], "divider")
+        self.assertEqual(payload["blocks"][2]["type"], "blockquote")
+        self.assertIn("<b>literal</b>", str(payload))
+        self.assertEqual(len([block for block in payload["blocks"] if block["type"] == "blockquote"]), 2)
+
+    async def test_safe_edit_passes_native_rich_message_and_preserves_keyboard(self) -> None:
+        message = SimpleNamespace(edit_text=AsyncMock())
+        callback = SimpleNamespace(message=message)
+        rich_message = quest_preview(self._quest(), "en", 4)
+        markup = join_confirmation_keyboard("en", 17)
+
+        self.assertTrue(await safe_edit(callback, rich_message, markup))
+        message.edit_text.assert_awaited_once_with(
+            rich_message=rich_message, reply_markup=markup
+        )
 
     async def test_safe_edit_reports_successful_message_updates(self) -> None:
         message = SimpleNamespace(edit_text=AsyncMock())

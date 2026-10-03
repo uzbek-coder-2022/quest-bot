@@ -7,6 +7,7 @@ from quest_bot.services import (
     announce_stage,
     archive_question_message,
     send_stage_to_user,
+    stage_message,
     validate_question_archive,
 )
 
@@ -14,7 +15,7 @@ from quest_bot.services import (
 class FakeBot:
     def __init__(self) -> None:
         self.copies: list[dict] = []
-        self.messages: list[tuple[int, str]] = []
+        self.messages: list[tuple[int, object]] = []
 
     async def copy_message(self, **kwargs):
         self.copies.append(kwargs)
@@ -22,6 +23,9 @@ class FakeBot:
 
     async def send_message(self, chat_id: int, text: str, **kwargs) -> None:
         self.messages.append((chat_id, text))
+
+    async def send_rich_message(self, chat_id: int, rich_message, **kwargs) -> None:
+        self.messages.append((chat_id, rich_message))
 
     async def delete_message(self, **kwargs) -> None:
         return None
@@ -109,6 +113,30 @@ class QuestionArchiveTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(bot.copies[1]["from_chat_id"], -10077)
         self.assertEqual(bot.copies[1]["message_id"], 501)
         self.assertIsNotNone(bot.copies[1]["reply_markup"])
+        self.assertEqual(bot.messages[0][1].blocks[0].text, "Archive test")
+        self.assertEqual(bot.messages[2][1].blocks[0].text, "Archive test")
+
+    async def test_text_stage_is_structured_and_keeps_question_markup_literal(self) -> None:
+        message = stage_message(
+            "en",
+            {"title": "Literal quest"},
+            {
+                "stage_order": 2,
+                "question": "Question with <b>literal markup</b>",
+                "max_attempts": 3,
+                "time_limit_seconds": 120,
+            },
+        )
+
+        payload = message.model_dump(mode="json", exclude_none=True)
+        self.assertEqual(payload["blocks"][0]["type"], "heading")
+        self.assertEqual(payload["blocks"][2]["type"], "blockquote")
+        self.assertEqual(
+            payload["blocks"][2]["blocks"][0]["text"],
+            "Question with <b>literal markup</b>",
+        )
+        self.assertIn("Attempts", str(payload))
+        self.assertIn("Time limit: 2 minutes", str(payload))
 
     async def test_immediate_later_stages_are_not_copied_to_the_group(self) -> None:
         bot = FakeBot()

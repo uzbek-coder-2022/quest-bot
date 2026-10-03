@@ -117,7 +117,12 @@ def browse_filters(language: str, current: str, page: int, items: list[dict], pa
 
 
 def quest_detail(
-    language: str, quest: dict, joined: bool = False, from_my_quests: bool = False
+    language: str,
+    quest: dict,
+    joined: bool = False,
+    from_my_quests: bool = False,
+    my_quests_visibility: str = "all",
+    my_quests_page: int = 0,
 ) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
     if (not joined and not quest.get("paused_at") and quest["visibility"] == "public"
@@ -126,7 +131,11 @@ def quest_detail(
     rows.append([button(tr(language, "btn_rank"), f"rating:show:{quest['id']}")])
     if joined and quest.get("chat_id") and quest["status"] == "active" and not quest.get("paused_at"):
         rows.append([button(tr(language, "btn_invite"), f"quest:chatinvite:{quest['id']}")])
-    back_data = "quest:mylist:0" if from_my_quests else "browse:filter:all:0"
+    back_data = (
+        f"quest:mylist:{my_quests_visibility}:{max(0, my_quests_page)}"
+        if from_my_quests
+        else "browse:filter:all:0"
+    )
     rows.append([button(tr(language, "btn_back"), back_data)])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -140,14 +149,40 @@ def join_confirmation_keyboard(language: str, quest_id: int, token: str | None =
 
 
 def participating_quests_keyboard(
-    language: str, quests: list[dict], page: int = 0, page_size: int = 20
+    language: str,
+    quests: list[dict],
+    page: int = 0,
+    page_size: int = 20,
+    visibility: str = "all",
 ) -> InlineKeyboardMarkup:
-    rows = [[button(f"🧭 {quest['title'][:47]}", f"quest:view:my:{quest['id']}")] for quest in quests]
+    if visibility not in {"all", "public", "private"}:
+        visibility = "all"
+    filter_labels = {
+        "all": tr(language, "filter_all"),
+        "public": tr(language, "visibility_public"),
+        "private": tr(language, "visibility_private"),
+    }
+    rows = [[
+        button(
+            f"✓ {label}" if selected == visibility else label,
+            f"quest:mylist:{selected}:0",
+        )
+        for selected, label in filter_labels.items()
+    ]]
+    rows.extend(
+        [
+            button(
+                f"🧭 {quest['title'][:47]}",
+                f"quest:view:my:{visibility}:{page}:{quest['id']}",
+            )
+        ]
+        for quest in quests
+    )
     nav: list[InlineKeyboardButton] = []
     if page > 0:
-        nav.append(button("◀️", f"quest:mylist:{page - 1}"))
+        nav.append(button("◀️", f"quest:mylist:{visibility}:{page - 1}"))
     if len(quests) == page_size:
-        nav.append(button("▶️", f"quest:mylist:{page + 1}"))
+        nav.append(button("▶️", f"quest:mylist:{visibility}:{page + 1}"))
     if nav:
         rows.append(nav)
     rows.append([button(tr(language, "btn_home"), "menu:home")])

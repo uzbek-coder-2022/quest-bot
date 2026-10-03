@@ -105,6 +105,7 @@ def make_callback(data: str, bot: FakeBot | None = None, user_id: int = 7):
         bot=bot,
         edit_text=AsyncMock(),
         answer=AsyncMock(),
+        answer_rich=AsyncMock(),
     )
     callback = SimpleNamespace(
         data=data,
@@ -124,6 +125,7 @@ def make_photo_message(state_data: dict, bot: FakeBot):
         text=None,
         bot=bot,
         answer=AsyncMock(),
+        answer_rich=AsyncMock(),
     )
 
 
@@ -144,7 +146,10 @@ class QuestMetadataEditingTests(unittest.IsolatedAsyncioTestCase):
 
         edited = message.edit_text.await_args.kwargs
         self.assertIsNotNone(edited["reply_markup"])
-        self.assertTrue(any("Finished quest" in entity_text for entity_text in [edited["text"]]))
+        self.assertIn(
+            "Finished quest",
+            str(edited["rich_message"].model_dump(mode="json", exclude_none=True)),
+        )
         self.assertEqual(callback.answer.await_count, 1)
 
         db.quest["status"] = "archived"
@@ -205,16 +210,19 @@ class QuestMetadataEditingTests(unittest.IsolatedAsyncioTestCase):
 
         user_title = "<b>Literal title</b>"
         message = SimpleNamespace(
-            from_user=SimpleNamespace(id=7), text=user_title, answer=AsyncMock()
+            from_user=SimpleNamespace(id=7),
+            text=user_title,
+            answer=AsyncMock(),
+            answer_rich=AsyncMock(),
         )
         await quest_title_received(message, state, db)
         self.assertEqual(db.quest["title"], user_title)
         self.assertTrue(state.cleared)
-        rendered = message.answer.await_args.kwargs
-        self.assertIn(user_title, rendered["text"])
-        self.assertIsNone(rendered["parse_mode"])
-        self.assertTrue(any(entity.type == "blockquote" for entity in rendered["entities"]))
-        self.assertIsNotNone(rendered["reply_markup"])
+        rendered = message.answer_rich.await_args
+        rich_message = rendered.args[0]
+        self.assertEqual(rich_message.blocks[2].blocks[0].text, user_title)
+        self.assertEqual(rich_message.blocks[2].type, "blockquote")
+        self.assertIsNotNone(rendered.kwargs["reply_markup"])
 
     async def test_description_edit_has_separate_validation_and_saves_completed_quest(self) -> None:
         db = FakeMetadataDatabase()
@@ -231,15 +239,18 @@ class QuestMetadataEditingTests(unittest.IsolatedAsyncioTestCase):
 
         description = "A revised <i>description</i>"
         message = SimpleNamespace(
-            from_user=SimpleNamespace(id=7), text=description, answer=AsyncMock()
+            from_user=SimpleNamespace(id=7),
+            text=description,
+            answer=AsyncMock(),
+            answer_rich=AsyncMock(),
         )
         await quest_description_received(message, state, db)
         self.assertEqual(db.quest["description"], description)
         self.assertTrue(state.cleared)
-        rendered = message.answer.await_args.kwargs
-        self.assertIn(description, rendered["text"])
-        self.assertIsNone(rendered["parse_mode"])
-        self.assertTrue(any(entity.type == "blockquote" for entity in rendered["entities"]))
+        rendered = message.answer_rich.await_args
+        rich_message = rendered.args[0]
+        self.assertEqual(rich_message.blocks[2].blocks[0].text, description)
+        self.assertEqual(rich_message.blocks[2].type, "blockquote")
 
     async def test_cover_editor_copies_existing_archive_reference_and_hides_remove_when_empty(self) -> None:
         db = FakeMetadataDatabase()
@@ -282,7 +293,7 @@ class QuestMetadataEditingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(db.quest["cover_message_id"], 901)
         self.assertEqual(bot.deletions, [{"chat_id": -100111, "message_id": 12}])
         self.assertTrue(state.cleared)
-        self.assertIsNotNone(message.answer.await_args.kwargs["reply_markup"])
+        self.assertIsNotNone(message.answer_rich.await_args.kwargs["reply_markup"])
 
     async def test_cover_add_without_previous_photo_does_not_download_or_delete_media(self) -> None:
         db = FakeMetadataDatabase()

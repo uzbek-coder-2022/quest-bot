@@ -377,12 +377,29 @@ class DatabaseFlowTests(unittest.IsolatedAsyncioTestCase):
             (await self.db.join_quest(quest_id, 20, "private-list-token", utc_now()))["code"],
             "joined",
         )
+        public_quest_id = await self.create_quest()
+        self.assertEqual(
+            (await self.db.join_quest(public_quest_id, 20, None, utc_now()))["code"],
+            "joined",
+        )
+
         listed = await self.db.list_user_quests(20)
-        self.assertEqual([item["id"] for item in listed], [quest_id])
-        self.assertEqual(listed[0]["visibility"], "private")
+        self.assertEqual({item["id"] for item in listed}, {quest_id, public_quest_id})
+        self.assertEqual(
+            [item["id"] for item in await self.db.list_user_quests(20, visibility="private")],
+            [quest_id],
+        )
+        self.assertEqual(
+            [item["id"] for item in await self.db.list_user_quests(20, visibility="public")],
+            [public_quest_id],
+        )
         self.assertEqual(await self.db.participant_count(quest_id), 1)
         await self.db.set_participant_block(quest_id, 20, "blocked", True)
-        self.assertEqual(await self.db.list_user_quests(20), [])
+        self.assertEqual(
+            [item["id"] for item in await self.db.list_user_quests(20)],
+            [public_quest_id],
+        )
+        self.assertEqual(await self.db.list_user_quests(20, visibility="private"), [])
         self.assertEqual(await self.db.participant_count(quest_id), 0)
 
     async def test_per_quest_leaderboard_returns_grouped_user_details(self) -> None:

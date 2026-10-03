@@ -639,16 +639,28 @@ class Database:
             cursor = await connection.execute(query, values)
             return [dict(row) for row in await cursor.fetchall()]
 
-    async def list_user_quests(self, user_id: int, offset: int = 0, limit: int = 20) -> list[dict[str, Any]]:
-        """Return non-blocked joined quests, including private quests."""
+    async def list_user_quests(
+        self,
+        user_id: int,
+        offset: int = 0,
+        limit: int = 20,
+        visibility: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return non-blocked joined quests, optionally filtered by visibility."""
+        clauses = ["p.user_id=?", "p.status!='blocked'"]
+        values: list[Any] = [user_id]
+        if visibility in {"public", "private"}:
+            clauses.append("q.visibility=?")
+            values.append(visibility)
+        values.extend((limit, offset))
         async with self._connection() as connection:
             cursor = await connection.execute(
                 "SELECT q.*,p.status AS participant_status,p.joined_at AS participant_joined_at,"
                 "(SELECT COUNT(*) FROM stages s WHERE s.quest_id=q.id) AS stage_count "
                 "FROM quest_participants p JOIN quests q ON q.id=p.quest_id "
-                "WHERE p.user_id=? AND p.status!='blocked' "
+                f"WHERE {' AND '.join(clauses)} "
                 "ORDER BY p.joined_at DESC,q.id DESC LIMIT ? OFFSET ?",
-                (user_id, limit, offset),
+                values,
             )
             return [dict(row) for row in await cursor.fetchall()]
 

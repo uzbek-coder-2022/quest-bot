@@ -6,8 +6,7 @@ from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 from aiogram.exceptions import TelegramBadRequest
-from aiogram.types import CallbackQuery, InlineKeyboardMarkup
-from aiogram.utils.formatting import Text
+from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InputRichMessage
 
 from .database import Database
 from .localization import tr
@@ -18,7 +17,9 @@ LOCAL_TZ = ZoneInfo("Asia/Tashkent")
 def parse_local_datetime(value: str) -> str | None:
     """Parse a Tashkent-local timestamp and return an aware UTC ISO string."""
     try:
-        local_value = datetime.strptime(value.strip(), "%Y-%m-%d %H:%M").replace(tzinfo=LOCAL_TZ)
+        local_value = datetime.strptime(value.strip(), "%Y-%m-%d %H:%M").replace(
+            tzinfo=LOCAL_TZ
+        )
     except ValueError:
         return None
     return local_value.astimezone(timezone.utc).replace(microsecond=0).isoformat()
@@ -36,7 +37,9 @@ def format_datetime(value: str | None, language: str) -> str:
         return str(value)
 
 
-def display_name(full_name: str | None, username: str | None, user_id: int | None = None) -> str:
+def display_name(
+    full_name: str | None, username: str | None, user_id: int | None = None
+) -> str:
     if full_name:
         return full_name
     if username:
@@ -54,16 +57,22 @@ async def ensure_private_callback(callback: CallbackQuery, db: Database) -> bool
 
 async def can_manage_quest(db: Database, user_id: int, quest: dict) -> bool:
     role = await db.get_role(user_id)
-    return role == "superadmin" or (role == "admin" and int(quest["owner_id"]) == user_id)
+    return role == "superadmin" or (
+        role == "admin" and int(quest["owner_id"]) == user_id
+    )
 
 
 async def safe_edit(
-    callback: CallbackQuery, text: str | Text, reply_markup: InlineKeyboardMarkup | None = None
+    callback: CallbackQuery,
+    text: str | InputRichMessage,
+    reply_markup: InlineKeyboardMarkup | None = None,
 ) -> bool:
-    """Edit a callback message, returning False only when Telegram reports no change."""
+    """Edit a callback message with plain text or structured Telegram rich content."""
     if not callback.message:
         return False
-    kwargs = text.as_kwargs() if isinstance(text, Text) else {"text": text}
+    kwargs = (
+        {"rich_message": text} if isinstance(text, InputRichMessage) else {"text": text}
+    )
     try:
         await callback.message.edit_text(**kwargs, reply_markup=reply_markup)
         return True

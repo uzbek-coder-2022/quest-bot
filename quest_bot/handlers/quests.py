@@ -9,7 +9,6 @@ from aiogram.exceptions import TelegramAPIError
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
-from aiogram.utils.formatting import BlockQuote, Bold, Text
 
 from ..config import Settings
 from ..database import Database, utc_now
@@ -36,7 +35,13 @@ from ..keyboards import (
 )
 from ..localization import tr
 from ..periods import current_period_bounds
-from ..presentation import copy_quest_cover, quest_preview
+from ..presentation import (
+    activity_message,
+    copy_quest_cover,
+    information_message,
+    quest_preview,
+)
+from ..rich_text import bold, heading, paragraph, quote, rich_message
 from ..services import (
     archive_question_message,
     delete_archived_message,
@@ -71,24 +76,32 @@ def _participant_status(language: str, status: str) -> str:
     return tr(language, key)
 
 
-async def _show_public_page(callback: CallbackQuery, db: Database, status: str, page: int) -> None:
+async def _show_public_page(
+    callback: CallbackQuery, db: Database, status: str, page: int
+) -> None:
     language = await db.get_language(callback.from_user.id)
     page_size = int(await db.settings_get("page_size", "10"))
     selected_status = None if status == "all" else status
-    items = await db.list_public_quests(selected_status, max(0, page) * page_size, page_size)
+    items = await db.list_public_quests(
+        selected_status, max(0, page) * page_size, page_size
+    )
     title = tr(language, "quests_title")
     if status != "all":
         title += f" · {tr(language, f'filter_{status}')}"
-    text = title if items else f"{title}\n\n{tr(language, 'empty_quests')}"
+    text = information_message(title, None if items else tr(language, "empty_quests"))
     if callback.message:
         await safe_edit(
             callback,
             text,
-            reply_markup=browse_filters(language, status, max(0, page), items, page_size),
+            reply_markup=browse_filters(
+                language, status, max(0, page), items, page_size
+            ),
         )
 
 
-async def _show_manage_page(callback: CallbackQuery, db: Database, status: str, page: int) -> None:
+async def _show_manage_page(
+    callback: CallbackQuery, db: Database, status: str, page: int
+) -> None:
     if not await ensure_private_callback(callback, db):
         return
     language = await db.get_language(callback.from_user.id)
@@ -106,13 +119,14 @@ async def _show_manage_page(callback: CallbackQuery, db: Database, status: str, 
         page_size,
     )
     title = tr(language, "my_quests_title")
-    if not items:
-        title += f"\n\n{tr(language, 'empty_quests')}"
+    body = information_message(title, None if items else tr(language, "empty_quests"))
     if callback.message:
         await safe_edit(
             callback,
-            title,
-            reply_markup=admin_quest_filters(language, status, max(0, page), items, page_size),
+            body,
+            reply_markup=admin_quest_filters(
+                language, status, max(0, page), items, page_size
+            ),
         )
 
 
@@ -124,9 +138,10 @@ async def quests_command(message: Message, db: Database) -> None:
     page_size = int(await db.settings_get("page_size", "10"))
     items = await db.list_public_quests(None, 0, page_size)
     title = tr(language, "quests_title")
-    if not items:
-        title += f"\n\n{tr(language, 'empty_quests')}"
-    await message.answer(title, reply_markup=browse_filters(language, "all", 0, items, page_size))
+    await message.answer_rich(
+        information_message(title, None if items else tr(language, "empty_quests")),
+        reply_markup=browse_filters(language, "all", 0, items, page_size),
+    )
 
 
 @router.message(Command("myquests"))
@@ -137,13 +152,17 @@ async def my_quests_command(message: Message, db: Database) -> None:
     if message.chat.type != "private":
         await message.answer(tr(language, "open_private_chat"))
         return
-    items = await db.list_user_quests(message.from_user.id, 0, 20)
-    text = tr(language, "my_participating_quests_title")
-    if not items:
-        text += f"\n\n{tr(language, 'empty_quests')}"
-    await message.answer(
+    page_size = int(await db.settings_get("page_size", "20"))
+    items = await db.list_user_quests(message.from_user.id, 0, page_size)
+    text = information_message(
+        tr(language, "my_participating_quests_title"),
+        None if items else tr(language, "empty_quests"),
+    )
+    await message.answer_rich(
         text,
-        reply_markup=participating_quests_keyboard(language, items, 0, 20),
+        reply_markup=participating_quests_keyboard(
+            language, items, 0, page_size, "all"
+        ),
     )
 
 
@@ -152,21 +171,42 @@ async def my_quests_callback(callback: CallbackQuery, db: Database) -> None:
     if not await ensure_private_callback(callback, db):
         return
     try:
-        page = max(0, int(callback.data.rsplit(":", 1)[1]))
+        parts = callback.data.split(":")
+        if len(parts) == 3:
+            visibility = "all"
+            page = max(0, int(parts[2]))
+        elif len(parts) == 4:
+            visibility = parts[2]
+            page = max(0, int(parts[3]))
+        else:
+            raise ValueError("Invalid participating-quest list callback")
+        if visibility not in {"all", "public", "private"}:
+            raise ValueError("Invalid participating-quest visibility")
     except (ValueError, AttributeError):
         await callback.answer()
         return
     language = await db.get_language(callback.from_user.id)
     page_size = int(await db.settings_get("page_size", "20"))
-    items = await db.list_user_quests(callback.from_user.id, page * page_size, page_size)
-    text = tr(language, "my_participating_quests_title")
-    if not items:
-        text += f"\n\n{tr(language, 'empty_quests')}"
+    items = await db.list_user_quests(
+        callback.from_user.id,
+        page * page_size,
+        page_size,
+        visibility=None if visibility == "all" else visibility,
+    )
+    title = tr(language, "my_participating_quests_title")
+    if visibility != "all":
+        title += f" · {tr(language, f'visibility_{visibility}')}"
+    text = information_message(
+        title,
+        None if items else tr(language, "empty_quests"),
+    )
     if callback.message:
         await safe_edit(
             callback,
             text,
-            reply_markup=participating_quests_keyboard(language, items, page, page_size),
+            reply_markup=participating_quests_keyboard(
+                language, items, page, page_size, visibility
+            ),
         )
     await callback.answer()
 
@@ -203,9 +243,18 @@ async def manage_filter_callback(callback: CallbackQuery, db: Database) -> None:
 
 @router.callback_query(F.data.startswith("quest:view:"))
 async def view_quest_callback(callback: CallbackQuery, db: Database, bot: Bot) -> None:
+    my_quests_visibility = "all"
+    my_quests_page = 0
     try:
         parts = callback.data.split(":")
-        if len(parts) == 4 and parts[2] == "my":
+        if len(parts) == 6 and parts[2] == "my":
+            from_my_quests = True
+            my_quests_visibility = parts[3]
+            my_quests_page = max(0, int(parts[4]))
+            quest_id = int(parts[5])
+            if my_quests_visibility not in {"all", "public", "private"}:
+                raise ValueError("Invalid participating-quest visibility")
+        elif len(parts) == 4 and parts[2] == "my":
             from_my_quests = True
             quest_id = int(parts[3])
         else:
@@ -219,13 +268,17 @@ async def view_quest_callback(callback: CallbackQuery, db: Database, bot: Bot) -
     if not quest:
         await callback.answer(tr(language, "quest_not_found"), show_alert=True)
         return
-    if quest["visibility"] == "private" and not await ensure_private_callback(callback, db):
+    if quest["visibility"] == "private" and not await ensure_private_callback(
+        callback, db
+    ):
         return
     participant = await db.participant(quest_id, callback.from_user.id)
     manager = await can_manage_quest(db, callback.from_user.id, quest)
-    if (quest["visibility"] == "private"
-            and not (participant and participant["status"] != "blocked")
-            and not manager):
+    if (
+        quest["visibility"] == "private"
+        and not (participant and participant["status"] != "blocked")
+        and not manager
+    ):
         await callback.answer(tr(language, "quest_not_found"), show_alert=True)
         return
 
@@ -240,6 +293,8 @@ async def view_quest_callback(callback: CallbackQuery, db: Database, bot: Bot) -
                 quest,
                 joined=bool(participant and participant["status"] != "blocked"),
                 from_my_quests=from_my_quests,
+                my_quests_visibility=my_quests_visibility,
+                my_quests_page=my_quests_page,
             ),
         )
     await callback.answer()
@@ -273,7 +328,9 @@ async def request_quest_join(callback: CallbackQuery, db: Database) -> None:
                 if participant.get("ban_reason")
                 else ""
             )
-            await callback.answer(tr(language, "blocked_notice", reason=suffix), show_alert=True)
+            await callback.answer(
+                tr(language, "blocked_notice", reason=suffix), show_alert=True
+            )
         else:
             await callback.answer(tr(language, "already_joined"), show_alert=True)
         return
@@ -307,7 +364,9 @@ async def confirm_quest_join(callback: CallbackQuery, db: Database, bot: Bot) ->
     if code == "globally_banned":
         reason = joined.get("reason")
         suffix = tr(language, "reason_line", reason=reason) if reason else ""
-        await callback.answer(tr(language, "global_blocked", reason=suffix), show_alert=True)
+        await callback.answer(
+            tr(language, "global_blocked", reason=suffix), show_alert=True
+        )
         return
     if code == "already_joined":
         await callback.answer(tr(language, "already_joined"), show_alert=True)
@@ -319,7 +378,9 @@ async def confirm_quest_join(callback: CallbackQuery, db: Database, bot: Bot) ->
             if participant and participant.get("ban_reason")
             else ""
         )
-        await callback.answer(tr(language, "blocked_notice", reason=suffix), show_alert=True)
+        await callback.answer(
+            tr(language, "blocked_notice", reason=suffix), show_alert=True
+        )
         return
     if code == "paused":
         await callback.answer(tr(language, "quest_paused_notice"), show_alert=True)
@@ -348,7 +409,9 @@ async def confirm_quest_join(callback: CallbackQuery, db: Database, bot: Bot) ->
         )
     if quest.get("chat_id"):
         if quest["status"] == "active":
-            invite_link = await get_chat_invite_for_participant(bot, db, quest, callback.from_user.id)
+            invite_link = await get_chat_invite_for_participant(
+                bot, db, quest, callback.from_user.id
+            )
             await bot.send_message(
                 callback.from_user.id,
                 tr(language, "invite_link_ready", link=invite_link)
@@ -356,10 +419,14 @@ async def confirm_quest_join(callback: CallbackQuery, db: Database, bot: Bot) ->
                 else tr(language, "invite_unavailable"),
             )
         else:
-            await bot.send_message(callback.from_user.id, tr(language, "invite_at_start"))
+            await bot.send_message(
+                callback.from_user.id, tr(language, "invite_at_start")
+            )
     if quest["status"] == "active":
         me = await bot.get_me()
-        await send_current_stage_after_join(bot, db, quest, callback.from_user.id, me.username or "")
+        await send_current_stage_after_join(
+            bot, db, quest, callback.from_user.id, me.username or ""
+        )
     await callback.answer()
 
 
@@ -374,7 +441,9 @@ async def cancel_quest_join(callback: CallbackQuery, db: Database) -> None:
         return
     language = await db.get_language(callback.from_user.id)
     quest = await db.get_quest(quest_id)
-    participant = await db.participant(quest_id, callback.from_user.id) if quest else None
+    participant = (
+        await db.participant(quest_id, callback.from_user.id) if quest else None
+    )
     if quest and quest["visibility"] == "public":
         if callback.message:
             await safe_edit(
@@ -387,12 +456,18 @@ async def cancel_quest_join(callback: CallbackQuery, db: Database) -> None:
                 ),
             )
     elif callback.message:
-        await safe_edit(callback, tr(language, "join_cancelled"), reply_markup=home_keyboard(language))
+        await safe_edit(
+            callback,
+            tr(language, "join_cancelled"),
+            reply_markup=home_keyboard(language),
+        )
     await callback.answer(tr(language, "join_cancelled"))
 
 
 @router.callback_query(F.data.startswith("quest:chatinvite:"))
-async def participant_chat_invite(callback: CallbackQuery, db: Database, bot: Bot) -> None:
+async def participant_chat_invite(
+    callback: CallbackQuery, db: Database, bot: Bot
+) -> None:
     if not await ensure_private_callback(callback, db):
         return
     try:
@@ -403,7 +478,13 @@ async def participant_chat_invite(callback: CallbackQuery, db: Database, bot: Bo
     language = await db.get_language(callback.from_user.id)
     quest = await db.get_quest(quest_id)
     participant = await db.participant(quest_id, callback.from_user.id)
-    if not quest or quest["status"] != "active" or not quest.get("chat_id") or not participant or participant["status"] in {"blocked", "failed"}:
+    if (
+        not quest
+        or quest["status"] != "active"
+        or not quest.get("chat_id")
+        or not participant
+        or participant["status"] in {"blocked", "failed"}
+    ):
         await callback.answer(tr(language, "quest_not_found"), show_alert=True)
         return
     link = await get_chat_invite_for_participant(bot, db, quest, callback.from_user.id)
@@ -427,7 +508,9 @@ async def show_leaderboard(callback: CallbackQuery, db: Database) -> None:
     if not quest:
         await callback.answer(tr(language, "quest_not_found"), show_alert=True)
         return
-    if quest["visibility"] == "private" and not await ensure_private_callback(callback, db):
+    if quest["visibility"] == "private" and not await ensure_private_callback(
+        callback, db
+    ):
         return
     participant = await db.participant(quest_id, callback.from_user.id)
     if (
@@ -438,26 +521,31 @@ async def show_leaderboard(callback: CallbackQuery, db: Database) -> None:
         await callback.answer(tr(language, "quest_not_found"), show_alert=True)
         return
     rows = await db.leaderboard(quest_id)
-    text = tr(language, "leaderboard_title", title=quest["title"])
-    if not rows:
-        text += f"\n\n{tr(language, 'leaderboard_empty')}"
-    else:
-        rendered = []
-        for rank, item in enumerate(rows[:30], start=1):
-            name = display_name(item.get("full_name"), item.get("username"), item.get("user_id"))
-            rendered.append(
-                tr(
-                    language,
-                    "leaderboard_row",
-                    rank=rank,
-                    name=name,
-                    solved=item["solved"],
-                    status=_participant_status(language, item["status"]),
-                )
+    title = tr(language, "leaderboard_title", title=quest["title"])
+    rendered = []
+    for rank, item in enumerate(rows[:30], start=1):
+        name = display_name(
+            item.get("full_name"), item.get("username"), item.get("user_id")
+        )
+        rendered.append(
+            tr(
+                language,
+                "leaderboard_row",
+                rank=rank,
+                name=name,
+                solved=item["solved"],
+                status=_participant_status(language, item["status"]),
             )
-        text += "\n\n" + "\n".join(rendered)
+        )
+    text = activity_message(
+        title, rendered, None if rendered else tr(language, "leaderboard_empty")
+    )
     role = await db.get_role(callback.from_user.id)
-    markup = admin_home_keyboard(language) if role in {"admin", "superadmin"} else home_keyboard(language)
+    markup = (
+        admin_home_keyboard(language)
+        if role in {"admin", "superadmin"}
+        else home_keyboard(language)
+    )
     if callback.message:
         await safe_edit(callback, text, reply_markup=markup)
     await callback.answer()
@@ -470,7 +558,7 @@ async def ratings_overview(callback: CallbackQuery, db: Database) -> None:
     if callback.message:
         await safe_edit(
             callback,
-            tr(language, "ratings_overview_title"),
+            information_message(tr(language, "ratings_overview_title")),
             reply_markup=ratings_overview_keyboard(language, role),
         )
     await callback.answer()
@@ -485,28 +573,31 @@ async def aggregate_leaderboard(callback: CallbackQuery, db: Database) -> None:
     language = await db.get_language(callback.from_user.id)
     start_at, end_at = current_period_bounds(period)
     items = await db.aggregate_leaderboard(start_at, end_at, limit=30)
-    text = tr(
+    title = tr(
         language,
         "aggregate_leaderboard_title",
         period=tr(language, f"period_{period}"),
     )
-    if not items:
-        text += f"\n\n{tr(language, 'aggregate_leaderboard_empty')}"
-    else:
-        rendered = []
-        for rank, item in enumerate(items, start=1):
-            name = display_name(item.get("full_name"), item.get("username"), item.get("user_id"))
-            rendered.append(
-                tr(
-                    language,
-                    "aggregate_leaderboard_row",
-                    rank=rank,
-                    name=name,
-                    points=item["solved"],
-                    completed=item["completed_quests"],
-                )
+    rendered = []
+    for rank, item in enumerate(items, start=1):
+        name = display_name(
+            item.get("full_name"), item.get("username"), item.get("user_id")
+        )
+        rendered.append(
+            tr(
+                language,
+                "aggregate_leaderboard_row",
+                rank=rank,
+                name=name,
+                points=item["solved"],
+                completed=item["completed_quests"],
             )
-        text += "\n\n" + "\n".join(rendered)
+        )
+    text = activity_message(
+        title,
+        rendered,
+        None if rendered else tr(language, "aggregate_leaderboard_empty"),
+    )
     role = await db.get_role(callback.from_user.id)
     return_home = (
         button(tr(language, "btn_admin_home"), "admin:home")
@@ -544,7 +635,9 @@ async def leaderboard_quest_list(callback: CallbackQuery, db: Database) -> None:
         if role not in {"admin", "superadmin"}:
             await callback.answer(tr(language, "admin_only"), show_alert=True)
             return
-        quests = await db.list_manageable_quests(callback.from_user.id, role == "superadmin", None, page * size, size)
+        quests = await db.list_manageable_quests(
+            callback.from_user.id, role == "superadmin", None, page * size, size
+        )
     else:
         quests = await db.list_public_quests(None, page * size, size)
     rows = [
@@ -563,10 +656,13 @@ async def leaderboard_quest_list(callback: CallbackQuery, db: Database) -> None:
         rows.append([button(tr(language, "btn_admin_home"), "admin:home")])
     else:
         rows.append([button(tr(language, "btn_home"), "menu:home")])
-    title_key = "btn_managed_ratings" if scope == "managed" else "btn_public_quest_ratings"
-    text = tr(language, title_key)
-    if not quests:
-        text += f"\n\n{tr(language, 'empty_quests')}"
+    title_key = (
+        "btn_managed_ratings" if scope == "managed" else "btn_public_quest_ratings"
+    )
+    text = information_message(
+        tr(language, title_key),
+        None if quests else tr(language, "empty_quests"),
+    )
     if callback.message:
         await safe_edit(
             callback, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows)
@@ -618,12 +714,10 @@ async def edit_quest_details_menu(callback: CallbackQuery, db: Database) -> None
     if callback.message:
         await safe_edit(
             callback,
-            Text(
-                Bold(f"🛠 {tr(language, 'edit_quest_details_title')}"),
-                "\n\n",
-                Bold(f"🧭 {quest['title']}"),
-                "\n\n",
-                BlockQuote(f"💡 {tr(language, 'edit_quest_details_hint')}"),
+            rich_message(
+                heading(f"🛠 {tr(language, 'edit_quest_details_title')}", size=1),
+                paragraph(bold(f"🧭 {quest['title']}")),
+                quote(f"💡 {tr(language, 'edit_quest_details_hint')}"),
             ),
             reply_markup=edit_quest_details_keyboard(language, quest_id),
         )
@@ -639,7 +733,9 @@ async def _clear_fsm_and_archived_drafts(state: FSMContext, bot: Bot) -> None:
         await delete_archived_message(
             bot, stage.get("source_chat_id"), stage.get("source_message_id")
         )
-    await delete_archived_message(bot, data.get("cover_chat_id"), data.get("cover_message_id"))
+    await delete_archived_message(
+        bot, data.get("cover_chat_id"), data.get("cover_message_id")
+    )
     await state.clear()
 
 
@@ -669,25 +765,21 @@ async def _begin_metadata_edit(
     await state.update_data(edit_quest_id=quest_id, edit_context="quest_metadata")
     if field == "title":
         await state.set_state(EditQuestDetails.title)
-        prompt = Text(
-            Bold(f"✏️ {tr(language, 'ask_quest_title')}"),
-            "\n\n",
-            Bold(f"📌 {tr(language, 'quest_label_title')}"),
-            "\n",
-            BlockQuote(str(quest["title"])),
+        prompt = rich_message(
+            heading(f"✏️ {tr(language, 'ask_quest_title')}", size=1),
+            paragraph(bold(f"📌 {tr(language, 'quest_label_title')}")),
+            quote(str(quest["title"])),
         )
     else:
         await state.set_state(EditQuestDetails.description)
-        prompt = Text(
-            Bold(f"📝 {tr(language, 'ask_quest_description')}"),
-            "\n\n",
-            Bold(f"📄 {tr(language, 'quest_label_description')}"),
-            "\n",
-            BlockQuote(str(quest.get("description") or "—")),
+        prompt = rich_message(
+            heading(f"📝 {tr(language, 'ask_quest_description')}", size=1),
+            paragraph(bold(f"📄 {tr(language, 'quest_label_description')}")),
+            quote(str(quest.get("description") or "—")),
         )
     if callback.message:
-        await callback.message.answer(
-            **prompt.as_kwargs(), reply_markup=edit_prompt_keyboard(language)
+        await callback.message.answer_rich(
+            prompt, reply_markup=edit_prompt_keyboard(language)
         )
     await callback.answer()
 
@@ -723,7 +815,10 @@ async def quest_cover_editor(callback: CallbackQuery, db: Database, bot: Bot) ->
     if quest["status"] == "archived":
         await callback.answer(tr(language, "quest_metadata_archived"), show_alert=True)
         return
-    has_cover = quest.get("cover_chat_id") is not None and quest.get("cover_message_id") is not None
+    has_cover = (
+        quest.get("cover_chat_id") is not None
+        and quest.get("cover_message_id") is not None
+    )
     body = (
         tr(language, "edit_quest_cover_has_photo")
         if has_cover
@@ -732,12 +827,10 @@ async def quest_cover_editor(callback: CallbackQuery, db: Database, bot: Bot) ->
     if callback.message:
         edited = await safe_edit(
             callback,
-            Text(
-                Bold(f"🖼 {tr(language, 'edit_quest_cover_title')}"),
-                "\n\n",
-                Bold(f"🧭 {quest['title']}"),
-                "\n",
-                BlockQuote(body),
+            rich_message(
+                heading(f"🖼 {tr(language, 'edit_quest_cover_title')}", size=1),
+                paragraph(bold(f"🧭 {quest['title']}")),
+                quote(body),
             ),
             reply_markup=edit_quest_cover_keyboard(language, quest_id, has_cover),
         )
@@ -769,12 +862,11 @@ async def begin_quest_cover_photo_edit(
     await state.update_data(edit_quest_id=quest_id, edit_context="quest_metadata")
     await state.set_state(EditQuestDetails.cover_photo)
     if callback.message:
-        await callback.message.answer(
-            **Text(
-                Bold(f"📷 {tr(language, 'ask_quest_cover')}"),
-                "\n\n",
-                Bold(f"🧭 {quest['title']}"),
-            ).as_kwargs(),
+        await callback.message.answer_rich(
+            rich_message(
+                heading(f"📷 {tr(language, 'ask_quest_cover')}", size=1),
+                paragraph(bold(f"🧭 {quest['title']}")),
+            ),
             reply_markup=edit_prompt_keyboard(language),
         )
     await callback.answer()
@@ -805,10 +897,9 @@ async def confirm_quest_cover_removal_prompt(
     if callback.message:
         await safe_edit(
             callback,
-            Text(
-                Bold(f"⚠️ {tr(language, 'confirm_remove_cover')}"),
-                "\n\n",
-                BlockQuote(str(quest["title"])),
+            rich_message(
+                heading(f"⚠️ {tr(language, 'confirm_remove_cover')}", size=1),
+                quote(str(quest["title"])),
             ),
             reply_markup=confirm_cover_removal_keyboard(language, quest_id),
         )
@@ -816,9 +907,7 @@ async def confirm_quest_cover_removal_prompt(
 
 
 @router.callback_query(F.data.startswith("manage:edit:cover:remove-confirm:"))
-async def remove_quest_cover(
-    callback: CallbackQuery, db: Database
-) -> None:
+async def remove_quest_cover(callback: CallbackQuery, db: Database) -> None:
     if not await ensure_private_callback(callback, db):
         return
     try:
@@ -855,10 +944,9 @@ async def remove_quest_cover(
     if callback.message and updated:
         await safe_edit(
             callback,
-            Text(
-                Bold(f"✅ {tr(language, 'quest_cover_removed')}"),
-                "\n\n",
-                Bold(f"🧭 {updated['title']}"),
+            rich_message(
+                heading(f"✅ {tr(language, 'quest_cover_removed')}", size=1),
+                paragraph(bold(f"🧭 {updated['title']}")),
             ),
             reply_markup=edit_quest_cover_keyboard(language, quest_id, False),
         )
@@ -899,7 +987,7 @@ async def quest_title_received(
     title = (message.text or "").strip()
     if not 1 <= len(title) <= 100:
         await message.answer(
-            **Text(Bold(f"⚠️ {tr(language, 'invalid_quest_title')}" )).as_kwargs(),
+            f"⚠️ {tr(language, 'invalid_quest_title')}",
             reply_markup=edit_prompt_keyboard(language),
         )
         return
@@ -912,14 +1000,12 @@ async def quest_title_received(
         await message.answer(tr(language, "quest_metadata_archived"))
         return
     await state.clear()
-    await message.answer(
-        **Text(
-            Bold(f"✅ {tr(language, 'quest_title_updated')}"),
-            "\n\n",
-            Bold(f"📌 {tr(language, 'quest_label_title')}"),
-            "\n",
-            BlockQuote(title),
-        ).as_kwargs(),
+    await message.answer_rich(
+        rich_message(
+            heading(f"✅ {tr(language, 'quest_title_updated')}", size=1),
+            paragraph(bold(f"📌 {tr(language, 'quest_label_title')}")),
+            quote(title),
+        ),
         reply_markup=edit_quest_details_keyboard(language, quest_id),
     )
 
@@ -937,7 +1023,7 @@ async def quest_description_received(
     description = (message.text or "").strip()
     if not 1 <= len(description) <= 1000:
         await message.answer(
-            **Text(Bold(f"⚠️ {tr(language, 'invalid_quest_description')}" )).as_kwargs(),
+            f"⚠️ {tr(language, 'invalid_quest_description')}",
             reply_markup=edit_prompt_keyboard(language),
         )
         return
@@ -950,14 +1036,12 @@ async def quest_description_received(
         await message.answer(tr(language, "quest_metadata_archived"))
         return
     await state.clear()
-    await message.answer(
-        **Text(
-            Bold(f"✅ {tr(language, 'quest_description_updated')}"),
-            "\n\n",
-            Bold(f"📄 {tr(language, 'quest_label_description')}"),
-            "\n",
-            BlockQuote(description),
-        ).as_kwargs(),
+    await message.answer_rich(
+        rich_message(
+            heading(f"✅ {tr(language, 'quest_description_updated')}", size=1),
+            paragraph(bold(f"📄 {tr(language, 'quest_label_description')}")),
+            quote(description),
+        ),
         reply_markup=edit_quest_details_keyboard(language, quest_id),
     )
 
@@ -978,9 +1062,12 @@ async def quest_cover_photo_received(
             message.bot, message, settings.question_archive_channel_id
         )
     except TelegramAPIError:
-        logger.exception("Could not archive an edited quest cover from admin %s", message.from_user.id)
+        logger.exception(
+            "Could not archive an edited quest cover from admin %s",
+            message.from_user.id,
+        )
         await message.answer(
-            **Text(Bold(f"⚠️ {tr(language, 'question_archive_failed')}" )).as_kwargs(),
+            f"⚠️ {tr(language, 'question_archive_failed')}",
             reply_markup=edit_prompt_keyboard(language),
         )
         return
@@ -1004,25 +1091,26 @@ async def quest_cover_photo_received(
     )
     await state.clear()
     updated = await db.get_quest(quest_id)
-    await message.answer(
-        **Text(
-            Bold(f"✅ {tr(language, 'quest_cover_updated')}"),
-            "\n\n",
-            Bold(f"🧭 {(updated or previous)['title']}"),
-        ).as_kwargs(),
+    await message.answer_rich(
+        rich_message(
+            heading(f"✅ {tr(language, 'quest_cover_updated')}", size=1),
+            paragraph(bold(f"🧭 {(updated or previous)['title']}")),
+        ),
         reply_markup=edit_quest_details_keyboard(language, quest_id),
     )
 
 
 @router.message(EditQuestDetails.cover_photo)
-async def invalid_quest_cover_received(message: Message, state: FSMContext, db: Database) -> None:
+async def invalid_quest_cover_received(
+    message: Message, state: FSMContext, db: Database
+) -> None:
     if not message.from_user:
         return
     language = await db.get_language(message.from_user.id)
     if not await _metadata_message_quest(message, state, db):
         return
     await message.answer(
-        **Text(Bold(f"⚠️ {tr(language, 'invalid_quest_cover')}" )).as_kwargs(),
+        f"⚠️ {tr(language, 'invalid_quest_cover')}",
         reply_markup=edit_prompt_keyboard(language),
     )
 
@@ -1185,22 +1273,30 @@ async def _begin_stage_edit(
         await state.set_state(EditStage.answer)
         prompt = tr(language, "ask_replacement_answer")
     if callback.message:
-        await callback.message.answer(prompt, reply_markup=edit_prompt_keyboard(language))
+        await callback.message.answer(
+            prompt, reply_markup=edit_prompt_keyboard(language)
+        )
     await callback.answer()
 
 
 @router.callback_query(F.data.startswith("manage:editquestion:"))
-async def begin_question_edit(callback: CallbackQuery, state: FSMContext, db: Database) -> None:
+async def begin_question_edit(
+    callback: CallbackQuery, state: FSMContext, db: Database
+) -> None:
     await _begin_stage_edit(callback, state, db, "question")
 
 
 @router.callback_query(F.data.startswith("manage:editanswer:"))
-async def begin_answer_edit(callback: CallbackQuery, state: FSMContext, db: Database) -> None:
+async def begin_answer_edit(
+    callback: CallbackQuery, state: FSMContext, db: Database
+) -> None:
     await _begin_stage_edit(callback, state, db, "answer")
 
 
 @router.callback_query(F.data == "manage:editcancel")
-async def cancel_stage_edit(callback: CallbackQuery, state: FSMContext, db: Database) -> None:
+async def cancel_stage_edit(
+    callback: CallbackQuery, state: FSMContext, db: Database
+) -> None:
     data = await state.get_data()
     await state.clear()
     language = await db.get_language(callback.from_user.id)
@@ -1210,15 +1306,15 @@ async def cancel_stage_edit(callback: CallbackQuery, state: FSMContext, db: Data
             quest = await db.get_quest(int(quest_id))
             markup = (
                 edit_quest_details_keyboard(language, int(quest_id))
-                if quest and quest["status"] != "archived"
+                if quest
+                and quest["status"] != "archived"
                 and await can_manage_quest(db, callback.from_user.id, quest)
                 else admin_home_keyboard(language)
             )
         else:
             markup = edit_done_keyboard(language, int(quest_id)) if quest_id else None
         await callback.message.answer(
-            **Text(Bold(f"↩️ {tr(language, 'edit_cancelled')}" )).as_kwargs(),
-            reply_markup=markup,
+            f"↩️ {tr(language, 'edit_cancelled')}", reply_markup=markup
         )
     await callback.answer()
 
@@ -1235,12 +1331,16 @@ async def _message_edit_access(
     quest = await db.get_quest(int(quest_id))
     if not quest or not await can_manage_quest(db, message.from_user.id, quest):
         await state.clear()
-        await message.answer(tr(await db.get_language(message.from_user.id), "admin_only"))
+        await message.answer(
+            tr(await db.get_language(message.from_user.id), "admin_only")
+        )
         return None
     quest_id, stage_order = int(quest_id), int(stage_order)
     if not await db.stage_is_editable(quest_id, stage_order, utc_now()):
         await state.clear()
-        await message.answer(tr(await db.get_language(message.from_user.id), "stage_not_editable"))
+        await message.answer(
+            tr(await db.get_language(message.from_user.id), "stage_not_editable")
+        )
         return None
     return quest_id, stage_order
 
@@ -1275,7 +1375,9 @@ async def replacement_question_received(
             message.bot, message, settings.question_archive_channel_id
         )
     except TelegramAPIError:
-        logger.exception("Could not archive an edited question from admin %s", message.from_user.id)
+        logger.exception(
+            "Could not archive an edited question from admin %s", message.from_user.id
+        )
         await message.answer(tr(language, "question_archive_failed"))
         return
     try:
@@ -1309,7 +1411,9 @@ async def replacement_question_received(
 
 
 @router.message(EditStage.answer)
-async def replacement_answer_received(message: Message, state: FSMContext, db: Database) -> None:
+async def replacement_answer_received(
+    message: Message, state: FSMContext, db: Database
+) -> None:
     if not message.from_user:
         return
     language = await db.get_language(message.from_user.id)
@@ -1340,7 +1444,11 @@ async def _notify_answer_reviewers(
 ) -> None:
     owner_id = int(quest["owner_id"])
     recipients = {owner_id}
-    recipients.update(int(item["telegram_id"]) for item in await db.list_admins() if item["role"] == "superadmin")
+    recipients.update(
+        int(item["telegram_id"])
+        for item in await db.list_admins()
+        if item["role"] == "superadmin"
+    )
     user = await db.get_user(message.from_user.id)
     sender_name = display_name(
         user.get("full_name") if user else None,
@@ -1359,12 +1467,16 @@ async def _notify_answer_reviewers(
             answer=answer_text,
         )
         try:
-            await message.bot.send_message(admin_id, text, reply_markup=review_keyboard(language, answer_id))
+            await message.bot.send_message(
+                admin_id, text, reply_markup=review_keyboard(language, answer_id)
+            )
         except TelegramAPIError:
             continue
 
 
-async def _process_answer(message: Message, quest_id: int, db: Database, bot: Bot) -> None:
+async def _process_answer(
+    message: Message, quest_id: int, db: Database, bot: Bot
+) -> None:
     if not message.from_user or not message.text:
         return
     language = await db.get_language(message.from_user.id)
@@ -1382,7 +1494,11 @@ async def _process_answer(message: Message, quest_id: int, db: Database, bot: Bo
         return
     if code == "blocked":
         participant = await db.participant(quest_id, message.from_user.id)
-        suffix = tr(language, "reason_line", reason=participant.get("ban_reason")) if participant and participant.get("ban_reason") else ""
+        suffix = (
+            tr(language, "reason_line", reason=participant.get("ban_reason"))
+            if participant and participant.get("ban_reason")
+            else ""
+        )
         await message.answer(tr(language, "blocked_notice", reason=suffix))
         return
     if code in {"no_open_stage", "attempt_limit"}:
@@ -1399,14 +1515,18 @@ async def _process_answer(message: Message, quest_id: int, db: Database, bot: Bo
         await message.answer(tr(language, "answer_pending"))
         quest = await db.get_quest(quest_id)
         if quest:
-            await _notify_answer_reviewers(message, db, quest, int(result["answer_id"]), answer)
+            await _notify_answer_reviewers(
+                message, db, quest, int(result["answer_id"]), answer
+            )
         return
     if code == "wrong":
         if result.get("exhausted"):
             await message.answer(tr(language, "attempts_exhausted"))
             await db.maybe_complete_quest(quest_id)
         else:
-            await message.answer(tr(language, "wrong_answer", remaining=result["remaining"]))
+            await message.answer(
+                tr(language, "wrong_answer", remaining=result["remaining"])
+            )
         return
     if code != "correct":
         await message.answer(tr(language, "error_generic"))
@@ -1421,13 +1541,17 @@ async def _process_answer(message: Message, quest_id: int, db: Database, bot: Bo
         stage = await db.get_stage(quest_id, int(result["next_stage_order"]))
         if quest and stage:
             me = await bot.get_me()
-            await send_stage_to_user(bot, db, quest, stage, message.from_user.id, me.username or "")
+            await send_stage_to_user(
+                bot, db, quest, stage, message.from_user.id, me.username or ""
+            )
         return
     await message.answer(tr(language, "correct_wait"))
 
 
 @router.callback_query(F.data.startswith("answer:select:"))
-async def select_answer_quest(callback: CallbackQuery, state: FSMContext, db: Database) -> None:
+async def select_answer_quest(
+    callback: CallbackQuery, state: FSMContext, db: Database
+) -> None:
     try:
         quest_id = int(callback.data.rsplit(":", 1)[1])
     except ValueError:
@@ -1449,7 +1573,9 @@ async def select_answer_quest(callback: CallbackQuery, state: FSMContext, db: Da
 
 
 @router.message(AnswerFlow.answer)
-async def selected_quest_answer(message: Message, state: FSMContext, db: Database, bot: Bot) -> None:
+async def selected_quest_answer(
+    message: Message, state: FSMContext, db: Database, bot: Bot
+) -> None:
     if not message.text or message.text.startswith("/"):
         return
     data = await state.get_data()
@@ -1459,7 +1585,9 @@ async def selected_quest_answer(message: Message, state: FSMContext, db: Databas
 
 
 @router.message(F.chat.type == "private", F.text)
-async def participant_answer(message: Message, state: FSMContext, db: Database, bot: Bot) -> None:
+async def participant_answer(
+    message: Message, state: FSMContext, db: Database, bot: Bot
+) -> None:
     if not message.from_user or not message.text or message.text.startswith("/"):
         return
     stages = await db.open_stages_for_user(message.from_user.id)
@@ -1472,4 +1600,7 @@ async def participant_answer(message: Message, state: FSMContext, db: Database, 
         await _process_answer(message, int(stages[0]["quest_id"]), db, bot)
         return
     await state.clear()
-    await message.answer(tr(language, "choose_answer_quest"), reply_markup=answer_quest_selector(language, stages))
+    await message.answer(
+        tr(language, "choose_answer_quest"),
+        reply_markup=answer_quest_selector(language, stages),
+    )

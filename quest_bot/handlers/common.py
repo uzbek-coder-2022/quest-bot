@@ -8,7 +8,6 @@ from aiogram import Bot, F, Router
 from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
-from aiogram.utils.formatting import Bold, Italic, Text
 
 from ..config import Settings
 from ..database import Database
@@ -19,8 +18,14 @@ from ..keyboards import (
     main_menu,
 )
 from ..localization import tr
-from ..presentation import copy_quest_cover, quest_preview
+from ..presentation import (
+    copy_quest_cover,
+    guide_message,
+    information_message,
+    quest_preview,
+)
 from ..services import delete_archived_message
+from ..utils import safe_edit
 
 router = Router(name="common")
 logger = logging.getLogger(__name__)
@@ -60,7 +65,10 @@ async def _join_from_payload(
     )
     if not quest:
         await message.answer(
-            tr(language, "private_link_invalid" if token is not None else "quest_not_found")
+            tr(
+                language,
+                "private_link_invalid" if token is not None else "quest_not_found",
+            )
         )
         return True
     if quest["visibility"] == "private" and token is None:
@@ -94,11 +102,12 @@ async def _join_from_payload(
 
     participant_count = await db.participant_count(quest_id)
     await copy_quest_cover(bot, quest, user.id)
-    await message.answer(
-        **quest_preview(quest, language, participant_count).as_kwargs(),
+    await message.answer_rich(
+        quest_preview(quest, language, participant_count),
         reply_markup=join_confirmation_keyboard(language, quest_id, token),
     )
     return True
+
 
 @router.message(CommandStart())
 async def start_command(
@@ -111,7 +120,9 @@ async def start_command(
 ) -> None:
     if message.chat.type != "private":
         await _register_message_user(message, db)
-        language = await db.get_language(message.from_user.id if message.from_user else 0)
+        language = await db.get_language(
+            message.from_user.id if message.from_user else 0
+        )
         await message.answer(tr(language, "open_private_chat"))
         return
     await state.clear()
@@ -130,14 +141,11 @@ async def start_command(
         if handled:
             return
     role = await db.get_role(user.id)
-    await message.answer(
-        **Text(
-            Bold(f"👋 {tr(language, 'welcome')}"),
-            "\n\n",
-            Italic(f"✨ {tr(language, 'welcome_hint')}"),
-            "\n\n",
-            f"📋 {tr(language, 'menu')}",
-        ).as_kwargs(),
+    await message.answer_rich(
+        information_message(
+            f"👋 {tr(language, 'welcome')}",
+            f"✨ {tr(language, 'welcome_hint')}\n\n📋 {tr(language, 'menu')}",
+        ),
         reply_markup=main_menu(language, role),
     )
 
@@ -158,7 +166,9 @@ async def cancel_command(message: Message, db: Database, state: FSMContext) -> N
     role = await db.get_role(message.from_user.id) if message.from_user else None
     await message.answer(
         tr(language, "cancelled"),
-        reply_markup=admin_home_keyboard(language) if role in {"admin", "superadmin"} else None,
+        reply_markup=admin_home_keyboard(language)
+        if role in {"admin", "superadmin"}
+        else None,
     )
 
 
@@ -170,32 +180,46 @@ async def menu_command(message: Message, db: Database, state: FSMContext) -> Non
         return
     language = await db.get_language(message.from_user.id)
     role = await db.get_role(message.from_user.id)
-    await message.answer(tr(language, "menu"), reply_markup=main_menu(language, role))
+    await message.answer_rich(
+        information_message(f"📋 {tr(language, 'menu')}"),
+        reply_markup=main_menu(language, role),
+    )
 
 
 @router.message(Command("language"))
 async def language_command(message: Message, db: Database) -> None:
     await _register_message_user(message, db)
     language = await db.get_language(message.from_user.id if message.from_user else 0)
-    await message.answer(tr(language, "language_choose"), reply_markup=language_keyboard())
+    await message.answer(
+        tr(language, "language_choose"), reply_markup=language_keyboard()
+    )
 
 
 @router.message(Command("help"))
 async def help_command(message: Message, db: Database) -> None:
     await _register_message_user(message, db)
     language = await db.get_language(message.from_user.id if message.from_user else 0)
-    await message.answer(tr(language, "guide"), reply_markup=main_menu(language, await db.get_role(message.from_user.id) if message.from_user else None))
+    role = await db.get_role(message.from_user.id) if message.from_user else None
+    await message.answer_rich(
+        guide_message(language), reply_markup=main_menu(language, role)
+    )
 
 
 @router.callback_query(F.data == "menu:home")
-async def home_callback(callback: CallbackQuery, db: Database, state: FSMContext) -> None:
+async def home_callback(
+    callback: CallbackQuery, db: Database, state: FSMContext
+) -> None:
     await state.clear()
     if not callback.from_user:
         return
     language = await db.get_language(callback.from_user.id)
     role = await db.get_role(callback.from_user.id)
     if callback.message:
-        await callback.message.edit_text(tr(language, "menu"), reply_markup=main_menu(language, role))
+        await safe_edit(
+            callback,
+            information_message(f"📋 {tr(language, 'menu')}"),
+            reply_markup=main_menu(language, role),
+        )
     await callback.answer()
 
 
@@ -203,7 +227,11 @@ async def home_callback(callback: CallbackQuery, db: Database, state: FSMContext
 async def guide_callback(callback: CallbackQuery, db: Database) -> None:
     language = await db.get_language(callback.from_user.id)
     if callback.message:
-        await callback.message.edit_text(tr(language, "guide"), reply_markup=main_menu(language, await db.get_role(callback.from_user.id)))
+        await safe_edit(
+            callback,
+            guide_message(language),
+            reply_markup=main_menu(language, await db.get_role(callback.from_user.id)),
+        )
     await callback.answer()
 
 
@@ -211,7 +239,9 @@ async def guide_callback(callback: CallbackQuery, db: Database) -> None:
 async def choose_language_callback(callback: CallbackQuery, db: Database) -> None:
     language = await db.get_language(callback.from_user.id)
     if callback.message:
-        await callback.message.edit_text(tr(language, "language_choose"), reply_markup=language_keyboard())
+        await callback.message.edit_text(
+            tr(language, "language_choose"), reply_markup=language_keyboard()
+        )
     await callback.answer()
 
 
@@ -234,8 +264,17 @@ async def set_language_callback(callback: CallbackQuery, db: Database) -> None:
 @router.message(Command("chatid"))
 async def chat_id_command(message: Message, db: Database) -> None:
     if message.chat.type == "private":
-        language = await db.get_language(message.from_user.id if message.from_user else 0)
+        language = await db.get_language(
+            message.from_user.id if message.from_user else 0
+        )
         await message.answer(tr(language, "ask_chat_id"))
         return
     language = await db.get_language(message.from_user.id if message.from_user else 0)
-    await message.answer(tr(language, "chat_id_result", chat_id=message.chat.id, title=message.chat.title or "Chat"))
+    await message.answer(
+        tr(
+            language,
+            "chat_id_result",
+            chat_id=message.chat.id,
+            title=message.chat.title or "Chat",
+        )
+    )

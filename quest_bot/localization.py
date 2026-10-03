@@ -164,6 +164,7 @@ TEXTS: dict[str, dict[str, str]] = {
     "question_prefix": {"uz": "{title} — {number}-bosqich\n\n{question}\n\nUrinishlar: {attempts}{time}", "ru": "{title} — этап {number}\n\n{question}\n\nПопыток: {attempts}{time}", "en": "{title} — stage {number}\n\n{question}\n\nAttempts: {attempts}{time}"},
     "stage_meta": {"uz": "{title} — {number}-bosqich\nUrinishlar: {attempts}{time}", "ru": "{title} — этап {number}\nПопыток: {attempts}{time}", "en": "{title} — stage {number}\nAttempts: {attempts}{time}"},
     "stage_label": {"uz": "🧩 {number}-bosqich", "ru": "🧩 Этап {number}", "en": "🧩 Stage {number}"},
+    "stage_attempts": {"uz": "Urinishlar", "ru": "Попыток", "en": "Attempts"},
     "quest_label_title": {"uz": "Kvest nomi", "ru": "Название квеста", "en": "Quest title"},
     "edit_quest_details_title": {"uz": "Kvest tafsilotlarini tahrirlash", "ru": "Редактирование данных квеста", "en": "Edit quest details"},
     "edit_quest_details_hint": {"uz": "Nom, tavsif va muqova rasmini o‘zgartiring. Bu ma’lumotlarni kvest yakunlangandan keyin ham, arxivlanmaguncha tahrirlash mumkin.", "ru": "Измените название, описание или обложку. Эти данные можно редактировать и после завершения квеста, пока он не архивирован.", "en": "Update the title, description, or cover photo. These details remain editable after a quest ends, until it is archived."},

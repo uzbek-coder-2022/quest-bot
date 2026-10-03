@@ -10,9 +10,9 @@ from aiogram.types import (
     BufferedInputFile,
     CallbackQuery,
     InlineKeyboardMarkup,
+    InputRichMessage,
     Message,
 )
-from aiogram.utils.formatting import Bold, Text
 
 from ..bot_commands import clear_app_admin_commands, set_app_admin_commands
 from ..database import Database, utc_now
@@ -30,6 +30,8 @@ from ..keyboards import (
     whitelist_keyboard,
 )
 from ..localization import tr
+from ..presentation import activity_message, information_message
+from ..rich_text import heading, paragraph, quote, rich_message
 from ..services import answer_deep_link, send_stage_to_user
 from ..states import ModerationFlow, SuperadminFlow
 from ..utils import can_manage_quest, display_name, ensure_private_callback, safe_edit
@@ -38,13 +40,21 @@ router = Router(name="admin")
 
 
 def _role_kb(language: str, quest_id: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [
-            button(tr(language, "btn_confirm"), f"manage:finish-confirmed:{quest_id}"),
-            button(tr(language, "btn_cancel"), f"manage:quest:{quest_id}", style="danger"),
-        ],
-        [button(tr(language, "btn_admin_home"), "admin:home")],
-    ])
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                button(
+                    tr(language, "btn_confirm"), f"manage:finish-confirmed:{quest_id}"
+                ),
+                button(
+                    tr(language, "btn_cancel"),
+                    f"manage:quest:{quest_id}",
+                    style="danger",
+                ),
+            ],
+            [button(tr(language, "btn_admin_home"), "admin:home")],
+        ]
+    )
 
 
 def _chat_text(language: str, chat: dict) -> str:
@@ -53,7 +63,20 @@ def _chat_text(language: str, chat: dict) -> str:
         "chat_info",
         title=chat["title"],
         chat_id=chat["chat_id"],
-        cleanup=tr(language, "cleanup_on" if chat["cleanup_enabled"] else "cleanup_off"),
+        cleanup=tr(
+            language, "cleanup_on" if chat["cleanup_enabled"] else "cleanup_off"
+        ),
+    )
+
+
+def _chat_message(language: str, chat: dict) -> InputRichMessage:
+    """Separate a managed-chat title from its translated details."""
+    lines = _chat_text(language, chat).splitlines()
+    return rich_message(
+        heading(lines[0] if lines else chat["title"], size=1),
+        paragraph("\n".join(lines[1:]))
+        if len(lines) > 1
+        else paragraph(chat["title"]),
     )
 
 
@@ -67,7 +90,9 @@ async def _require_superadmin(callback: CallbackQuery, db: Database) -> bool:
     return True
 
 
-async def _send_question_after_review(bot: Bot, db: Database, quest_id: int, user_id: int, stage_order: int) -> None:
+async def _send_question_after_review(
+    bot: Bot, db: Database, quest_id: int, user_id: int, stage_order: int
+) -> None:
     quest = await db.get_quest(quest_id)
     stage = await db.get_stage(quest_id, stage_order)
     if not quest or not stage:
@@ -88,7 +113,10 @@ async def admin_command(message: Message, db: Database) -> None:
     if role not in {"admin", "superadmin"}:
         await message.answer(tr(language, "admin_only"))
         return
-    await message.answer(tr(language, "admin_panel"), reply_markup=admin_panel(language, role))
+    await message.answer_rich(
+        information_message(tr(language, "admin_panel")),
+        reply_markup=admin_panel(language, role),
+    )
 
 
 @router.callback_query(F.data == "admin:home")
@@ -102,7 +130,11 @@ async def admin_home(callback: CallbackQuery, db: Database, state: FSMContext) -
         return
     await state.clear()
     if callback.message:
-        await safe_edit(callback, tr(language, "admin_panel"), reply_markup=admin_panel(language, role))
+        await safe_edit(
+            callback,
+            information_message(tr(language, "admin_panel")),
+            reply_markup=admin_panel(language, role),
+        )
     await callback.answer()
 
 
@@ -112,17 +144,23 @@ async def show_admins(callback: CallbackQuery, db: Database) -> None:
         return
     language = await db.get_language(callback.from_user.id)
     admins = await db.list_admins()
-    text = tr(language, "admins_title") + "\n\n" + "\n".join(
-        f"{tr(language, 'role_admin' if admin['role'] == 'admin' else 'role_superadmin')} · {admin.get('full_name') or admin.get('username') or '—'} · {admin['telegram_id']}"
+    rows = [
+        f"{tr(language, 'role_admin' if admin['role'] == 'admin' else 'role_superadmin')} · "
+        f"{admin.get('full_name') or admin.get('username') or '—'} · {admin['telegram_id']}"
         for admin in admins
-    )
+    ]
+    text = activity_message(tr(language, "admins_title"), rows)
     if callback.message:
-        await safe_edit(callback, text, reply_markup=admin_list_keyboard(language, admins))
+        await safe_edit(
+            callback, text, reply_markup=admin_list_keyboard(language, admins)
+        )
     await callback.answer()
 
 
 @router.callback_query(F.data == "super:addadmin")
-async def add_admin_start(callback: CallbackQuery, state: FSMContext, db: Database) -> None:
+async def add_admin_start(
+    callback: CallbackQuery, state: FSMContext, db: Database
+) -> None:
     if not await _require_superadmin(callback, db):
         return
     language = await db.get_language(callback.from_user.id)
@@ -135,7 +173,9 @@ async def add_admin_start(callback: CallbackQuery, state: FSMContext, db: Databa
 
 
 @router.message(SuperadminFlow.add_admin_id)
-async def add_admin_id_received(message: Message, state: FSMContext, db: Database) -> None:
+async def add_admin_id_received(
+    message: Message, state: FSMContext, db: Database
+) -> None:
     language = await db.get_language(message.from_user.id)
     try:
         admin_id = int((message.text or "").strip())
@@ -150,18 +190,28 @@ async def add_admin_id_received(message: Message, state: FSMContext, db: Databas
     if added:
         await set_app_admin_commands(message.bot, admin_id)
         await db.log_action(message.from_user.id, "admin.added", "admin", admin_id)
-        await message.answer(tr(language, "admin_added"), reply_markup=admin_home_keyboard(language))
+        await message.answer(
+            tr(language, "admin_added"), reply_markup=admin_home_keyboard(language)
+        )
         try:
             target_language = await db.get_language(admin_id)
-            await message.bot.send_message(admin_id, tr(target_language, "admin_panel"), reply_markup=admin_panel(target_language, "admin"))
+            await message.bot.send_message(
+                admin_id,
+                tr(target_language, "admin_panel"),
+                reply_markup=admin_panel(target_language, "admin"),
+            )
         except TelegramAPIError:
             pass
     else:
-        await message.answer(tr(language, "admin_only"), reply_markup=admin_home_keyboard(language))
+        await message.answer(
+            tr(language, "admin_only"), reply_markup=admin_home_keyboard(language)
+        )
 
 
 @router.callback_query(F.data.startswith("super:removeadmin:"))
-async def remove_admin_callback(callback: CallbackQuery, db: Database, bot: Bot) -> None:
+async def remove_admin_callback(
+    callback: CallbackQuery, db: Database, bot: Bot
+) -> None:
     if not await _require_superadmin(callback, db):
         return
     try:
@@ -179,11 +229,15 @@ async def remove_admin_callback(callback: CallbackQuery, db: Database, bot: Bot)
         await callback.answer(tr(language, "superadmin_only"), show_alert=True)
     admins = await db.list_admins()
     if callback.message:
-        text = tr(language, "admins_title") + "\n\n" + "\n".join(
-            f"{tr(language, 'role_admin' if item['role'] == 'admin' else 'role_superadmin')} · {item.get('full_name') or item.get('username') or '—'} · {item['telegram_id']}"
+        rows = [
+            f"{tr(language, 'role_admin' if item['role'] == 'admin' else 'role_superadmin')} · "
+            f"{item.get('full_name') or item.get('username') or '—'} · {item['telegram_id']}"
             for item in admins
+        ]
+        text = activity_message(tr(language, "admins_title"), rows)
+        await safe_edit(
+            callback, text, reply_markup=admin_list_keyboard(language, admins)
         )
-        await safe_edit(callback, text, reply_markup=admin_list_keyboard(language, admins))
 
 
 @router.callback_query(F.data == "super:noop")
@@ -200,7 +254,10 @@ async def show_stats(callback: CallbackQuery, db: Database) -> None:
     if callback.message:
         await safe_edit(
             callback,
-            Text(Bold(tr(language, "btn_stats")), "\n\n", tr(language, "stats", **stats)),
+            rich_message(
+                heading(tr(language, "btn_stats"), size=1),
+                paragraph(tr(language, "stats", **stats)),
+            ),
             reply_markup=admin_home_keyboard(language),
         )
     await callback.answer()
@@ -212,16 +269,18 @@ async def show_logs(callback: CallbackQuery, db: Database) -> None:
         return
     language = await db.get_language(callback.from_user.id)
     rows = await db.latest_logs(20)
-    text = tr(language, "logs_title")
-    if not rows:
-        text += f"\n\n{tr(language, 'no_logs')}"
-    else:
-        text += "\n\n" + "\n".join(
-            f"{row['created_at']} · {row['action']} · {row['entity_type']} {row.get('entity_id') or ''} · actor {row.get('actor_id') or 'system'}"
-            for row in rows
-        )
+    log_lines = [
+        f"{row['created_at']} · {row['action']} · {row['entity_type']} "
+        f"{row.get('entity_id') or ''} · actor {row.get('actor_id') or 'system'}"
+        for row in rows
+    ]
+    text = activity_message(
+        tr(language, "logs_title"),
+        log_lines,
+        None if log_lines else tr(language, "no_logs"),
+    )
     if callback.message:
-        await safe_edit(callback, text[:4000], reply_markup=admin_home_keyboard(language))
+        await safe_edit(callback, text, reply_markup=admin_home_keyboard(language))
     await callback.answer()
 
 
@@ -265,7 +324,13 @@ async def set_page_size(callback: CallbackQuery, db: Database) -> None:
         await callback.answer()
         return
     await db.settings_set("page_size", str(size))
-    await db.log_action(callback.from_user.id, "settings.page_size.updated", "setting", "page_size", {"value": size})
+    await db.log_action(
+        callback.from_user.id,
+        "settings.page_size.updated",
+        "setting",
+        "page_size",
+        {"value": size},
+    )
     language = await db.get_language(callback.from_user.id)
     if callback.message:
         await safe_edit(
@@ -281,7 +346,9 @@ async def export_data(callback: CallbackQuery, db: Database) -> None:
     if not await _require_superadmin(callback, db):
         return
     data = await db.export_zip()
-    await callback.message.answer_document(BufferedInputFile(data, filename="quest-bot-export.zip"))
+    await callback.message.answer_document(
+        BufferedInputFile(data, filename="quest-bot-export.zip")
+    )
     await callback.answer()
 
 
@@ -291,16 +358,20 @@ async def show_managed_chats(callback: CallbackQuery, db: Database) -> None:
         return
     language = await db.get_language(callback.from_user.id)
     chats = await db.managed_chats()
-    text = tr(language, "btn_chats")
-    if not chats:
-        text += f"\n\n{tr(language, 'chats_empty')}"
+    text = information_message(
+        tr(language, "btn_chats"), None if chats else tr(language, "chats_empty")
+    )
     if callback.message:
-        await safe_edit(callback, text, reply_markup=managed_chats_keyboard(language, chats))
+        await safe_edit(
+            callback, text, reply_markup=managed_chats_keyboard(language, chats)
+        )
     await callback.answer()
 
 
 @router.callback_query(F.data == "super:addchat")
-async def add_chat_start(callback: CallbackQuery, state: FSMContext, db: Database) -> None:
+async def add_chat_start(
+    callback: CallbackQuery, state: FSMContext, db: Database
+) -> None:
     if not await _require_superadmin(callback, db):
         return
     language = await db.get_language(callback.from_user.id)
@@ -313,7 +384,9 @@ async def add_chat_start(callback: CallbackQuery, state: FSMContext, db: Databas
 
 
 @router.message(SuperadminFlow.add_chat_id)
-async def add_chat_id_received(message: Message, state: FSMContext, db: Database, bot: Bot) -> None:
+async def add_chat_id_received(
+    message: Message, state: FSMContext, db: Database, bot: Bot
+) -> None:
     language = await db.get_language(message.from_user.id)
     try:
         chat_id = int((message.text or "").strip())
@@ -323,18 +396,28 @@ async def add_chat_id_received(message: Message, state: FSMContext, db: Database
     except (ValueError, TelegramAPIError):
         await message.answer(tr(language, "chat_not_found"))
         return
-    if chat.type not in {"group", "supergroup", "channel"} or bot_member.status not in {"administrator", "creator"}:
+    if chat.type not in {"group", "supergroup", "channel"} or bot_member.status not in {
+        "administrator",
+        "creator",
+    }:
         await message.answer(tr(language, "chat_not_found"))
         return
-    if chat.type == "channel" and bot_member.status != "creator" and not getattr(bot_member, "can_post_messages", False):
+    if (
+        chat.type == "channel"
+        and bot_member.status != "creator"
+        and not getattr(bot_member, "can_post_messages", False)
+    ):
         await message.answer(tr(language, "chat_permission_missing"))
         return
     title = chat.title or str(chat_id)
     await db.register_chat(chat_id, title, chat.type, message.from_user.id)
-    await db.log_action(message.from_user.id, "managed_chat.added", "chat", chat_id, {"title": title})
+    await db.log_action(
+        message.from_user.id, "managed_chat.added", "chat", chat_id, {"title": title}
+    )
     await state.clear()
     await message.answer(
-        tr(language, "chat_added", title=title), reply_markup=admin_home_keyboard(language)
+        tr(language, "chat_added", title=title),
+        reply_markup=admin_home_keyboard(language),
     )
 
 
@@ -354,7 +437,9 @@ async def show_chat(callback: CallbackQuery, db: Database) -> None:
         return
     if callback.message:
         await safe_edit(
-            callback, _chat_text(language, chat), reply_markup=manage_chat_keyboard(language, chat)
+            callback,
+            _chat_message(language, chat),
+            reply_markup=manage_chat_keyboard(language, chat),
         )
     await callback.answer()
 
@@ -374,21 +459,35 @@ async def toggle_cleanup(callback: CallbackQuery, db: Database, bot: Bot) -> Non
         try:
             bot_member = await bot.get_chat_member(chat_id, (await bot.get_me()).id)
         except TelegramAPIError:
-            await callback.answer(tr(language, "chat_permission_missing"), show_alert=True)
+            await callback.answer(
+                tr(language, "chat_permission_missing"), show_alert=True
+            )
             return
-        can_restrict = bot_member.status == "creator" or bool(getattr(bot_member, "can_restrict_members", False))
+        can_restrict = bot_member.status == "creator" or bool(
+            getattr(bot_member, "can_restrict_members", False)
+        )
         if not can_restrict:
-            await callback.answer(tr(language, "chat_permission_missing"), show_alert=True)
+            await callback.answer(
+                tr(language, "chat_permission_missing"), show_alert=True
+            )
             return
     value = await db.toggle_chat_cleanup(chat_id)
     if value is None:
         await callback.answer(tr(language, "chat_not_found"), show_alert=True)
         return
-    await db.log_action(callback.from_user.id, "chat.cleanup.toggled", "chat", chat_id, {"enabled": value})
+    await db.log_action(
+        callback.from_user.id,
+        "chat.cleanup.toggled",
+        "chat",
+        chat_id,
+        {"enabled": value},
+    )
     chat = await db.get_managed_chat(chat_id)
     if callback.message and chat:
         await safe_edit(
-            callback, _chat_text(language, chat), reply_markup=manage_chat_keyboard(language, chat)
+            callback,
+            _chat_message(language, chat),
+            reply_markup=manage_chat_keyboard(language, chat),
         )
     await callback.answer()
 
@@ -404,16 +503,20 @@ async def show_whitelist(callback: CallbackQuery, db: Database) -> None:
         return
     language = await db.get_language(callback.from_user.id)
     users = await db.chat_whitelist(chat_id)
-    text = tr(language, "whitelist_title")
-    if not users:
-        text += f"\n\n{tr(language, 'no_whitelist')}"
+    text = information_message(
+        tr(language, "whitelist_title"), None if users else tr(language, "no_whitelist")
+    )
     if callback.message:
-        await safe_edit(callback, text, reply_markup=whitelist_keyboard(language, chat_id, users))
+        await safe_edit(
+            callback, text, reply_markup=whitelist_keyboard(language, chat_id, users)
+        )
     await callback.answer()
 
 
 @router.callback_query(F.data.startswith("super:addwhite:"))
-async def add_whitelist_start(callback: CallbackQuery, state: FSMContext, db: Database) -> None:
+async def add_whitelist_start(
+    callback: CallbackQuery, state: FSMContext, db: Database
+) -> None:
     if not await _require_superadmin(callback, db):
         return
     try:
@@ -430,7 +533,9 @@ async def add_whitelist_start(callback: CallbackQuery, state: FSMContext, db: Da
 
 
 @router.message(SuperadminFlow.add_whitelist_id)
-async def whitelist_id_received(message: Message, state: FSMContext, db: Database) -> None:
+async def whitelist_id_received(
+    message: Message, state: FSMContext, db: Database
+) -> None:
     language = await db.get_language(message.from_user.id)
     try:
         user_id = int((message.text or "").strip())
@@ -443,10 +548,18 @@ async def whitelist_id_received(message: Message, state: FSMContext, db: Databas
     data = await state.get_data()
     chat_id = int(data["whitelist_chat_id"])
     await db.add_chat_whitelist(chat_id, user_id, message.from_user.id)
-    await db.log_action(message.from_user.id, "chat.whitelist.added", "chat_member", f"{chat_id}:{user_id}")
+    await db.log_action(
+        message.from_user.id,
+        "chat.whitelist.added",
+        "chat_member",
+        f"{chat_id}:{user_id}",
+    )
     await state.clear()
     users = await db.chat_whitelist(chat_id)
-    await message.answer(tr(language, "whitelist_added"), reply_markup=whitelist_keyboard(language, chat_id, users))
+    await message.answer(
+        tr(language, "whitelist_added"),
+        reply_markup=whitelist_keyboard(language, chat_id, users),
+    )
 
 
 @router.callback_query(F.data.startswith("super:delwhite:"))
@@ -460,13 +573,18 @@ async def remove_whitelist(callback: CallbackQuery, db: Database) -> None:
         await callback.answer()
         return
     await db.remove_chat_whitelist(chat_id, user_id)
-    await db.log_action(callback.from_user.id, "chat.whitelist.removed", "chat_member", f"{chat_id}:{user_id}")
+    await db.log_action(
+        callback.from_user.id,
+        "chat.whitelist.removed",
+        "chat_member",
+        f"{chat_id}:{user_id}",
+    )
     language = await db.get_language(callback.from_user.id)
     users = await db.chat_whitelist(chat_id)
     if callback.message:
         await safe_edit(
             callback,
-            tr(language, "whitelist_title"),
+            information_message(tr(language, "whitelist_title")),
             reply_markup=whitelist_keyboard(language, chat_id, users),
         )
     await callback.answer(tr(language, "whitelist_removed"))
@@ -489,23 +607,30 @@ async def show_participants(callback: CallbackQuery, db: Database) -> None:
         await callback.answer(tr(language, "quest_not_found"), show_alert=True)
         return
     participants = await db.list_participants(quest_id)
-    text = tr(language, "participants_title")
+    title = tr(language, "participants_title")
     if not participants:
-        text += f"\n\n{tr(language, 'no_participants')}"
+        text = information_message(title, tr(language, "no_participants"))
     else:
         start = max(0, page) * 20
-        text += f" ({start + 1}–{min(start + 20, len(participants))}/{len(participants)})"
+        text = information_message(
+            title,
+            f"{start + 1}–{min(start + 20, len(participants))}/{len(participants)}",
+        )
     if callback.message:
         await safe_edit(
             callback,
             text,
-            reply_markup=participants_keyboard(language, quest_id, participants, page, 20),
+            reply_markup=participants_keyboard(
+                language, quest_id, participants, page, 20
+            ),
         )
     await callback.answer()
 
 
 @router.callback_query(F.data.startswith("manage:participant:"))
-async def participant_moderation(callback: CallbackQuery, state: FSMContext, db: Database, bot: Bot) -> None:
+async def participant_moderation(
+    callback: CallbackQuery, state: FSMContext, db: Database, bot: Bot
+) -> None:
     if not await ensure_private_callback(callback, db):
         return
     try:
@@ -522,10 +647,17 @@ async def participant_moderation(callback: CallbackQuery, state: FSMContext, db:
     if action == "unban":
         success = await db.set_participant_block(quest_id, user_id, None, False)
         if success:
-            await db.log_action(callback.from_user.id, "participant.unblocked", "quest_participant", f"{quest_id}:{user_id}")
+            await db.log_action(
+                callback.from_user.id,
+                "participant.unblocked",
+                "quest_participant",
+                f"{quest_id}:{user_id}",
+            )
             try:
                 target_language = await db.get_language(user_id)
-                await bot.send_message(user_id, tr(target_language, "unblocked_success"))
+                await bot.send_message(
+                    user_id, tr(target_language, "unblocked_success")
+                )
             except TelegramAPIError:
                 pass
             await callback.answer(tr(language, "unblocked_success"), show_alert=True)
@@ -538,15 +670,19 @@ async def participant_moderation(callback: CallbackQuery, state: FSMContext, db:
     await state.update_data(moderation_quest_id=quest_id, moderation_user_id=user_id)
     await state.set_state(ModerationFlow.ban_reason)
     if callback.message:
-        kb = InlineKeyboardMarkup(inline_keyboard=[
-            [button(tr(language, "btn_skip"), "moderation:skip")],
-            [button(tr(language, "btn_admin_home"), "admin:home")],
-        ])
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [button(tr(language, "btn_skip"), "moderation:skip")],
+                [button(tr(language, "btn_admin_home"), "admin:home")],
+            ]
+        )
         await callback.message.answer(tr(language, "ask_ban_reason"), reply_markup=kb)
     await callback.answer()
 
 
-async def _apply_participant_ban(message: Message, state: FSMContext, db: Database, bot: Bot, reason: str | None) -> None:
+async def _apply_participant_ban(
+    message: Message, state: FSMContext, db: Database, bot: Bot, reason: str | None
+) -> None:
     data = await state.get_data()
     quest_id = int(data["moderation_quest_id"])
     user_id = int(data["moderation_user_id"])
@@ -567,8 +703,18 @@ async def _apply_participant_ban(message: Message, state: FSMContext, db: Databa
         )
         try:
             target_language = await db.get_language(user_id)
-            reason_line = tr(target_language, "reason_line", reason=reason) if reason else ""
-            await bot.send_message(user_id, tr(target_language, "warning_blocked", title=quest["title"], reason=reason_line))
+            reason_line = (
+                tr(target_language, "reason_line", reason=reason) if reason else ""
+            )
+            await bot.send_message(
+                user_id,
+                tr(
+                    target_language,
+                    "warning_blocked",
+                    title=quest["title"],
+                    reason=reason_line,
+                ),
+            )
         except TelegramAPIError:
             pass
     await state.clear()
@@ -579,17 +725,23 @@ async def _apply_participant_ban(message: Message, state: FSMContext, db: Databa
 
 
 @router.message(ModerationFlow.ban_reason)
-async def ban_reason_received(message: Message, state: FSMContext, db: Database, bot: Bot) -> None:
+async def ban_reason_received(
+    message: Message, state: FSMContext, db: Database, bot: Bot
+) -> None:
     text = (message.text or "").strip()
     if len(text) > 300:
         language = await db.get_language(message.from_user.id)
         await message.answer(tr(language, "invalid_text"))
         return
-    await _apply_participant_ban(message, state, db, bot, text if text and text != "-" else None)
+    await _apply_participant_ban(
+        message, state, db, bot, text if text and text != "-" else None
+    )
 
 
 @router.callback_query(F.data == "moderation:skip")
-async def skip_ban_reason(callback: CallbackQuery, state: FSMContext, db: Database, bot: Bot) -> None:
+async def skip_ban_reason(
+    callback: CallbackQuery, state: FSMContext, db: Database, bot: Bot
+) -> None:
     if not await ensure_private_callback(callback, db):
         return
     if await state.get_state() != ModerationFlow.ban_reason.state:
@@ -602,11 +754,22 @@ async def skip_ban_reason(callback: CallbackQuery, state: FSMContext, db: Databa
         await state.clear()
         await callback.answer(tr(language, "quest_not_found"), show_alert=True)
         return
-    await db.set_participant_block(int(data["moderation_quest_id"]), int(data["moderation_user_id"]), None, True)
-    await db.log_action(callback.from_user.id, "participant.blocked", "quest_participant", f"{data['moderation_quest_id']}:{data['moderation_user_id']}", {"reason": None})
+    await db.set_participant_block(
+        int(data["moderation_quest_id"]), int(data["moderation_user_id"]), None, True
+    )
+    await db.log_action(
+        callback.from_user.id,
+        "participant.blocked",
+        "quest_participant",
+        f"{data['moderation_quest_id']}:{data['moderation_user_id']}",
+        {"reason": None},
+    )
     target_language = await db.get_language(int(data["moderation_user_id"]))
     try:
-        await bot.send_message(int(data["moderation_user_id"]), tr(target_language, "warning_blocked", title=quest["title"], reason=""))
+        await bot.send_message(
+            int(data["moderation_user_id"]),
+            tr(target_language, "warning_blocked", title=quest["title"], reason=""),
+        )
     except TelegramAPIError:
         pass
     await state.clear()
@@ -637,9 +800,21 @@ async def show_pending_answers(callback: CallbackQuery, db: Database, bot: Bot) 
             await callback.message.answer(tr(language, "no_pending"))
     else:
         for item in pending[:25]:
-            name = display_name(item.get("full_name"), item.get("username"), item["user_id"])
-            text = tr(language, "review_item", name=name, stage=item["stage_order"], answer=item["answer_text"])
-            await bot.send_message(callback.from_user.id, text, reply_markup=review_keyboard(language, item["answer_id"]))
+            name = display_name(
+                item.get("full_name"), item.get("username"), item["user_id"]
+            )
+            title = tr(
+                language,
+                "review_item",
+                name=name,
+                stage=item["stage_order"],
+                answer="",
+            ).rstrip(":\n")
+            await bot.send_rich_message(
+                callback.from_user.id,
+                rich_message(heading(title, size=2), quote(item["answer_text"])),
+                reply_markup=review_keyboard(language, item["answer_id"]),
+            )
     await callback.answer()
 
 
@@ -663,28 +838,57 @@ async def review_answer(callback: CallbackQuery, db: Database, bot: Bot) -> None
         await callback.answer(tr(language, "quest_not_found"), show_alert=True)
         return
     accepted = decision == "yes"
-    result = await db.review_answer(answer_id, callback.from_user.id, accepted, utc_now())
+    result = await db.review_answer(
+        answer_id, callback.from_user.id, accepted, utc_now()
+    )
     if result["code"] == "paused":
         await callback.answer(tr(language, "quest_paused_notice"), show_alert=True)
         return
     if result["code"] != "reviewed":
         await callback.answer(tr(language, "no_pending"), show_alert=True)
         return
-    await db.log_action(callback.from_user.id, "answer.reviewed", "answer", answer_id, {"accepted": accepted})
+    await db.log_action(
+        callback.from_user.id,
+        "answer.reviewed",
+        "answer",
+        answer_id,
+        {"accepted": accepted},
+    )
     target_language = await db.get_language(int(item["user_id"]))
     await bot.send_message(
         int(item["user_id"]),
-        tr(target_language, "review_to_user", result=tr(target_language, "correct_result" if accepted else "wrong_result")),
+        tr(
+            target_language,
+            "review_to_user",
+            result=tr(
+                target_language, "correct_result" if accepted else "wrong_result"
+            ),
+        ),
     )
     if accepted and result.get("final"):
-        await bot.send_message(int(item["user_id"]), tr(target_language, "correct_done"))
+        await bot.send_message(
+            int(item["user_id"]), tr(target_language, "correct_done")
+        )
     elif accepted and result.get("next_stage_order"):
-        await bot.send_message(int(item["user_id"]), tr(target_language, "correct_next"))
-        await _send_question_after_review(bot, db, int(item["quest_id"]), int(item["user_id"]), int(result["next_stage_order"]))
+        await bot.send_message(
+            int(item["user_id"]), tr(target_language, "correct_next")
+        )
+        await _send_question_after_review(
+            bot,
+            db,
+            int(item["quest_id"]),
+            int(item["user_id"]),
+            int(result["next_stage_order"]),
+        )
     elif not accepted and result.get("exhausted"):
-        await bot.send_message(int(item["user_id"]), tr(target_language, "attempts_exhausted"))
+        await bot.send_message(
+            int(item["user_id"]), tr(target_language, "attempts_exhausted")
+        )
     elif not accepted and not result.get("obsolete"):
-        await bot.send_message(int(item["user_id"]), tr(target_language, "wrong_answer", remaining=result.get("remaining", 0)))
+        await bot.send_message(
+            int(item["user_id"]),
+            tr(target_language, "wrong_answer", remaining=result.get("remaining", 0)),
+        )
     if result.get("final"):
         await db.maybe_complete_quest(int(item["quest_id"]))
     if callback.message:
@@ -692,7 +896,10 @@ async def review_answer(callback: CallbackQuery, db: Database, bot: Bot) -> None
             await callback.message.edit_reply_markup(reply_markup=None)
         except TelegramAPIError:
             pass
-    await callback.answer(tr(language, "review_approved" if accepted else "review_rejected"), show_alert=True)
+    await callback.answer(
+        tr(language, "review_approved" if accepted else "review_rejected"),
+        show_alert=True,
+    )
 
 
 @router.callback_query(F.data.startswith("manage:finish-confirm:"))
@@ -710,12 +917,16 @@ async def ask_finish_confirmation(callback: CallbackQuery, db: Database) -> None
         await callback.answer(tr(language, "quest_not_found"), show_alert=True)
         return
     if callback.message:
-        await callback.message.answer(tr(language, "confirm_finish"), reply_markup=_role_kb(language, quest_id))
+        await callback.message.answer(
+            tr(language, "confirm_finish"), reply_markup=_role_kb(language, quest_id)
+        )
     await callback.answer()
 
 
 @router.callback_query(F.data.startswith("manage:finish-confirmed:"))
-async def finish_quest_callback(callback: CallbackQuery, db: Database, bot: Bot) -> None:
+async def finish_quest_callback(
+    callback: CallbackQuery, db: Database, bot: Bot
+) -> None:
     if not await ensure_private_callback(callback, db):
         return
     try:
@@ -732,22 +943,31 @@ async def finish_quest_callback(callback: CallbackQuery, db: Database, bot: Bot)
     await db.log_action(callback.from_user.id, "quest.finished", "quest", quest_id)
     for user_id in user_ids:
         try:
-            await bot.send_message(user_id, tr(await db.get_language(user_id), "quest_ended"))
+            await bot.send_message(
+                user_id, tr(await db.get_language(user_id), "quest_ended")
+            )
         except TelegramAPIError:
             pass
     if callback.message:
         await safe_edit(
-            callback, tr(language, "quest_finished"), reply_markup=admin_home_keyboard(language)
+            callback,
+            tr(language, "quest_finished"),
+            reply_markup=admin_home_keyboard(language),
         )
     await callback.answer()
 
 
 @router.callback_query(F.data.startswith("manage:archive:"))
-async def archive_quest_callback(callback: CallbackQuery, db: Database, bot: Bot) -> None:
+async def archive_quest_callback(
+    callback: CallbackQuery, db: Database, bot: Bot
+) -> None:
     if not await ensure_private_callback(callback, db):
         return
     if await db.get_role(callback.from_user.id) != "superadmin":
-        await callback.answer(tr(await db.get_language(callback.from_user.id), "superadmin_only"), show_alert=True)
+        await callback.answer(
+            tr(await db.get_language(callback.from_user.id), "superadmin_only"),
+            show_alert=True,
+        )
         return
     try:
         quest_id = int(callback.data.rsplit(":", 1)[1])
@@ -763,12 +983,16 @@ async def archive_quest_callback(callback: CallbackQuery, db: Database, bot: Bot
     await db.log_action(callback.from_user.id, "quest.archived", "quest", quest_id)
     for user_id in user_ids:
         try:
-            await bot.send_message(user_id, tr(await db.get_language(user_id), "quest_ended"))
+            await bot.send_message(
+                user_id, tr(await db.get_language(user_id), "quest_ended")
+            )
         except TelegramAPIError:
             pass
     if callback.message:
         await safe_edit(
-            callback, tr(language, "quest_archived"), reply_markup=admin_home_keyboard(language)
+            callback,
+            tr(language, "quest_archived"),
+            reply_markup=admin_home_keyboard(language),
         )
     await callback.answer()
 
@@ -778,7 +1002,10 @@ async def unarchive_quest_callback(callback: CallbackQuery, db: Database) -> Non
     if not await ensure_private_callback(callback, db):
         return
     if await db.get_role(callback.from_user.id) != "superadmin":
-        await callback.answer(tr(await db.get_language(callback.from_user.id), "superadmin_only"), show_alert=True)
+        await callback.answer(
+            tr(await db.get_language(callback.from_user.id), "superadmin_only"),
+            show_alert=True,
+        )
         return
     try:
         quest_id = int(callback.data.rsplit(":", 1)[1])
@@ -795,10 +1022,14 @@ async def unarchive_quest_callback(callback: CallbackQuery, db: Database) -> Non
     else:
         status = "active" if quest["start_at"] <= utc_now() else "scheduled"
     await db.set_quest_status(quest_id, status)
-    await db.log_action(callback.from_user.id, "quest.unarchived", "quest", quest_id, {"status": status})
+    await db.log_action(
+        callback.from_user.id, "quest.unarchived", "quest", quest_id, {"status": status}
+    )
     if callback.message:
         await safe_edit(
-            callback, tr(language, "quest_unarchived"), reply_markup=admin_home_keyboard(language)
+            callback,
+            tr(language, "quest_unarchived"),
+            reply_markup=admin_home_keyboard(language),
         )
     await callback.answer()
 
@@ -814,7 +1045,11 @@ async def private_invite_link(callback: CallbackQuery, db: Database, bot: Bot) -
         return
     quest = await db.get_quest(quest_id)
     language = await db.get_language(callback.from_user.id)
-    if not quest or quest["visibility"] != "private" or not await can_manage_quest(db, callback.from_user.id, quest):
+    if (
+        not quest
+        or quest["visibility"] != "private"
+        or not await can_manage_quest(db, callback.from_user.id, quest)
+    ):
         await callback.answer(tr(language, "quest_not_found"), show_alert=True)
         return
     me = await bot.get_me()
