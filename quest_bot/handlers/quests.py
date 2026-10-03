@@ -290,20 +290,34 @@ async def view_quest_callback(callback: CallbackQuery, db: Database, bot: Bot) -
 
     participants = await db.participant_count(quest_id)
     if callback.message:
-        if not quest.get("cover_file_id"):
-            await copy_quest_cover(bot, quest, callback.message.chat.id)
-        await safe_edit(
-            callback,
-            quest_preview(quest, language, participants),
-            reply_markup=quest_detail(
-                language,
-                quest,
-                joined=bool(participant and participant["status"] != "blocked"),
-                from_my_quests=from_my_quests,
-                my_quests_visibility=my_quests_visibility,
-                my_quests_page=my_quests_page,
-            ),
+        has_inline_cover = bool(quest.get("cover_file_id"))
+        has_legacy_cover = (
+            not has_inline_cover
+            and quest.get("cover_chat_id") is not None
+            and quest.get("cover_message_id") is not None
         )
+        preview = quest_preview(quest, language, participants)
+        markup = quest_detail(
+            language,
+            quest,
+            joined=bool(participant and participant["status"] != "blocked"),
+            from_my_quests=from_my_quests,
+            my_quests_visibility=my_quests_visibility,
+            my_quests_page=my_quests_page,
+        )
+        if has_legacy_cover:
+            try:
+                await callback.message.delete()
+            except TelegramAPIError as exc:
+                logger.debug(
+                    "Could not remove the previous quest menu before showing legacy cover %s: %s",
+                    quest_id,
+                    exc,
+                )
+            await copy_quest_cover(bot, quest, callback.message.chat.id)
+            await callback.message.answer_rich(preview, reply_markup=markup)
+        else:
+            await safe_edit(callback, preview, reply_markup=markup)
     await callback.answer()
 
 

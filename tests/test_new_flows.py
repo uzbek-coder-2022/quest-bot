@@ -595,8 +595,17 @@ class FeatureFlowTests(unittest.IsolatedAsyncioTestCase):
             async def participant(self, quest_id: int, user_id: int):
                 return {"status": "active"}
 
+        events = []
+
+        class OrderedBot(FakeBot):
+            async def copy_message(self, **kwargs):
+                events.append("cover")
+                return await super().copy_message(**kwargs)
+
         message = SimpleNamespace(
             chat=SimpleNamespace(type="private", id=42),
+            delete=AsyncMock(side_effect=lambda: events.append("delete")),
+            answer_rich=AsyncMock(side_effect=lambda *args, **kwargs: events.append("preview")),
             edit_text=AsyncMock(),
         )
         callback = SimpleNamespace(
@@ -605,17 +614,20 @@ class FeatureFlowTests(unittest.IsolatedAsyncioTestCase):
             message=message,
             answer=AsyncMock(),
         )
-        bot = FakeBot()
+        bot = OrderedBot()
 
         await view_quest_callback(callback, Db(quest), bot)
 
+        self.assertEqual(events, ["delete", "cover", "preview"])
         self.assertEqual(bot.copies[0]["from_chat_id"], -100123)
-        edited = message.edit_text.await_args.kwargs
-        content = str(edited["rich_message"].model_dump(mode="json", exclude_none=True))
+        message.delete.assert_awaited_once()
+        message.edit_text.assert_not_awaited()
+        preview = message.answer_rich.await_args
+        content = str(preview.args[0].model_dump(mode="json", exclude_none=True))
         self.assertIn("Night Quest", content)
         self.assertIn("4", content)
         self.assertEqual(
-            edited["reply_markup"].inline_keyboard[-1][0].callback_data,
+            preview.kwargs["reply_markup"].inline_keyboard[-1][0].callback_data,
             "quest:mylist:private:1",
         )
 
