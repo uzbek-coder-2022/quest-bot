@@ -11,16 +11,18 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 
+from .. import navigation
 from ..config import Settings
 from ..database import Database, utc_now
 from ..keyboards import (
     add_stage_answer_mode_keyboard,
     admin_home_keyboard,
     admin_quest_filters,
-    answer_quest_selector,
     browse_filters,
     button,
     confirm_cover_removal_keyboard,
+    continue_keyboard,
+    deleted_quest_keyboard,
     edit_done_keyboard,
     edit_prompt_keyboard,
     edit_quest_cover_keyboard,
@@ -30,6 +32,7 @@ from ..keyboards import (
     home_keyboard,
     join_confirmation_keyboard,
     manage_quest,
+    open_quest_keyboard,
     participating_quests_keyboard,
     quest_detail,
     ratings_overview_keyboard,
@@ -50,9 +53,10 @@ from ..services import (
     archive_telegram_message,
     delete_archived_message,
     get_chat_invite_for_participant,
+    notify_next_stage_ready,
+    notify_participant_stage_ready,
     notify_quest_end,
     question_media_details,
-    send_current_stage_after_join,
     send_stage_to_user,
 )
 from ..states import AddStage, AnswerFlow, EditQuestDetails, EditStage
@@ -61,7 +65,11 @@ from ..utils import (
     display_name,
     ensure_private_callback,
     format_datetime,
+    parse_duration_input,
     parse_local_datetime,
+    quest_duration_label,
+    quest_end_at,
+    rank_label,
     safe_edit,
 )
 
@@ -117,23 +125,29 @@ async def _show_manage_page(
     if role not in {"admin", "superadmin"}:
         await callback.answer(tr(language, "admin_only"), show_alert=True)
         return
+    if status == "deleted" and role != "superadmin":
+        await callback.answer(tr(language, "superadmin_only"), show_alert=True)
+        return
     page_size = int(await db.settings_get("page_size", "10"))
-    selected_status = None if status == "all" else status
+    selected_status = None if status in {"all", "deleted"} else status
     items = await db.list_manageable_quests(
         callback.from_user.id,
         role == "superadmin",
         selected_status,
         max(0, page) * page_size,
         page_size,
+        deleted=status == "deleted",
     )
     title = tr(language, "my_quests_title")
+    if status == "deleted":
+        title += f" · {tr(language, 'filter_deleted')}"
     body = information_message(title, None if items else tr(language, "empty_quests"))
     if callback.message:
         await safe_edit(
             callback,
             body,
             reply_markup=admin_quest_filters(
-                language, status, max(0, page), items, page_size
+                language, status, max(0, page), items, page_size, role=role
             ),
         )
 
@@ -160,7 +174,7 @@ async def my_quests_command(message: Message, db: Database) -> None:
     if message.chat.type != "private":
         await message.answer(tr(language, "open_private_chat"))
         return
-    page_size = int(await db.settings_get("page_size", "20"))
+    page_size = int(await db.settings_get("page_size", "10"))
     items = await db.list_user_quests(message.from_user.id, 0, page_size)
     text = information_message(
         tr(language, "my_participating_quests_title"),
@@ -194,7 +208,7 @@ async def my_quests_callback(callback: CallbackQuery, db: Database) -> None:
         await callback.answer()
         return
     language = await db.get_language(callback.from_user.id)
-    page_size = int(await db.settings_get("page_size", "20"))
+    page_size = int(await db.settings_get("page_size", "10"))
     items = await db.list_user_quests(
         callback.from_user.id,
         page * page_size,
@@ -242,7 +256,14 @@ async def manage_filter_callback(callback: CallbackQuery, db: Database) -> None:
     except (ValueError, AttributeError):
         await callback.answer()
         return
-    if status not in {"all", "scheduled", "active", "completed", "archived"}:
+    if status not in {
+        "all",
+        "scheduled",
+        "active",
+        "completed",
+        "archived",
+        "deleted",
+    }:
         await callback.answer()
         return
     await _show_manage_page(callback, db, status, page)
@@ -251,26 +272,23 @@ async def manage_filter_callback(callback: CallbackQuery, db: Database) -> None:
 
 @router.callback_query(F.data.startswith("quest:view:"))
 async def view_quest_callback(callback: CallbackQuery, db: Database, bot: Bot) -> None:
-    my_quests_visibility = "all"
-    my_quests_page = 0
-    try:
-        parts = callback.data.split(":")
-        if len(parts) == 6 and parts[2] == "my":
-            from_my_quests = True
-            my_quests_visibility = parts[3]
-            my_quests_page = max(0, int(parts[4]))
-            quest_id = int(parts[5])
-            if my_quests_visibility not in {"all", "public", "private"}:
-                raise ValueError("Invalid participating-quest visibility")
-        elif len(parts) == 4 and parts[2] == "my":
-            from_my_quests = True
-            quest_id = int(parts[3])
-        else:
-            from_my_quests = False
-            quest_id = int(parts[2])
-    except (ValueError, IndexError):
+    parsed = _parse_quest_card(callback.data or "")
+    if not parsed:
         await callback.answer()
         return
+    (
+        quest_id,
+        from_my_quests,
+        my_quests_visibility,
+        my_quests_page,
+        browse_status,
+        browse_page,
+    ) = parsed
+    # Joining and cancelling re-render this card, so remember where it came
+    # from until the visitor is done with it.
+    navigation.remember(
+        callback.from_user.id, card_callback=callback.data, card_quest=quest_id
+    )
     quest = await db.get_quest(quest_id)
     language = await db.get_language(callback.from_user.id)
     if not quest:
@@ -290,6 +308,14 @@ async def view_quest_callback(callback: CallbackQuery, db: Database, bot: Bot) -
         await callback.answer(tr(language, "quest_not_found"), show_alert=True)
         return
 
+    can_continue = False
+    continue_started = bool(participant and int(participant.get("current_stage") or 0) > 0)
+    if participant and participant["status"] in {"joined", "active"}:
+        deliverable = await db.next_deliverable_stage(
+            quest_id, callback.from_user.id, utc_now()
+        )
+        can_continue = deliverable is not None
+
     participants = await db.participant_count(quest_id)
     if callback.message:
         has_inline_cover = bool(quest.get("cover_file_id"))
@@ -306,6 +332,10 @@ async def view_quest_callback(callback: CallbackQuery, db: Database, bot: Bot) -
             from_my_quests=from_my_quests,
             my_quests_visibility=my_quests_visibility,
             my_quests_page=my_quests_page,
+            can_continue=can_continue,
+            continue_started=continue_started,
+            browse_status=browse_status,
+            browse_page=browse_page,
         )
         if has_legacy_cover:
             try:
@@ -428,7 +458,12 @@ async def confirm_quest_join(callback: CallbackQuery, db: Database, bot: Bot) ->
         await safe_edit(
             callback,
             quest_preview(quest, language, await db.participant_count(quest_id)),
-            reply_markup=quest_detail(language, quest, joined=True),
+            reply_markup=quest_detail(
+                language,
+                quest,
+                joined=True,
+                **_card_origin_kwargs(callback.from_user.id, quest_id),
+            ),
         )
     if quest.get("chat_id"):
         if quest["status"] == "active":
@@ -446,10 +481,7 @@ async def confirm_quest_join(callback: CallbackQuery, db: Database, bot: Bot) ->
                 callback.from_user.id, tr(language, "invite_at_start")
             )
     if quest["status"] == "active":
-        me = await bot.get_me()
-        await send_current_stage_after_join(
-            bot, db, quest, callback.from_user.id, me.username or ""
-        )
+        await notify_participant_stage_ready(bot, db, quest, callback.from_user.id)
     await callback.answer()
 
 
@@ -476,6 +508,7 @@ async def cancel_quest_join(callback: CallbackQuery, db: Database) -> None:
                     language,
                     quest,
                     joined=bool(participant and participant["status"] != "blocked"),
+                    **_card_origin_kwargs(callback.from_user.id, quest_id),
                 ),
             )
     elif callback.message:
@@ -519,10 +552,126 @@ async def participant_chat_invite(
     await callback.answer()
 
 
+_BROWSE_STATUSES = {"all", "scheduled", "active", "completed", "archived"}
+_QUEST_VISIBILITIES = {"all", "public", "private"}
+
+
+def _parse_quest_card(data: str) -> tuple[int, bool, str, int, str, int] | None:
+    """Parse a quest-card callback into its id and the list it came from.
+
+    Returns ``(quest_id, from_my_quests, visibility, my_page, browse_status,
+    browse_page)`` or ``None`` when the callback is not a quest card.
+    """
+    parts = (data or "").split(":")
+    if len(parts) < 3 or parts[0] != "quest" or parts[1] != "view":
+        return None
+    try:
+        if len(parts) == 6 and parts[2] == "my":
+            visibility = parts[3] if parts[3] in _QUEST_VISIBILITIES else "all"
+            return int(parts[5]), True, visibility, max(0, int(parts[4])), "all", 0
+        if len(parts) == 4 and parts[2] == "my":
+            return int(parts[3]), True, "all", 0, "all", 0
+        if len(parts) == 6 and parts[3] == "browse":
+            status = parts[4] if parts[4] in _BROWSE_STATUSES else "all"
+            return int(parts[2]), False, "all", 0, status, max(0, int(parts[5]))
+        if len(parts) == 3:
+            return int(parts[2]), False, "all", 0, "all", 0
+    except (ValueError, IndexError):
+        return None
+    return None
+
+
+def _card_origin_kwargs(user_id: int, quest_id: int) -> dict[str, object]:
+    """Quest-card arguments that keep Back pointing at the original list."""
+    remembered = navigation.recall(user_id, "card_callback")
+    parsed = _parse_quest_card(str(remembered or ""))
+    if not parsed or parsed[0] != quest_id:
+        return {}
+    _, from_my, visibility, my_page, status, browse_page = parsed
+    return {
+        "from_my_quests": from_my,
+        "my_quests_visibility": visibility,
+        "my_quests_page": my_page,
+        "browse_status": status,
+        "browse_page": browse_page,
+    }
+
+
+def _leaderboard_origin(data: str) -> tuple[str, list[str]]:
+    """Split a leaderboard callback into its origin name and extra parts."""
+    parts = (data or "").split(":")
+    if len(parts) <= 3:
+        return "browse", []
+    return parts[3], parts[4:]
+
+
+def _quest_card_target(quest_id: int, extra: list[str]) -> str:
+    """Quest-page callback that keeps the card's own Back destination."""
+    if extra and extra[0] == "browse":
+        status = extra[1] if len(extra) > 1 and extra[1] in _BROWSE_STATUSES else "all"
+        try:
+            page = max(0, int(extra[2]))
+        except (IndexError, ValueError):
+            page = 0
+        if len(extra) <= 2:
+            return f"quest:view:{quest_id}"
+        return f"quest:view:{quest_id}:browse:{status}:{page}"
+    if extra and extra[0] == "my":
+        visibility = (
+            extra[1]
+            if len(extra) > 1 and extra[1] in {"all", "public", "private"}
+            else "all"
+        )
+        try:
+            page = max(0, int(extra[2]))
+        except (IndexError, ValueError):
+            page = 0
+        return f"quest:view:my:{visibility}:{page}:{quest_id}"
+    return f"quest:view:{quest_id}"
+
+
+def _leaderboard_back_target(data: str, quest_id: int) -> str:
+    """Translate a leaderboard callback origin into its return destination.
+
+    A rating opened from a quest card returns to that card; a rating opened
+    from the ratings list returns to the list it was opened from.
+    """
+    origin, extra = _leaderboard_origin(data)
+    if origin == "card":
+        return _quest_card_target(quest_id, extra)
+    if origin == "my":
+        visibility = (
+            extra[0] if extra and extra[0] in {"all", "public", "private"} else "all"
+        )
+        try:
+            page = max(0, int(extra[1]))
+        except (IndexError, ValueError):
+            page = 0
+        return f"quest:mylist:{visibility}:{page}"
+    if origin == "manage":
+        return f"manage:quest:{quest_id}"
+    if origin == "list":
+        scope = (
+            extra[0] if extra and extra[0] in {"all", "managed"} else "all"
+        )
+        try:
+            page = max(0, int(extra[1]))
+        except (IndexError, ValueError):
+            page = 0
+        return f"ratings:list:{scope}:{page}"
+    if origin == "browse":
+        return "browse:filter:all:0"
+    return "menu:home"
+
+
 @router.callback_query(F.data.startswith("rating:show:"))
 async def show_leaderboard(callback: CallbackQuery, db: Database) -> None:
+    parts = (callback.data or "").split(":")
+    if len(parts) < 3:
+        await callback.answer()
+        return
     try:
-        quest_id = int(callback.data.rsplit(":", 1)[1])
+        quest_id = int(parts[2])
     except ValueError:
         await callback.answer()
         return
@@ -543,10 +692,10 @@ async def show_leaderboard(callback: CallbackQuery, db: Database) -> None:
     ):
         await callback.answer(tr(language, "quest_not_found"), show_alert=True)
         return
-    rows = await db.leaderboard(quest_id)
+    leaderboard_rows = await db.leaderboard(quest_id)
     title = tr(language, "leaderboard_title", title=quest["title"])
     rendered = []
-    for rank, item in enumerate(rows[:30], start=1):
+    for rank, item in enumerate(leaderboard_rows[:30], start=1):
         name = display_name(
             item.get("full_name"), item.get("username"), item.get("user_id")
         )
@@ -563,7 +712,8 @@ async def show_leaderboard(callback: CallbackQuery, db: Database) -> None:
             tr(
                 language,
                 "leaderboard_row",
-                rank=rank,
+                # A medal marks a real result: at least one solved stage.
+                rank=rank_label(rank, int(item["solved"] or 0) > 0),
                 name=name,
                 solved=item["solved"],
                 status=_participant_status(language, item["status"]),
@@ -573,26 +723,40 @@ async def show_leaderboard(callback: CallbackQuery, db: Database) -> None:
     text = activity_message(
         title, rendered, None if rendered else tr(language, "leaderboard_empty")
     )
-    role = await db.get_role(callback.from_user.id)
-    markup = (
-        admin_home_keyboard(language)
-        if role in {"admin", "superadmin"}
-        else home_keyboard(language)
+    # Only a rating opened from the quest management view belongs to the admin
+    # side; every user-facing rating returns to the main menu.
+    origin, _ = _leaderboard_origin(callback.data)
+    home_button = (
+        button(tr(language, "btn_admin_home"), "admin:home")
+        if origin == "manage"
+        else button(tr(language, "btn_home"), "menu:home")
     )
+    # Back is enough: from a quest card it returns to that card, and from the
+    # ratings list it returns to the list. The main menu closes the screen.
+    rows = [
+        [
+            button(
+                tr(language, "btn_back"),
+                _leaderboard_back_target(callback.data, quest_id),
+            )
+        ],
+        [home_button],
+    ]
     if callback.message:
-        await safe_edit(callback, text, reply_markup=markup)
+        await safe_edit(
+            callback, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows)
+        )
     await callback.answer()
 
 
 @router.callback_query(F.data == "ratings:overview")
 async def ratings_overview(callback: CallbackQuery, db: Database) -> None:
     language = await db.get_language(callback.from_user.id)
-    role = await db.get_role(callback.from_user.id)
     if callback.message:
         await safe_edit(
             callback,
             information_message(tr(language, "ratings_overview_title")),
-            reply_markup=ratings_overview_keyboard(language, role),
+            reply_markup=ratings_overview_keyboard(language),
         )
     await callback.answer()
 
@@ -620,7 +784,7 @@ async def aggregate_leaderboard(callback: CallbackQuery, db: Database) -> None:
             tr(
                 language,
                 "aggregate_leaderboard_row",
-                rank=rank,
+                rank=rank_label(rank, int(item["solved"] or 0) > 0),
                 name=name,
                 points=item["solved"],
                 completed=item["completed_quests"],
@@ -631,16 +795,10 @@ async def aggregate_leaderboard(callback: CallbackQuery, db: Database) -> None:
         rendered,
         None if rendered else tr(language, "aggregate_leaderboard_empty"),
     )
-    role = await db.get_role(callback.from_user.id)
-    return_home = (
-        button(tr(language, "btn_admin_home"), "admin:home")
-        if role in {"admin", "superadmin"}
-        else button(tr(language, "btn_home"), "menu:home")
-    )
     markup = InlineKeyboardMarkup(
         inline_keyboard=[
             [button(tr(language, "btn_back"), "ratings:overview")],
-            [return_home],
+            [button(tr(language, "btn_home"), "menu:home")],
         ]
     )
     if callback.message:
@@ -673,9 +831,20 @@ async def leaderboard_quest_list(callback: CallbackQuery, db: Database) -> None:
         )
     else:
         quests = await db.list_public_quests(None, page * size, size)
+    # The managed list is opened from the admin panel, so its Back returns
+    # there; the public list returns to the ratings screen it came from.
+    back_target = "admin:home" if scope == "managed" else "ratings:overview"
     rows = [
-        [button(tr(language, "btn_back"), "ratings:overview")],
-        *[[button(item["title"][:50], f"rating:show:{item['id']}")] for item in quests],
+        [button(tr(language, "btn_back"), back_target)],
+        *[
+            [
+                button(
+                    item["title"][:50],
+                    f"rating:show:{item['id']}:list:{scope}:{page}",
+                )
+            ]
+            for item in quests
+        ],
     ]
     nav = []
     if page > 0:
@@ -684,10 +853,9 @@ async def leaderboard_quest_list(callback: CallbackQuery, db: Database) -> None:
         nav.append(button("▶", f"ratings:list:{scope}:{page + 1}"))
     if nav:
         rows.append(nav)
-    role = await db.get_role(callback.from_user.id)
-    if role in {"admin", "superadmin"}:
-        rows.append([button(tr(language, "btn_admin_home"), "admin:home")])
-    else:
+    # Managed-quest ratings are an admin screen whose Back already returns to
+    # the panel; the public list ends with the user-facing Main menu button.
+    if scope != "managed":
         rows.append([button(tr(language, "btn_home"), "menu:home")])
     title_key = (
         "btn_managed_ratings" if scope == "managed" else "btn_public_quest_ratings"
@@ -707,14 +875,42 @@ async def leaderboard_quest_list(callback: CallbackQuery, db: Database) -> None:
 async def manage_quest_callback(callback: CallbackQuery, db: Database) -> None:
     if not await ensure_private_callback(callback, db):
         return
+    parts = (callback.data or "").split(":", 3)
     try:
-        quest_id = int(callback.data.rsplit(":", 1)[1])
-    except ValueError:
+        quest_id = int(parts[2])
+        origin = parts[3] if len(parts) > 3 and parts[3] else None
+    except (ValueError, IndexError):
         await callback.answer()
         return
+    if origin:
+        navigation.remember(
+            callback.from_user.id, manage_quest=quest_id, manage_origin=origin
+        )
+    back_target = navigation.manage_back_target(callback.from_user.id, quest_id)
     quest = await db.get_quest(quest_id)
     language = await db.get_language(callback.from_user.id)
     role = await db.get_role(callback.from_user.id)
+    if not quest:
+        deleted_quest = await db.get_quest(quest_id, include_deleted=True)
+        if deleted_quest and deleted_quest["deleted"]:
+            if role != "superadmin":
+                await callback.answer(tr(language, "quest_not_found"), show_alert=True)
+                return
+            if callback.message:
+                await safe_edit(
+                    callback,
+                    information_message(
+                        tr(language, "deleted_quest_view_title"),
+                        tr(language, "deleted_quest_view_body")
+                        + "\n\n"
+                        + tr(language, "deleted_quest_purge_hint"),
+                    ),
+                    reply_markup=deleted_quest_keyboard(
+                        language, quest_id, back_target
+                    ),
+                )
+            await callback.answer()
+            return
     if not quest or not await can_manage_quest(db, callback.from_user.id, quest):
         await callback.answer(tr(language, "quest_not_found"), show_alert=True)
         return
@@ -722,7 +918,7 @@ async def manage_quest_callback(callback: CallbackQuery, db: Database) -> None:
         await safe_edit(
             callback,
             quest_preview(quest, language, await db.participant_count(quest_id)),
-            reply_markup=manage_quest(language, quest, role or "admin"),
+            reply_markup=manage_quest(language, quest, role or "admin", back_target),
         )
     await callback.answer()
 
@@ -750,6 +946,12 @@ async def edit_quest_details_menu(callback: CallbackQuery, db: Database) -> None
             rich_message(
                 heading(f"🛠 {tr(language, 'edit_quest_details_title')}", size=1),
                 paragraph(bold(f"🧭 {quest['title']}")),
+                paragraph(
+                    f"⏳ {tr(language, 'quest_label_duration')}: "
+                    + quest_duration_label(
+                        language, int(quest.get("duration_seconds") or 0)
+                    )
+                ),
                 quote(f"💡 {tr(language, 'edit_quest_details_hint')}"),
             ),
             reply_markup=edit_quest_details_keyboard(language, quest_id),
@@ -793,6 +995,14 @@ async def _begin_metadata_edit(
     if quest["status"] == "archived":
         await callback.answer(tr(language, "quest_metadata_archived"), show_alert=True)
         return
+    if field == "start_at" and quest["status"] != "scheduled":
+        await callback.answer(tr(language, "quest_start_edit_closed"), show_alert=True)
+        return
+    if field == "duration" and quest["status"] not in {"scheduled", "active"}:
+        await callback.answer(
+            tr(language, "quest_duration_edit_closed"), show_alert=True
+        )
+        return
 
     await _clear_fsm_and_archived_drafts(state, callback.message.bot)
     await state.update_data(edit_quest_id=quest_id, edit_context="quest_metadata")
@@ -802,6 +1012,32 @@ async def _begin_metadata_edit(
             heading(f"✏️ {tr(language, 'ask_quest_title')}", size=1),
             paragraph(bold(f"📌 {tr(language, 'quest_label_title')}")),
             quote(str(quest["title"])),
+        )
+    elif field == "start_at":
+        await state.set_state(EditQuestDetails.start_at)
+        prompt = rich_message(
+            heading(f"🕒 {tr(language, 'ask_quest_start')}", size=1),
+            quote(
+                tr(
+                    language,
+                    "quest_start_edit_hint",
+                    current=format_datetime(quest["start_at"], language),
+                )
+            ),
+        )
+    elif field == "duration":
+        await state.set_state(EditQuestDetails.duration)
+        prompt = rich_message(
+            heading(f"⏳ {tr(language, 'ask_duration')}", size=1),
+            quote(
+                tr(
+                    language,
+                    "quest_duration_edit_hint",
+                    current=quest_duration_label(
+                        language, int(quest.get("duration_seconds") or 0)
+                    ),
+                )
+            ),
         )
     else:
         await state.set_state(EditQuestDetails.description)
@@ -829,6 +1065,20 @@ async def begin_quest_description_edit(
     callback: CallbackQuery, state: FSMContext, db: Database
 ) -> None:
     await _begin_metadata_edit(callback, state, db, "description")
+
+
+@router.callback_query(F.data.startswith("manage:edit:start:"))
+async def begin_quest_start_edit(
+    callback: CallbackQuery, state: FSMContext, db: Database
+) -> None:
+    await _begin_metadata_edit(callback, state, db, "start_at")
+
+
+@router.callback_query(F.data.startswith("manage:edit:duration:"))
+async def begin_quest_duration_edit(
+    callback: CallbackQuery, state: FSMContext, db: Database
+) -> None:
+    await _begin_metadata_edit(callback, state, db, "duration")
 
 
 @router.callback_query(F.data.regexp(r"^manage:edit:cover:\d+$"))
@@ -1052,6 +1302,87 @@ async def quest_title_received(
     )
 
 
+@router.message(EditQuestDetails.start_at)
+async def quest_start_received(
+    message: Message, state: FSMContext, db: Database
+) -> None:
+    if not message.from_user:
+        return
+    language = await db.get_language(message.from_user.id)
+    access = await _metadata_message_quest(message, state, db)
+    if not access:
+        return
+    start_at = parse_local_datetime(message.text or "")
+    if not start_at or datetime.fromisoformat(start_at) <= datetime.now(timezone.utc):
+        await message.answer(
+            f"⚠️ {tr(language, 'invalid_quest_start')}",
+            reply_markup=edit_prompt_keyboard(language),
+        )
+        return
+    quest_id, _ = access
+    previous = await db.update_quest_start_at(
+        quest_id, start_at, message.from_user.id, utc_now()
+    )
+    if previous is None:
+        await state.clear()
+        await message.answer(tr(language, "quest_start_edit_closed"))
+        return
+    await state.clear()
+    await message.answer_rich(
+        rich_message(
+            heading(f"✅ {tr(language, 'quest_start_updated')}", size=1),
+            paragraph(bold(f"🕒 {tr(language, 'btn_edit_start')}")),
+            quote(format_datetime(start_at, language)),
+        ),
+        reply_markup=edit_quest_details_keyboard(language, quest_id),
+    )
+
+
+@router.message(EditQuestDetails.duration)
+async def quest_duration_received(
+    message: Message, state: FSMContext, db: Database
+) -> None:
+    """Store an edited overall time given as minutes or as an end time."""
+    if not message.from_user:
+        return
+    language = await db.get_language(message.from_user.id)
+    access = await _metadata_message_quest(message, state, db)
+    if not access:
+        return
+    quest_id, quest = access
+    duration_seconds, error = parse_duration_input(
+        message.text or "", quest.get("start_at")
+    )
+    if error:
+        await message.answer(
+            f"⚠️ {tr(language, error)}", reply_markup=edit_prompt_keyboard(language)
+        )
+        return
+    previous = await db.update_quest_duration(
+        quest_id, int(duration_seconds or 0), message.from_user.id, utc_now()
+    )
+    if previous is None:
+        await state.clear()
+        await message.answer(tr(language, "quest_duration_edit_closed"))
+        return
+    await state.clear()
+    saved = int(duration_seconds or 0)
+    value = quest_duration_label(language, saved)
+    if saved:
+        value += (
+            f" · {tr(language, 'quest_label_end')} "
+            f"{format_datetime(quest_end_at(dict(quest, duration_seconds=saved)), language)}"
+        )
+    await message.answer_rich(
+        rich_message(
+            heading(f"✅ {tr(language, 'quest_duration_updated')}", size=1),
+            paragraph(bold(f"⏳ {tr(language, 'btn_edit_duration')}")),
+            quote(value),
+        ),
+        reply_markup=edit_quest_details_keyboard(language, quest_id),
+    )
+
+
 @router.message(EditQuestDetails.description)
 async def quest_description_received(
     message: Message, state: FSMContext, db: Database
@@ -1184,7 +1515,12 @@ async def pause_quest_callback(callback: CallbackQuery, db: Database) -> None:
         await safe_edit(
             callback,
             quest_preview(updated, language, await db.participant_count(quest_id)),
-            reply_markup=manage_quest(language, updated, role or "admin"),
+            reply_markup=manage_quest(
+                language,
+                updated,
+                role or "admin",
+                navigation.manage_back_target(callback.from_user.id, quest_id),
+            ),
         )
     await callback.answer(tr(language, "pause_success"), show_alert=True)
 
@@ -1213,7 +1549,12 @@ async def resume_quest_callback(callback: CallbackQuery, db: Database) -> None:
         await safe_edit(
             callback,
             quest_preview(updated, language, await db.participant_count(quest_id)),
-            reply_markup=manage_quest(language, updated, role or "admin"),
+            reply_markup=manage_quest(
+                language,
+                updated,
+                role or "admin",
+                navigation.manage_back_target(callback.from_user.id, quest_id),
+            ),
         )
     await callback.answer(tr(language, "resume_success"), show_alert=True)
 
@@ -1964,16 +2305,27 @@ async def _notify_answer_reviewers(
 
 
 async def _process_answer(
-    message: Message, quest_id: int, db: Database, bot: Bot
+    message: Message,
+    quest_id: int,
+    db: Database,
+    bot: Bot,
+    answer_text: str | None = None,
+    actor_id: int | None = None,
 ) -> None:
-    if not message.from_user or not message.text:
+    """Grade one participant answer.
+
+    ``answer_text`` and ``actor_id`` let callers submit text that was collected
+    earlier, for example when a support message turned out to be an answer.
+    """
+    user_id = actor_id or (message.from_user.id if message.from_user else None)
+    if user_id is None:
         return
-    language = await db.get_language(message.from_user.id)
-    answer = message.text.strip()
+    language = await db.get_language(user_id)
+    answer = (answer_text if answer_text is not None else (message.text or "")).strip()
     if not answer or len(answer) > 1000:
         await message.answer(tr(language, "invalid_text"))
         return
-    result = await db.submit_answer(quest_id, message.from_user.id, answer, utc_now())
+    result = await db.submit_answer(quest_id, user_id, answer, utc_now())
     code = result["code"]
     if code in {"not_joined", "closed"}:
         await message.answer(tr(language, "no_active_question"))
@@ -1982,7 +2334,7 @@ async def _process_answer(
         await message.answer(tr(language, "quest_paused_notice"))
         return
     if code == "blocked":
-        participant = await db.participant(quest_id, message.from_user.id)
+        participant = await db.participant(quest_id, user_id)
         suffix = (
             tr(language, "reason_line", reason=participant.get("ban_reason"))
             if participant and participant.get("ban_reason")
@@ -1994,10 +2346,16 @@ async def _process_answer(
         await message.answer(tr(language, "no_active_question"))
         return
     if code == "overall_timeout":
-        await message.answer(tr(language, "quest_ended"))
+        await message.answer(
+            tr(language, "quest_ended"),
+            reply_markup=open_quest_keyboard(language, quest_id),
+        )
         return
     if code == "timeout":
-        await message.answer(tr(language, "stage_timeout"))
+        await message.answer(
+            tr(language, "stage_timeout"),
+            reply_markup=open_quest_keyboard(language, quest_id),
+        )
         await db.maybe_complete_quest(quest_id)
         return
     if code == "pending":
@@ -2010,7 +2368,10 @@ async def _process_answer(
         return
     if code == "wrong":
         if result.get("exhausted"):
-            await message.answer(tr(language, "attempts_exhausted"))
+            await message.answer(
+                tr(language, "attempts_exhausted"),
+                reply_markup=open_quest_keyboard(language, quest_id),
+            )
             await db.maybe_complete_quest(quest_id)
         else:
             await message.answer(
@@ -2021,20 +2382,58 @@ async def _process_answer(
         await message.answer(tr(language, "error_generic"))
         return
     if result.get("final"):
-        await message.answer(tr(language, "correct_done"))
+        await message.answer(
+            tr(language, "correct_done"),
+            reply_markup=open_quest_keyboard(language, quest_id),
+        )
         await db.maybe_complete_quest(quest_id)
         return
     if result.get("next_stage_order"):
-        await message.answer(tr(language, "correct_next"))
         quest = await db.get_quest(quest_id)
-        stage = await db.get_stage(quest_id, int(result["next_stage_order"]))
-        if quest and stage:
-            me = await bot.get_me()
-            await send_stage_to_user(
-                bot, db, quest, stage, message.from_user.id, me.username or ""
+        if quest:
+            await notify_next_stage_ready(bot, db, quest, user_id)
+        else:
+            await message.answer(
+                tr(
+                    language,
+                    "correct_next",
+                    button=tr(language, "btn_continue_quest"),
+                )
             )
         return
     await message.answer(tr(language, "correct_wait"))
+
+
+@router.callback_query(F.data.startswith("support:pending:answer:"))
+async def pending_text_as_answer(
+    callback: CallbackQuery, state: FSMContext, db: Database, bot: Bot
+) -> None:
+    """Grade text that was written while the support form was open."""
+    if not await ensure_private_callback(callback, db):
+        return
+    language = await db.get_language(callback.from_user.id)
+    data = await state.get_data()
+    pending = str(data.get("pending_support_text") or "").strip()
+    try:
+        quest_id = int(callback.data.rsplit(":", 1)[1])
+    except (ValueError, AttributeError):
+        await callback.answer()
+        return
+    if not pending:
+        await state.clear()
+        await callback.answer(tr(language, "error_generic"), show_alert=True)
+        return
+    await state.clear()
+    await callback.answer()
+    if callback.message:
+        await _process_answer(
+            callback.message,
+            quest_id,
+            db,
+            bot,
+            answer_text=pending,
+            actor_id=callback.from_user.id,
+        )
 
 
 @router.callback_query(F.data.startswith("answer:select:"))
@@ -2061,6 +2460,63 @@ async def select_answer_quest(
     await callback.answer()
 
 
+@router.callback_query(F.data.startswith("quest:continue:"))
+async def continue_quest_stage(
+    callback: CallbackQuery, db: Database, bot: Bot
+) -> None:
+    """Send the participant's current question when Start/Continue is pressed."""
+    if not await ensure_private_callback(callback, db):
+        return
+    try:
+        quest_id = int(callback.data.rsplit(":", 1)[1])
+    except (ValueError, AttributeError):
+        await callback.answer()
+        return
+    language = await db.get_language(callback.from_user.id)
+    quest = await db.get_quest(quest_id)
+    participant = (
+        await db.participant(quest_id, callback.from_user.id) if quest else None
+    )
+    if not quest or not participant or participant["status"] == "blocked":
+        await callback.answer(tr(language, "quest_not_found"), show_alert=True)
+        return
+    if quest.get("paused_at"):
+        await callback.answer(tr(language, "quest_paused_notice"), show_alert=True)
+        return
+    if quest["status"] != "active":
+        key = "stage_not_started_yet" if quest["status"] == "scheduled" else "quest_ended"
+        await callback.answer(tr(language, key), show_alert=True)
+        return
+    if participant["status"] not in {"joined", "active"}:
+        await callback.answer(tr(language, "quest_ended"), show_alert=True)
+        return
+    stage = await db.next_deliverable_stage(
+        quest_id, callback.from_user.id, utc_now()
+    )
+    if not stage:
+        await callback.answer(
+            tr(language, "quest_stage_unavailable"), show_alert=True
+        )
+        return
+    already_activated = stage.get("session_status") == "open"
+    me = await bot.get_me()
+    delivered = await send_stage_to_user(
+        bot,
+        db,
+        quest,
+        stage,
+        callback.from_user.id,
+        me.username or "",
+        already_activated=already_activated,
+    )
+    if not delivered:
+        await callback.answer(
+            tr(language, "quest_stage_unavailable"), show_alert=True
+        )
+        return
+    await callback.answer(tr(language, "send_answer"))
+
+
 @router.message(AnswerFlow.answer)
 async def selected_quest_answer(
     message: Message, state: FSMContext, db: Database, bot: Bot
@@ -2082,14 +2538,26 @@ async def participant_answer(
     stages = await db.open_stages_for_user(message.from_user.id)
     language = await db.get_language(message.from_user.id)
     if not stages:
-        if await db.user_has_live_quest(message.from_user.id):
-            await message.answer(tr(language, "no_active_question"))
+        quest_id = await db.latest_live_quest_id(message.from_user.id)
+        if quest_id is None:
+            return
+        quest = await db.get_quest(quest_id)
+        started = bool(quest) and quest["status"] == "active"
+        button_label = tr(
+            language, "btn_continue_quest" if started else "btn_start_quest"
+        )
+        await message.answer(
+            (
+                tr(language, "stage_continue_hint", button=button_label)
+                if started
+                else tr(language, "quest_started_waiting")
+            ),
+            reply_markup=(
+                continue_keyboard(language, quest_id, started) if started else None
+            ),
+        )
         return
-    if len(stages) == 1:
-        await _process_answer(message, int(stages[0]["quest_id"]), db, bot)
-        return
-    await state.clear()
-    await message.answer(
-        tr(language, "choose_answer_quest"),
-        reply_markup=answer_quest_selector(language, stages),
-    )
+    # A participant can have several unfinished quests: treat the message as an
+    # answer to the question that was delivered most recently instead of asking
+    # them to pick a quest (which used to send the text into the chat).
+    await _process_answer(message, int(stages[0]["quest_id"]), db, bot)

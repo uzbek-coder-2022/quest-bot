@@ -381,8 +381,98 @@ class StageEditingTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(removed)
         participant = await self.db.participant(quest_id, 20)
         self.assertEqual(participant["status"], "completed")
+        # The quest itself still has no time limit, so it stays open and more
+        # players may join even though the first one already finished.
+        self.assertFalse(await self.db.maybe_complete_quest(quest_id))
+        self.assertEqual((await self.db.get_quest(quest_id))["status"], "active")
+
+
+class QuestAutoCompletionTests(unittest.IsolatedAsyncioTestCase):
+    """A quest closes on schedule, never because the last player finished."""
+
+    async def asyncSetUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.db = Database(Path(self.temp_dir.name) / "auto-complete.sqlite3")
+        await self.db.initialize()
+        await self.db.seed_superadmins([1])
+
+    async def asyncTearDown(self) -> None:
+        await self.db.close()
+        self.temp_dir.cleanup()
+
+    async def _create_quest(self, token: str, duration_seconds: int) -> int:
+        quest = {
+            "title": "Timed quest",
+            "description": "",
+            "visibility": "public",
+            "progression": "immediate",
+            "start_at": "2030-01-02T00:00:00+00:00",
+            "duration_seconds": duration_seconds,
+            "chat_id": None,
+            "invite_token": token,
+        }
+        stages = [
+            {
+                "question": "Question 1",
+                "answer_mode": "auto",
+                "correct_answer": "Answer 1",
+                "max_attempts": 2,
+                "time_limit_seconds": 0,
+                "starts_at": "2030-01-02T00:00:00+00:00",
+            }
+        ]
+        return await self.db.create_quest(1, quest, stages)
+
+    async def _start_in_the_past(self, quest_id: int, start_at: str) -> None:
+        await self.db.update_quest_start_at(quest_id, start_at, 1)
+        await self.db.set_quest_status(quest_id, "active")
+
+    async def test_a_quest_without_a_time_limit_never_auto_completes(self) -> None:
+        quest_id = await self._create_quest("auto-open", 0)
+        await self._start_in_the_past(quest_id, "2030-01-02T00:00:00+00:00")
+
+        self.assertFalse(await self.db.maybe_complete_quest(quest_id))
+        self.assertEqual((await self.db.get_quest(quest_id))["status"], "active")
+
+    async def test_a_quest_still_accepts_players_inside_its_window(self) -> None:
+        quest_id = await self._create_quest("auto-running", 3600)
+        await self._start_in_the_past(quest_id, "2030-01-02T00:00:00+00:00")
+
+        self.assertFalse(await self.db.maybe_complete_quest(quest_id))
+        self.assertEqual((await self.db.get_quest(quest_id))["status"], "active")
+        await self.db.ensure_user(42, "latecomer", "Late Comer")
+        await self.db.join_quest(quest_id, 42, None, "2030-01-02T00:10:00+00:00")
+        self.assertIsNotNone(await self.db.participant(quest_id, 42))
+
+    async def test_an_admin_can_re_time_a_running_quest(self) -> None:
+        quest_id = await self._create_quest("auto-retime", 0)
+        await self._start_in_the_past(quest_id, "2030-01-02T00:00:00+00:00")
+
+        previous = await self.db.update_quest_duration(
+            quest_id, 7200, 1, "2030-01-02T01:00:00+00:00"
+        )
+
+        self.assertIsNotNone(previous)
+        self.assertEqual(previous["duration_seconds"], 0)
+        self.assertEqual(
+            (await self.db.get_quest(quest_id))["duration_seconds"], 7200
+        )
+        # A finished quest can no longer be re-timed.
+        await self.db.set_quest_status(quest_id, "completed")
+        self.assertIsNone(
+            await self.db.update_quest_duration(
+                quest_id, 60, 1, "2030-01-02T02:00:00+00:00"
+            )
+        )
+
+    async def test_a_quest_is_completed_after_its_end_time(self) -> None:
+        quest_id = await self._create_quest("auto-closed", 3600)
+        await self._start_in_the_past(quest_id, "2020-01-02T00:00:00+00:00")
+
         self.assertTrue(await self.db.maybe_complete_quest(quest_id))
         self.assertEqual((await self.db.get_quest(quest_id))["status"], "completed")
+        # Completing twice is a no-op: the quest is no longer active.
+        self.assertFalse(await self.db.maybe_complete_quest(quest_id))
 
 
 if __name__ == "__main__":

@@ -20,7 +20,7 @@ from .rich_text import (
     quote,
     rich_message,
 )
-from .utils import format_datetime
+from .utils import format_datetime, quest_end_at
 
 logger = logging.getLogger(__name__)
 
@@ -69,13 +69,28 @@ def quest_preview(
             ": ",
             tr(language, f"progression_{quest['progression']}"),
         ],
-        [bold(f"⏳ {tr(language, 'quest_label_duration')}"), ": ", duration],
+        [
+            bold(f"⏳ {tr(language, 'quest_label_duration')}"),
+            ": ",
+            duration
+            + (
+                f" · {tr(language, 'quest_label_end')} "
+                f"{format_datetime(quest_end_at(quest), language)}"
+                if duration_seconds
+                else ""
+            ),
+        ],
         [bold(f"📣 {tr(language, 'quest_label_chat')}"), ": ", str(chat_title)],
     ]
     blocks = [heading(f"🧭 {quest['title']}", size=1)]
     cover_file_id = quest.get("cover_file_id")
     if isinstance(cover_file_id, str) and cover_file_id.strip():
         blocks.append(photo_block(cover_file_id))
+    joinable = (
+        quest["status"] in {"scheduled", "active"}
+        and not quest.get("paused_at")
+        and quest.get("visibility") == "public"
+    )
     blocks.extend(
         (
             heading(f"📝 {tr(language, 'quest_label_description')}", size=4),
@@ -84,6 +99,8 @@ def quest_preview(
             bullet_list(details),
         )
     )
+    if joinable:
+        blocks.extend((divider(), paragraph(tr(language, "quest_still_joinable"))))
     return rich_message(*blocks)
 
 
@@ -109,12 +126,29 @@ def guide_message(language: str) -> InputRichMessage:
     return rich_message(*blocks)
 
 
-def information_message(title: str, body: str | None = None) -> InputRichMessage:
-    """Render a short screen title and optional explanatory paragraph."""
+def information_message(
+    title: str, body: str | None = None, footer: str | None = None
+) -> InputRichMessage:
+    """Render a short screen title with an optional paragraph and footer."""
     blocks = [heading(title, size=1)]
     if body:
         blocks.append(paragraph(body))
+    if footer:
+        blocks.append(divider())
+        blocks.append(paragraph(footer))
     return rich_message(*blocks)
+
+
+THREAD_TAG_PREFIX = "#T"
+
+
+def thread_tag(ticket_id: int) -> str:
+    """Searchable Telegram hashtag that groups every message of one thread.
+
+    Telegram only indexes hashtags that start with a letter, so the numeric
+    conversation id is prefixed: conversation ``12`` is searchable as ``#T12``.
+    """
+    return f"{THREAD_TAG_PREFIX}{int(ticket_id)}"
 
 
 def support_reply(source: str, message: str, ticket_id: int) -> InputRichMessage:
@@ -123,6 +157,7 @@ def support_reply(source: str, message: str, ticket_id: int) -> InputRichMessage
         heading(f"🎫 #{ticket_id}", size=2),
         paragraph(bold(source)),
         quote(message),
+        paragraph(thread_tag(ticket_id)),
     )
 
 
@@ -134,6 +169,7 @@ def support_notification(
         heading(f"🎫 #{ticket_id} · {source}", size=2),
         paragraph(bold(sender_name)),
         quote(message),
+        paragraph(thread_tag(ticket_id)),
     )
 
 
@@ -153,14 +189,24 @@ def support_history(
 
 
 def activity_message(
-    title: str, rows: list[str], empty_text: str | None = None
+    title: str,
+    rows: list[str],
+    empty_text: str | None = None,
+    footer: str | None = None,
 ) -> InputRichMessage:
-    """Render a compact activity or leaderboard screen as a native rich list."""
+    """Render a compact activity or leaderboard screen as a native rich list.
+
+    ``empty_text`` replaces the list when there are no rows, while ``footer``
+    is appended in both cases, for example to show a page indicator.
+    """
     blocks = [heading(title, size=1)]
     if rows:
         blocks.append(bullet_list(rows))
     elif empty_text:
         blocks.append(paragraph(empty_text))
+    if footer:
+        blocks.append(divider())
+        blocks.append(paragraph(footer))
     return rich_message(*blocks)
 
 

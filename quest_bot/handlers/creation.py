@@ -16,6 +16,7 @@ from ..database import Database
 from ..keyboards import (
     admin_home_keyboard,
     creation_answer_mode,
+    creation_attempts_mode,
     creation_chat,
     creation_cover_keyboard,
     creation_progression,
@@ -29,7 +30,7 @@ from ..services import (
     question_media_details,
 )
 from ..states import CreateQuest
-from ..utils import format_datetime, parse_local_datetime
+from ..utils import format_datetime, parse_duration_input, parse_local_datetime
 
 router = Router(name="creation")
 logger = logging.getLogger(__name__)
@@ -61,6 +62,27 @@ async def _ask_stage_question(message: Message, state: FSMContext, language: str
     await message.answer(tr(language, "ask_question", number=data["current_stage"]))
 
 
+async def _ask_first_question(message: Message, state: FSMContext, language: str) -> None:
+    await state.set_state(CreateQuest.question)
+    await message.answer(tr(language, "ask_question", number=1))
+
+
+async def _ask_attempts_or_stage_time(
+    message: Message, state: FSMContext, language: str
+) -> None:
+    """Ask the attempt limit here, or reuse the shared value chosen up front."""
+    data = await state.get_data()
+    if data.get("attempts_mode") == "same":
+        draft = dict(data.get("stage_draft", {}))
+        draft["max_attempts"] = int(data.get("common_max_attempts") or 1)
+        await state.update_data(stage_draft=draft)
+        await state.set_state(CreateQuest.stage_time)
+        await message.answer(tr(language, "ask_stage_time"))
+        return
+    await state.set_state(CreateQuest.max_attempts)
+    await message.answer(tr(language, "ask_attempts"))
+
+
 async def _ask_stage_start(message: Message, state: FSMContext, language: str, db: Database) -> None:
     data = await state.get_data()
     stage_number = int(data["current_stage"])
@@ -75,6 +97,8 @@ async def _save_stage_or_continue(message: Message, state: FSMContext, starts_at
     data = await state.get_data()
     stage = dict(data["stage_draft"])
     stage["starts_at"] = starts_at
+    if data.get("attempts_mode") == "same":
+        stage["max_attempts"] = int(data.get("common_max_attempts") or 1)
     stages = list(data.get("stages", []))
     stages.append(stage)
     current = int(data["current_stage"])
@@ -251,8 +275,15 @@ async def progression_selected(callback: CallbackQuery, state: FSMContext, db: D
 async def start_time_received(message: Message, state: FSMContext, db: Database) -> None:
     language = await db.get_language(message.from_user.id)
     start_at = parse_local_datetime(message.text or "")
-    if not start_at or datetime.fromisoformat(start_at) < datetime.now(timezone.utc) - timedelta(seconds=5):
+    if not start_at:
         await message.answer(tr(language, "invalid_datetime"))
+        return
+    # A quest needs a short lead time so participants can see it before the
+    # first stage starts.
+    if datetime.fromisoformat(start_at) < datetime.now(timezone.utc) + timedelta(
+        minutes=10
+    ):
+        await message.answer(tr(language, "invalid_quest_start_min"))
         return
     await state.update_data(start_at=start_at)
     await state.set_state(CreateQuest.duration)
@@ -261,16 +292,16 @@ async def start_time_received(message: Message, state: FSMContext, db: Database)
 
 @router.message(CreateQuest.duration)
 async def duration_received(message: Message, state: FSMContext, db: Database) -> None:
+    """Accept either an overall duration in minutes or an explicit end time."""
     language = await db.get_language(message.from_user.id)
-    try:
-        minutes = int((message.text or "").strip())
-    except ValueError:
-        await message.answer(tr(language, "invalid_number"))
+    data = await state.get_data()
+    duration_seconds, error = parse_duration_input(
+        message.text or "", data.get("start_at")
+    )
+    if error:
+        await message.answer(tr(language, error))
         return
-    if not 0 <= minutes <= 525600:
-        await message.answer(tr(language, "invalid_number"))
-        return
-    await state.update_data(duration_seconds=minutes * 60)
+    await state.update_data(duration_seconds=int(duration_seconds or 0))
     chats = await db.managed_chats()
     await state.set_state(CreateQuest.chat)
     await message.answer(tr(language, "ask_chat"), reply_markup=creation_chat(language, chats))
@@ -287,11 +318,55 @@ async def chat_selected(callback: CallbackQuery, state: FSMContext, db: Database
         await callback.answer(tr(await db.get_language(callback.from_user.id), "chat_not_found"), show_alert=True)
         return
     language = await db.get_language(callback.from_user.id)
-    await state.update_data(chat_id=chat_id or None, current_stage=1, stages=[], stage_draft={})
+    await state.update_data(
+        chat_id=chat_id or None,
+        current_stage=1,
+        stages=[],
+        stage_draft={},
+        attempts_mode=None,
+        common_max_attempts=None,
+    )
+    await state.set_state(CreateQuest.attempts_mode)
     if callback.message:
-        await callback.message.answer(tr(language, "ask_question", number=1))
-    await state.set_state(CreateQuest.question)
+        await callback.message.answer(
+            tr(language, "ask_attempts_mode"),
+            reply_markup=creation_attempts_mode(language),
+        )
     await callback.answer()
+
+
+@router.callback_query(CreateQuest.attempts_mode, F.data == "create:attempts:same")
+async def attempts_mode_same(callback: CallbackQuery, state: FSMContext, db: Database) -> None:
+    language = await db.get_language(callback.from_user.id)
+    await state.update_data(attempts_mode="same")
+    await state.set_state(CreateQuest.common_attempts)
+    if callback.message:
+        await callback.message.answer(tr(language, "ask_common_attempts"))
+    await callback.answer()
+
+
+@router.callback_query(CreateQuest.attempts_mode, F.data == "create:attempts:different")
+async def attempts_mode_different(callback: CallbackQuery, state: FSMContext, db: Database) -> None:
+    language = await db.get_language(callback.from_user.id)
+    await state.update_data(attempts_mode="different")
+    if callback.message:
+        await _ask_first_question(callback.message, state, language)
+    await callback.answer()
+
+
+@router.message(CreateQuest.common_attempts)
+async def common_attempts_received(message: Message, state: FSMContext, db: Database) -> None:
+    language = await db.get_language(message.from_user.id)
+    try:
+        attempts = int((message.text or "").strip())
+    except ValueError:
+        await message.answer(tr(language, "invalid_number"))
+        return
+    if not 1 <= attempts <= 100:
+        await message.answer(tr(language, "invalid_number"))
+        return
+    await state.update_data(common_max_attempts=attempts)
+    await _ask_first_question(message, state, language)
 
 
 @router.message(CreateQuest.question)
@@ -349,9 +424,8 @@ async def answer_mode_selected(callback: CallbackQuery, state: FSMContext, db: D
     else:
         draft["correct_answer"] = None
         await state.update_data(stage_draft=draft)
-        await state.set_state(CreateQuest.max_attempts)
         if callback.message:
-            await callback.message.answer(tr(language, "ask_attempts"))
+            await _ask_attempts_or_stage_time(callback.message, state, language)
     await callback.answer()
 
 
@@ -366,8 +440,7 @@ async def correct_answer_received(message: Message, state: FSMContext, db: Datab
     draft = dict(data.get("stage_draft", {}))
     draft["correct_answer"] = answer
     await state.update_data(stage_draft=draft)
-    await state.set_state(CreateQuest.max_attempts)
-    await message.answer(tr(language, "ask_attempts"))
+    await _ask_attempts_or_stage_time(message, state, language)
 
 
 @router.message(CreateQuest.max_attempts)

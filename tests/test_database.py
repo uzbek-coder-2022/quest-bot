@@ -184,6 +184,11 @@ class DatabaseFlowTests(unittest.IsolatedAsyncioTestCase):
                 quest_id, 20, stage, "2026-10-01T00:10:00+00:00"
             )
         )
+        self.assertTrue(
+            await self.db.mark_stage_delivered(
+                quest_id, 20, int(stage["id"]), "2026-10-01T00:10:00+00:00"
+            )
+        )
 
         paused_at = "2026-10-01T00:20:00+00:00"
         self.assertTrue(await self.db.pause_quest(quest_id, 1, paused_at))
@@ -229,6 +234,11 @@ class DatabaseFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(
             await self.db.activate_stage_for_participant(
                 quest_id, 20, stage, "2026-10-01T00:10:00+00:00"
+            )
+        )
+        self.assertTrue(
+            await self.db.mark_stage_delivered(
+                quest_id, 20, int(stage["id"]), "2026-10-01T00:10:00+00:00"
             )
         )
         answer = await self.db.submit_answer(
@@ -473,6 +483,8 @@ class DatabaseFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(stats["active_users_30d"], 2)
         self.assertEqual(stats["language_uz"], 2)
         self.assertEqual(stats["language_ru"], 1)
+        self.assertEqual(stats["language_uzn"], 0)
+        self.assertEqual(stats["language_kaa"], 0)
         self.assertEqual(stats["participants"], 1)
         self.assertEqual(stats["participating_users"], 1)
         self.assertEqual(stats["completed_participations"], 1)
@@ -557,6 +569,37 @@ class DatabaseFlowTests(unittest.IsolatedAsyncioTestCase):
 
         exported = await self.db.export_zip()
         self.assertTrue(exported.startswith(b"PK"))
+
+    async def test_numbered_conversations_can_be_started_and_closed(self) -> None:
+        """An admin may open a numbered thread; closing it ends the exchange."""
+        admin_id = 90
+        await self.db.add_admin(admin_id, 1)
+        ticket_id = await self.db.create_ticket(
+            20, None, None, "A message from the superadmin", sender_id=1
+        )
+
+        ticket = await self.db.get_ticket(ticket_id)
+        self.assertEqual(ticket["status"], "open")
+        self.assertEqual(ticket["user_id"], 20)
+        messages = await self.db.ticket_messages(ticket_id)
+        self.assertEqual(len(messages), 1)
+        # The author of the opening message is the admin, not the participant.
+        self.assertEqual(int(messages[0]["sender_id"]), 1)
+        self.assertEqual(await self.db.support_admin_recipients(ticket_id), [1])
+
+        self.assertTrue(
+            await self.db.add_ticket_message(ticket_id, 20, "Thank you, understood")
+        )
+        self.assertTrue(await self.db.close_ticket(ticket_id, 20))
+
+        self.assertEqual((await self.db.get_ticket(ticket_id))["status"], "closed")
+        self.assertFalse(await self.db.add_ticket_message(ticket_id, 20, "Again"))
+        # Closing twice is a no-op and writes nothing new.
+        self.assertFalse(await self.db.close_ticket(ticket_id, 20))
+        logs = await self.db.latest_logs(50)
+        self.assertTrue(
+            any(log["action"] == "support.ticket.closed" for log in logs)
+        )
 
     async def test_configured_superadmins_are_the_source_of_truth(self) -> None:
         await self.db.seed_superadmins([2])

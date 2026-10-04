@@ -138,6 +138,87 @@ class AggregateLeaderboardTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ratings[1]["solved"], 2)
         self.assertEqual(ratings[1]["completed_quests"], 1)
 
+    async def test_equal_aggregate_scores_are_settled_by_the_completion_time(self) -> None:
+        period_start = "2026-10-01T00:00:00+00:00"
+        period_end = "2026-10-08T00:00:00+00:00"
+        # Both players solve one stage and complete one quest in the period;
+        # only the finishing time tells them apart.
+        await self._complete_quest(
+            1,
+            23,
+            title="Late finish",
+            visibility="public",
+            answers=["A"],
+            timestamps=["2026-10-05T12:00:00+00:00"],
+            token="equal-late",
+        )
+        await self._complete_quest(
+            1,
+            24,
+            title="Early finish",
+            visibility="public",
+            answers=["B"],
+            timestamps=["2026-10-03T12:00:00+00:00"],
+            token="equal-early",
+        )
+
+        ratings = await self.db.aggregate_leaderboard(period_start, period_end)
+
+        self.assertEqual([row["user_id"] for row in ratings], [24, 23])
+        self.assertEqual(ratings[0]["solved"], ratings[1]["solved"])
+        self.assertEqual(ratings[0]["completed_quests"], ratings[1]["completed_quests"])
+        self.assertEqual(
+            ratings[0]["first_completed_at"], "2026-10-03T12:00:00+00:00"
+        )
+        self.assertEqual(
+            ratings[1]["first_completed_at"], "2026-10-05T12:00:00+00:00"
+        )
+
+    async def test_quest_rating_settles_equal_stage_counts_by_the_finish_time(self) -> None:
+        start_at = "2026-10-01T09:00:00+00:00"
+        quest_id = await self.db.create_quest(
+            1,
+            {
+                "title": "One stage race",
+                "description": "",
+                "visibility": "public",
+                "progression": "immediate",
+                "start_at": start_at,
+                "duration_seconds": 0,
+                "chat_id": None,
+                "invite_token": "one-stage-race",
+            },
+            [
+                {
+                    "question": "Question",
+                    "answer_mode": "auto",
+                    "correct_answer": "A",
+                    "max_attempts": 1,
+                    "time_limit_seconds": 0,
+                    "starts_at": start_at,
+                }
+            ],
+        )
+        await self.db.set_quest_status(quest_id, "active")
+        stage = await self.db.get_stage(quest_id, 1)
+        for user_id, finished_at in (
+            (21, "2026-10-01T10:30:00+00:00"),
+            (20, "2026-10-01T10:00:00+00:00"),
+        ):
+            await self.db.join_quest(quest_id, user_id, None, start_at)
+            await self.db.activate_stage_for_participant(
+                quest_id, user_id, stage, start_at
+            )
+            result = await self.db.submit_answer(quest_id, user_id, "A", finished_at)
+            self.assertEqual(result["code"], "correct")
+
+        ratings = await self.db.leaderboard(quest_id)
+
+        # Same solved count, so the earlier finisher ranks first.
+        self.assertEqual([row["user_id"] for row in ratings], [20, 21])
+        self.assertEqual(ratings[0]["solved"], ratings[1]["solved"])
+        self.assertLess(ratings[0]["completed_at"], ratings[1]["completed_at"])
+
 
 if __name__ == "__main__":
     unittest.main()

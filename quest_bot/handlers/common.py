@@ -10,14 +10,16 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
 from ..config import Settings
+from .. import navigation
 from ..database import Database
 from ..keyboards import (
     admin_home_keyboard,
+    guide_keyboard,
     join_confirmation_keyboard,
     language_keyboard,
     main_menu,
 )
-from ..localization import tr
+from ..localization import LANGUAGES, tr
 from ..presentation import (
     copy_quest_cover,
     guide_message,
@@ -192,7 +194,7 @@ async def language_command(message: Message, db: Database) -> None:
     await _register_message_user(message, db)
     language = await db.get_language(message.from_user.id if message.from_user else 0)
     await message.answer(
-        tr(language, "language_choose"), reply_markup=language_keyboard()
+        tr(language, "language_choose"), reply_markup=language_keyboard(language)
     )
 
 
@@ -202,7 +204,7 @@ async def help_command(message: Message, db: Database) -> None:
     language = await db.get_language(message.from_user.id if message.from_user else 0)
     role = await db.get_role(message.from_user.id) if message.from_user else None
     await message.answer_rich(
-        guide_message(language), reply_markup=main_menu(language, role)
+        guide_message(language), reply_markup=guide_keyboard(language, role)
     )
 
 
@@ -211,6 +213,7 @@ async def home_callback(
     callback: CallbackQuery, db: Database, state: FSMContext
 ) -> None:
     await state.clear()
+    navigation.clear(callback.from_user.id)
     if not callback.from_user:
         return
     language = await db.get_language(callback.from_user.id)
@@ -231,7 +234,9 @@ async def guide_callback(callback: CallbackQuery, db: Database) -> None:
         await safe_edit(
             callback,
             guide_message(language),
-            reply_markup=main_menu(language, await db.get_role(callback.from_user.id)),
+            reply_markup=guide_keyboard(
+                language, await db.get_role(callback.from_user.id)
+            ),
         )
     await callback.answer()
 
@@ -241,7 +246,7 @@ async def choose_language_callback(callback: CallbackQuery, db: Database) -> Non
     language = await db.get_language(callback.from_user.id)
     if callback.message:
         await callback.message.edit_text(
-            tr(language, "language_choose"), reply_markup=language_keyboard()
+            tr(language, "language_choose"), reply_markup=language_keyboard(language)
         )
     await callback.answer()
 
@@ -249,7 +254,7 @@ async def choose_language_callback(callback: CallbackQuery, db: Database) -> Non
 @router.callback_query(F.data.startswith("lang:"))
 async def set_language_callback(callback: CallbackQuery, db: Database) -> None:
     language = callback.data.split(":", 1)[1]
-    if language not in {"uz", "ru", "en"}:
+    if language not in LANGUAGES:
         await callback.answer("Invalid language", show_alert=True)
         return
     await db.set_language(callback.from_user.id, language)

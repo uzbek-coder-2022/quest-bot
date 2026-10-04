@@ -1,9 +1,21 @@
-"""Translated user-facing messages for Uzbek, Russian, and English."""
+"""Translated messages for Uzbek, «Yangi o‘zbek», Karakalpak, Russian, and English."""
 
 from __future__ import annotations
 
-LANGUAGES = ("uz", "ru", "en")
-LANGUAGE_NAMES = {"uz": "🇺🇿 O‘zbekcha", "ru": "🇷🇺 Русский", "en": "🇬🇧 English"}
+import re
+
+from .localization_kaa import KARAKALPAK_TEXTS
+
+# "uzn" is «Yangi o‘zbek» — the same Uzbek interface written with the letters
+# ö, ğ, ş, and ç. "kaa" is the full Karakalpak translation.
+LANGUAGES = ("uz", "uzn", "kaa", "ru", "en")
+LANGUAGE_NAMES = {
+    "uz": "🇺🇿 O‘zbekcha",
+    "uzn": "🇺🇿 Yangi o‘zbek (ö, ğ, ş, ç)",
+    "kaa": "🇺🇿 Qaraqalpaqsha",
+    "ru": "🇷🇺 Русский",
+    "en": "🇬🇧 English",
+}
 
 TEXTS: dict[str, dict[str, str]] = {
     "welcome": {
@@ -87,9 +99,9 @@ TEXTS: dict[str, dict[str, str]] = {
         "en": "Use /language to change the interface language.",
     },
     "guide": {
-        "uz": "Yo‘riqnoma:\n1. “Kvestlarni ko‘rish” orqali ommaviy kvestlarni toping. Maxfiy kvest botning taklif havolasi orqali ochiladi.\n2. Kvestga qo‘shilgach, savollar botning shaxsiy chatiga ham keladi. Kvestga biriktirilgan guruh/kanal bo‘lsa, e’lonlar u yerda chiqadi; javoblar botga shaxsiy chatda yuboriladi.\n3. Javob saqlangan javob bilan aynan solishtiriladi; bosh/oxiridagi bo‘sh joylar olib tashlanadi, katta-kichik harf farqi saqlanadi. Administrator tekshiradigan bosqichlarda natijani administrator belgilaydi.\n4. Reytingni kvest sahifasidan yoki “Reytinglar”dan kuzating.\n5. Yordam orqali bosh administratorga yoki tegishli kvest administratoriga yozing.\n\nAdministrator o‘z kvestini yaratadi va boshqaradi. Bosh administrator administratorlar, barcha kvestlar, arxiv, statistika, harakatlar jurnali va sozlamalarni boshqaradi. Botda reklama yo‘q.",
-        "ru": "Инструкция:\n1. Ищите публичные квесты в «Список квестов». Приватный квест открывается по ссылке-приглашению бота.\n2. После вступления вопросы приходят также в личный чат с ботом. Если квест привязан к группе/каналу, объявления публикуются там; ответы отправляются боту в личку.\n3. Ответ сравнивается с эталоном точно; крайние пробелы удаляются, регистр учитывается. На этапах с ручной проверкой результат выставляет администратор.\n4. Рейтинг доступен на странице квеста и в разделе «Рейтинги».\n5. Через поддержку можно написать суперадминистратору или админу квеста.\n\nАдминистратор создаёт и ведёт свои квесты. Суперадминистратор управляет всеми квестами, администраторами, архивом, статистикой, журналом и настройками. Рекламы нет.",
-        "en": "Guide:\n1. Find public quests in “Browse quests”. Private quests open through the bot’s invitation link.\n2. After joining, questions are also delivered in the bot’s private chat. If a group/channel is attached, announcements appear there; answers are sent privately to the bot.\n3. Answers are compared exactly with the stored answer; leading/trailing whitespace is trimmed and letter case matters. Stages with manual checking are reviewed by an admin.\n4. View rankings on the quest page or in “Leaderboards”.\n5. Use Support to contact the superadmin or the relevant quest admin.\n\nAdmins create and run their own quests. The superadmin controls all quests, admins, archives, statistics, logs, and settings. No advertising is included.",
+        "uz": "Yo‘riqnoma:\n1. “Kvestlarni ko‘rish” orqali ommaviy kvestlarni toping. Maxfiy kvest botning taklif havolasi orqali ochiladi.\n2. Kvest boshlanganda xabar keladi; savol «Boshlash»/«Davom etish» tugmasi bosilganda botning shaxsiy chatiga yuboriladi. Kvestga biriktirilgan guruh/kanal bo‘lsa, e’lonlar u yerda chiqadi; javoblar botga shaxsiy chatda yuboriladi.\n3. Javob saqlangan javob bilan aynan solishtiriladi; bosh/oxiridagi bo‘sh joylar olib tashlanadi, katta-kichik harf farqi saqlanadi. Administrator tekshiradigan bosqichlarda natijani administrator belgilaydi.\n4. Reytingni kvest sahifasidan yoki “Reytinglar”dan kuzating.\n5. Yordam orqali bosh administratorga yoki tegishli kvest administratoriga yozing.\n\nAdministrator o‘z kvestini yaratadi va boshqaradi; boshqariladigan kvestlar ro‘yxati «Administrator paneli» ichida. Bosh administrator administratorlar, barcha kvestlar, arxiv, statistika, harakatlar jurnali va sozlamalarni boshqaradi. Botda reklama yo‘q.",
+        "ru": "Инструкция:\n1. Ищите публичные квесты в «Список квестов». Приватный квест открывается по ссылке-приглашению бота.\n2. Когда квест начинается, приходит уведомление; вопрос отправляется в личный чат с ботом после нажатия «Начать»/«Продолжить». Если квест привязан к группе/каналу, объявления публикуются там; ответы отправляются боту в личку.\n3. Ответ сравнивается с эталоном точно; крайние пробелы удаляются, регистр учитывается. На этапах с ручной проверкой результат выставляет администратор.\n4. Рейтинг доступен на странице квеста и в разделе «Рейтинги».\n5. Через поддержку можно написать суперадминистратору или админу квеста.\n\nАдминистратор создаёт и ведёт свои квесты; список управляемых квестов находится в «Панели администратора». Суперадминистратор управляет всеми квестами, администраторами, архивом, статистикой, журналом и настройками. Рекламы нет.",
+        "en": "Guide:\n1. Find public quests in “Browse quests”. Private quests open through the bot’s invitation link.\n2. When a quest starts you get a notice; the question is delivered in the bot’s private chat after you press Start/Continue. If a group/channel is attached, announcements appear there; answers are sent privately to the bot.\n3. Answers are compared exactly with the stored answer; leading/trailing whitespace is trimmed and letter case matters. Stages with manual checking are reviewed by an admin.\n4. View rankings on the quest page or in “Leaderboards”.\n5. Use Support to contact the superadmin or the relevant quest admin.\n\nAdmins create and run their own quests; the list of managed quests lives inside the Admin panel. The superadmin controls all quests, admins, archives, statistics, logs, and settings. No advertising is included.",
     },
     "language_choose": {"uz": "🌐 Interfeys tilini tanlang:", "ru": "🌐 Выберите язык интерфейса:", "en": "🌐 Choose your interface language:"},
     "language_saved": {"uz": "✅ Til O‘zbekcha qilib saqlandi.", "ru": "✅ Язык сохранён: русский.", "en": "✅ Language saved: English."},
@@ -124,9 +136,15 @@ TEXTS: dict[str, dict[str, str]] = {
     "quest_label_participants": {"uz": "Qatnashchilar soni", "ru": "Количество участников", "en": "Participants"},
     "quest_label_progression": {"uz": "Keyingi bosqich", "ru": "Переход к этапам", "en": "Progression"},
     "quest_label_duration": {"uz": "Umumiy vaqt", "ru": "Общее время", "en": "Overall time"},
+    "quest_label_end": {"uz": "tugash", "ru": "окончание", "en": "ends"},
+    "btn_edit_duration": {"uz": "⏳ Davomiylikni o‘zgartirish", "ru": "⏳ Изменить длительность", "en": "⏳ Change duration"},
+    "quest_duration_updated": {"uz": "Kvest davomiyligi yangilandi.", "ru": "Длительность квеста обновлена.", "en": "The quest time was updated."},
+    "quest_duration_edit_closed": {"uz": "⚠️ Davomiylikni faqat hali yakunlanmagan kvestda o‘zgartirish mumkin.", "ru": "⚠️ Изменить длительность можно только у незавершённого квеста.", "en": "⚠️ Only a quest that has not finished yet can be re-timed."},
+    "quest_duration_edit_hint": {"uz": "Hozirgi davomiylik: {current}. Yangi qiymatni daqiqada yoki tugash vaqtini YYYY-MM-DD HH:MM ko‘rinishida yuboring. 0 — cheklovsiz.", "ru": "Текущая длительность: {current}. Отправьте новое значение в минутах или время окончания в виде YYYY-MM-DD HH:MM. 0 — без ограничения.", "en": "Current overall time: {current}. Send a new value in minutes or the end time as YYYY-MM-DD HH:MM. 0 — no limit."},
+    "quest_duration_unlimited": {"uz": "cheklanmagan", "ru": "без ограничения", "en": "no limit"},
     "quest_label_chat": {"uz": "Savollar guruhi", "ru": "Чат вопросов", "en": "Question chat"},
     "quest_not_found": {"uz": "⚠️ Kvest topilmadi yoki unga kirish huquqingiz yo‘q.", "ru": "⚠️ Квест не найден или у вас нет доступа.", "en": "⚠️ Quest not found or you do not have access."},
-    "join_success": {"uz": "Kvestga qo‘shildingiz. Savollar va javob natijalari botning shaxsiy chatiga keladi.", "ru": "Вы присоединились к квесту. Вопросы и результаты придут в личный чат с ботом.", "en": "You joined the quest. Questions and results will arrive in the bot’s private chat."},
+    "join_success": {"uz": "✅ Kvestga qo‘shildingiz. Kvest boshlanganda sizga xabar beriladi; savol «Boshlash» tugmasi bosilganda yuboriladi.", "ru": "✅ Вы присоединились к квесту. Когда квест начнётся, придёт уведомление; вопрос отправляется после нажатия «Начать».", "en": "✅ You joined the quest. You will be notified when it starts; the question is sent after you press Start."},
     "already_joined": {"uz": "Siz bu kvestda allaqachon qatnashyapsiz.", "ru": "Вы уже участвуете в этом квесте.", "en": "You have already joined this quest."},
     "join_closed": {"uz": "Bu kvestga qo‘shilish yopilgan.", "ru": "В этот квест больше нельзя вступить.", "en": "Joining this quest is closed."},
     "join_confirmation_prompt": {"uz": "Kvestga qo‘shilishni tasdiqlaysizmi?", "ru": "Подтвердить участие в квесте?", "en": "Do you want to confirm joining this quest?"},
@@ -148,7 +166,7 @@ TEXTS: dict[str, dict[str, str]] = {
     "ask_stage_count": {"uz": "Bosqichlar sonini kiriting (1–30):", "ru": "Укажите количество этапов (1–30):", "en": "Enter the number of stages (1–30):"},
     "ask_progression": {"uz": "⚙️ Keyingi bosqich qanday yuborilsin?", "ru": "⚙️ Как отправлять следующий этап?", "en": "⚙️ How should the next stage be delivered?"},
     "ask_start": {"uz": "Boshlanish vaqtini Toshkent vaqti bo‘yicha kiriting: YYYY-MM-DD HH:MM\nMasalan: 2026-10-03 18:30", "ru": "Введите время начала по Ташкенту: YYYY-MM-DD HH:MM\nНапример: 2026-10-03 18:30", "en": "Enter the start time in Tashkent local time: YYYY-MM-DD HH:MM\nExample: 2026-10-03 18:30"},
-    "ask_duration": {"uz": "Umumiy vaqtni daqiqada kiriting. 0 — cheklanmagan:", "ru": "Общее время в минутах. 0 — без ограничения:", "en": "Overall time in minutes. Use 0 for no limit:"},
+    "ask_duration": {"uz": "Umumiy davomiylikni daqiqada kiriting (masalan 90) yoki kvest tugash vaqtini yozing: YYYY-MM-DD HH:MM\n0 — vaqt cheklanmagan:", "ru": "Введите общую длительность в минутах (например 90) или время окончания квеста: YYYY-MM-DD HH:MM\n0 — без ограничения:", "en": "Send the overall duration in minutes (for example 90) or the quest end time: YYYY-MM-DD HH:MM\nUse 0 for no time limit:"},
     "ask_chat": {"uz": "Savollar qayerda e’lon qilinsin? Guruh/kanalni tanlang yoki faqat botni tanlang.", "ru": "Где публиковать вопросы? Выберите группу/канал или только бота.", "en": "Where should questions be announced? Choose a group/channel or bot only."},
     "chat_private_only": {"uz": "Faqat bot", "ru": "Только бот", "en": "Bot only"},
     "ask_question": {"uz": "❓ {number}-bosqich uchun matn, rasm yoki videoni yuboring (izoh ixtiyoriy):", "ru": "❓ Отправьте текст, фото или видео для этапа {number} (подпись необязательна):", "en": "❓ Send the text, photo, or video for stage {number} (a caption is optional):"},
@@ -203,7 +221,7 @@ TEXTS: dict[str, dict[str, str]] = {
     "edit_cancelled": {"uz": "↩️ Tahrirlash bekor qilindi.", "ru": "↩️ Редактирование отменено.", "en": "↩️ Editing cancelled."},
     "stage_time_hint": {"uz": "\nVaqt limiti: {minutes} daqiqa", "ru": "\nЛимит времени: {minutes} мин.", "en": "\nTime limit: {minutes} minutes"},
     "send_answer": {"uz": "Javobingizni shu chatga matn qilib yuboring.", "ru": "Отправьте ответ текстовым сообщением сюда.", "en": "Send your answer as a text message here."},
-    "correct_next": {"uz": "✅ To‘g‘ri javob!", "ru": "✅ Верный ответ!", "en": "✅ Correct answer!"},
+    "correct_next": {"uz": "✅ To‘g‘ri javob! Keyingi bosqichga o‘tish uchun «{button}» tugmasini bosing.", "ru": "✅ Верный ответ! Нажмите «{button}», чтобы перейти к следующему этапу.", "en": "✅ Correct answer! Press “{button}” to open the next stage."},
     "correct_wait": {"uz": "✅ To‘g‘ri! Keyingi bosqich belgilangan vaqtda yuboriladi.", "ru": "✅ Верно! Следующий этап придёт по расписанию.", "en": "✅ Correct! The next stage will arrive at its scheduled time."},
     "correct_done": {"uz": "🏁 To‘g‘ri! Kvestni yakunladingiz.", "ru": "🏁 Верно! Вы завершили квест.", "en": "🏁 Correct! You completed the quest."},
     "wrong_answer": {"uz": "❌ Javob noto‘g‘ri. Qolgan urinishlar: {remaining}.", "ru": "❌ Неверный ответ. Осталось попыток: {remaining}.", "en": "❌ Incorrect answer. Attempts remaining: {remaining}."},
@@ -217,7 +235,7 @@ TEXTS: dict[str, dict[str, str]] = {
     "admin_only": {"uz": "🔒 Bu amal faqat administratorlar uchun.", "ru": "🔒 Действие доступно только администраторам.", "en": "🔒 This action is available to admins only."},
     "superadmin_only": {"uz": "🔒 Bu amal faqat bosh administrator uchun.", "ru": "🔒 Действие доступно только суперадминистратору.", "en": "🔒 This action is available to the superadmin only."},
     "admin_panel": {"uz": "🛠️ Administrator paneli", "ru": "🛠️ Панель администратора", "en": "🛠️ Admin panel"},
-    "stats": {"uz": "👥 Foydalanuvchilar jami: {users}\n🆕 So‘nggi 30 kunda yangi: {new_users_30d}\n🟢 Faol (7 kun): {active_users_7d}\n📅 Faol (30 kun): {active_users_30d}\n🌐 Til bo‘yicha: o‘zbekcha {language_uz}, ruscha {language_ru}, inglizcha {language_en}\n\n🛡 Adminlar: {admins}\n🧭 Kvestlar jami: {quests}\n🟢 Faol kvestlar: {active}\n⏸️ Vaqtincha to‘xtatilgan kvestlar: {paused}\n✅ Yakunlangan kvestlar: {completed}\n👥 Qatnashuvlar: {participants} ({participating_users} foydalanuvchi)\n🏁 Yakunlangan qatnashuvlar: {completed_participations} ({participation_completion_percent}%)", "ru": "👥 Всего пользователей: {users}\n🆕 Новых за 30 дней: {new_users_30d}\n🟢 Активных за 7 дней: {active_users_7d}\n📅 Активных за 30 дней: {active_users_30d}\n🌐 Языки: узбекский {language_uz}, русский {language_ru}, английский {language_en}\n\n🛡 Администраторы: {admins}\n🧭 Всего квестов: {quests}\n🟢 Активных квестов: {active}\n⏸️ Приостановленных квестов: {paused}\n✅ Завершённых квестов: {completed}\n👥 Участий: {participants} (пользователей: {participating_users})\n🏁 Завершённых участий: {completed_participations} ({participation_completion_percent}%)", "en": "👥 Total users: {users}\n🆕 New in the last 30 days: {new_users_30d}\n🟢 Active in the last 7 days: {active_users_7d}\n📅 Active in the last 30 days: {active_users_30d}\n🌐 Languages: Uzbek {language_uz}, Russian {language_ru}, English {language_en}\n\n🛡 Admins: {admins}\n🧭 Total quests: {quests}\n🟢 Active quests: {active}\n⏸️ Paused quests: {paused}\n✅ Completed quests: {completed}\n👥 Participations: {participants} ({participating_users} users)\n🏁 Completed participations: {completed_participations} ({participation_completion_percent}%)"},
+    "stats": {"uz": "👥 Foydalanuvchilar jami: {users}\n🆕 So‘nggi 30 kunda yangi: {new_users_30d}\n🟢 Faol (7 kun): {active_users_7d}\n📅 Faol (30 kun): {active_users_30d}\n🌐 Til bo‘yicha: o‘zbekcha {language_uz}, yangi o‘zbekcha {language_uzn}, qoraqalpoqcha {language_kaa}, ruscha {language_ru}, inglizcha {language_en}\n\n🛡 Adminlar: {admins}\n🧭 Kvestlar jami: {quests}\n🟢 Faol kvestlar: {active}\n⏸️ Vaqtincha to‘xtatilgan kvestlar: {paused}\n✅ Yakunlangan kvestlar: {completed}\n👥 Qatnashuvlar: {participants} ({participating_users} foydalanuvchi)\n🏁 Yakunlangan qatnashuvlar: {completed_participations} ({participation_completion_percent}%)", "ru": "👥 Всего пользователей: {users}\n🆕 Новых за 30 дней: {new_users_30d}\n🟢 Активных за 7 дней: {active_users_7d}\n📅 Активных за 30 дней: {active_users_30d}\n🌐 Языки: узбекский {language_uz}, новый узбекский {language_uzn}, каракалпакский {language_kaa}, русский {language_ru}, английский {language_en}\n\n🛡 Администраторы: {admins}\n🧭 Всего квестов: {quests}\n🟢 Активных квестов: {active}\n⏸️ Приостановленных квестов: {paused}\n✅ Завершённых квестов: {completed}\n👥 Участий: {participants} (пользователей: {participating_users})\n🏁 Завершённых участий: {completed_participations} ({participation_completion_percent}%)", "en": "👥 Total users: {users}\n🆕 New in the last 30 days: {new_users_30d}\n🟢 Active in the last 7 days: {active_users_7d}\n📅 Active in the last 30 days: {active_users_30d}\n🌐 Languages: Uzbek {language_uz}, New Uzbek {language_uzn}, Karakalpak {language_kaa}, Russian {language_ru}, English {language_en}\n\n🛡 Admins: {admins}\n🧭 Total quests: {quests}\n🟢 Active quests: {active}\n⏸️ Paused quests: {paused}\n✅ Completed quests: {completed}\n👥 Participations: {participants} ({participating_users} users)\n🏁 Completed participations: {completed_participations} ({participation_completion_percent}%)"},
     "no_logs": {"uz": "Jurnal yozuvlari yo‘q.", "ru": "Записей журнала пока нет.", "en": "No audit entries yet."},
     "logs_title": {"uz": "📜 So‘nggi harakatlar", "ru": "📜 Последние действия", "en": "📜 Recent actions"},
     "settings_page_size": {"uz": "⚙️ Sahifadagi kvestlar soni: {size}", "ru": "⚙️ Квестов на странице: {size}", "en": "⚙️ Quests per page: {size}"},
@@ -265,6 +283,12 @@ TEXTS: dict[str, dict[str, str]] = {
     "support_created": {"uz": "Murojaatingiz yuborildi. Javob bot orqali keladi.", "ru": "Обращение отправлено. Ответ придёт через бота.", "en": "Your support message was sent. Replies arrive through the bot."},
     "support_notification": {"uz": "Yangi murojaat #{ticket} (foydalanuvchi {user}):\n{message}", "ru": "Новое обращение #{ticket} (пользователь {user}):\n{message}", "en": "New support ticket #{ticket} (user {user}):\n{message}"},
     "support_reply_prompt": {"uz": "#{ticket} murojaatiga javob yuboring:", "ru": "Отправьте ответ на обращение #{ticket}:", "en": "Send your reply to ticket #{ticket}:"},
+    "btn_close_ticket": {"uz": "🔒 Yopish", "ru": "🔒 Закрыть", "en": "🔒 Close"},
+    "support_ticket_closed": {"uz": "⚠️ Bu murojaat yopilgan. Yangi murojaat ochish uchun /support buyrug‘idan foydalaning.", "ru": "⚠️ Это обращение закрыто. Чтобы написать снова, используйте /support.", "en": "⚠️ This conversation is closed. Use /support to start a new one."},
+    "support_thread_closed_title": {"uz": "🔒 #{ticket} suhbati yopildi", "ru": "🔒 Обращение #{ticket} закрыто", "en": "🔒 Conversation #{ticket} closed"},
+    "support_thread_closed_body": {"uz": "Endi bu suhbatga javob yozib bo‘lmaydi. Yangi savol bo‘lsa, yangi murojaat oching.", "ru": "Отвечать в этом обращении больше нельзя. Для нового вопроса откройте новое обращение.", "en": "This conversation accepts no further replies. Open a new one for a new question."},
+    "support_thread_closed_notice": {"uz": "🔒 #{ticket} suhbati yopildi.", "ru": "🔒 Обращение #{ticket} закрыто.", "en": "🔒 Conversation #{ticket} was closed."},
+    "support_thread_started": {"uz": "💬 Suhbat raqami: #{ticket}. Har bir xabarda #T{ticket} tegi bo‘ladi.", "ru": "💬 Номер обращения: #{ticket}. Каждое сообщение помечено тегом #T{ticket}.", "en": "💬 Conversation number: #{ticket}. Every message carries the tag #T{ticket}."},
     "support_you": {"uz": "Siz", "ru": "Вы", "en": "You"},
     "support_admin_reply_sent": {"uz": "Javob yuborildi.", "ru": "Ответ отправлен.", "en": "Reply sent."},
     "support_reply_to_user": {"uz": "#{ticket} murojaati · {source}:\n{message}", "ru": "Обращение #{ticket} · {source}:\n{message}", "en": "Ticket #{ticket} · {source}:\n{message}"},
@@ -326,7 +350,61 @@ TEXTS: dict[str, dict[str, str]] = {
         "ru": "Не удалось отправить файл резервной копии. Проверьте журнал сервера.",
         "en": "The backup file could not be delivered. Check the server logs.",
     },
+    "btn_start_quest": {"uz": "▶️ Kvestni boshlash", "ru": "▶️ Начать квест", "en": "▶️ Start quest"},
+    "btn_continue_quest": {"uz": "⏩ Davom etish", "ru": "⏩ Продолжить", "en": "⏩ Continue"},
+    "quest_started_notice": {"uz": "🚀 «{title}» kvesti boshlandi!", "ru": "🚀 Квест «{title}» начался!", "en": "🚀 “{title}” has started!"},
+    "quest_started_hint": {"uz": "Tayyor bo‘lganingizda «{button}» tugmasini bosing — savol shundan keyin yuboriladi.", "ru": "Когда будете готовы, нажмите «{button}» — вопрос придёт после этого.", "en": "Press “{button}” when you are ready — the question arrives afterwards."},
+    "quest_started_waiting": {"uz": "Birinchi bosqich o‘z vaqtida boshlanadi; tayyor bo‘lganda xabar beramiz.", "ru": "Первый этап начнётся по расписанию; мы сообщим, когда он будет готов.", "en": "The first stage starts on schedule; we will notify you when it is ready."},
+    "stage_available_notice": {"uz": "🔔 «{title}» kvestida {number}-bosqich tayyor!", "ru": "🔔 В квесте «{title}» готов этап {number}!", "en": "🔔 Stage {number} is ready in “{title}”!"},
+    "stage_continue_hint": {"uz": "Savolni olish uchun «{button}» tugmasini bosing.", "ru": "Нажмите «{button}», чтобы получить вопрос.", "en": "Press “{button}” to get the question."},
+    "stage_not_started_yet": {"uz": "Keyingi bosqich hali boshlanmadi. Boshlanish vaqtini kuting.", "ru": "Следующий этап ещё не начался. Дождитесь времени начала.", "en": "The next stage has not started yet. Please wait for its start time."},
+    "quest_stage_unavailable": {"uz": "Hozircha siz uchun ochiq savol yo‘q.", "ru": "Сейчас для вас нет открытого вопроса.", "en": "You have no open question right now."},
+    "btn_edit_start": {"uz": "🕒 Boshlanish vaqtini tahrirlash", "ru": "🕒 Изменить время начала", "en": "🕒 Edit start time"},
+    "ask_quest_start": {"uz": "Yangi boshlanish vaqtini Toshkent vaqti bo‘yicha yuboring: YYYY-MM-DD HH:MM\nMasalan: 2026-10-03 18:30", "ru": "Отправьте новое время начала по Ташкенту: YYYY-MM-DD HH:MM\nНапример: 2026-10-03 18:30", "en": "Send the new start time in Tashkent local time: YYYY-MM-DD HH:MM\nExample: 2026-10-03 18:30"},
+    "quest_start_edit_hint": {"uz": "Joriy vaqt: {current}\nRejalashtirilgan bosqichlar vaqti yangi boshlanish vaqtiga mos ravishda suriladi.", "ru": "Текущее время: {current}\nВремя запланированных этапов сдвинется вместе с новым началом.", "en": "Current time: {current}\nScheduled stage times shift together with the new start time."},
+    "invalid_quest_start": {"uz": "⚠️ Sana formati noto‘g‘ri yoki vaqt o‘tib ketgan.", "ru": "⚠️ Неверный формат даты или время уже прошло.", "en": "⚠️ Invalid date format or the time has already passed."},
+    "quest_start_updated": {"uz": "✅ Kvest boshlanish vaqti yangilandi.", "ru": "✅ Время начала квеста обновлено.", "en": "✅ Quest start time updated."},
+    "quest_start_edit_closed": {"uz": "⚠️ Boshlanish vaqtini faqat hali boshlanmagan (rejalashtirilgan) kvestda o‘zgartirish mumkin.", "ru": "⚠️ Время начала можно менять только у ещё не начавшегося (запланированного) квеста.", "en": "⚠️ The start time can be changed only while the quest has not started yet."},
+    "btn_delete_quest": {"uz": "🗑️ Kvestni o‘chirish", "ru": "🗑️ Удалить квест", "en": "🗑️ Delete quest"},
+    "btn_confirm_delete_quest": {"uz": "🗑️ Ha, o‘chirish", "ru": "🗑️ Да, удалить", "en": "🗑️ Yes, delete it"},
+    "confirm_delete_quest": {"uz": "«{title}» kvestini o‘chirasizmi?\nKvest ro‘yxatlardan yashiriladi; uni faqat bosh administrator tiklay oladi.", "ru": "Удалить квест «{title}»?\nКвест будет скрыт из списков; восстановить его сможет только суперадминистратор.", "en": "Delete “{title}”?\nThe quest will be hidden from the lists; only the superadmin can restore it."},
+    "quest_deleted": {"uz": "🗑️ Kvest o‘chirildi. Uni faqat bosh administrator tiklay oladi.", "ru": "🗑️ Квест удалён. Восстановить его может только суперадминистратор.", "en": "🗑️ The quest was deleted. Only the superadmin can restore it."},
+    "btn_restore_quest": {"uz": "♻️ Kvestni tiklash", "ru": "♻️ Восстановить квест", "en": "♻️ Restore quest"},
+    "quest_restored": {"uz": "♻️ Kvest tiklandi va ro‘yxatlarda yana ko‘rinadi.", "ru": "♻️ Квест восстановлен и снова виден в списках.", "en": "♻️ The quest was restored and is visible in lists again."},
+    "filter_deleted": {"uz": "🗑 O‘chirilganlar", "ru": "🗑 Удалённые", "en": "🗑 Deleted"},
+    "deleted_quest_view_title": {"uz": "🗑 O‘chirilgan kvest", "ru": "🗑 Удалённый квест", "en": "🗑 Deleted quest"},
+    "deleted_quest_view_body": {"uz": "Bu kvest o‘chirilgan, shuning uchun foydalanuvchilarga va administratorlarga ko‘rinmaydi.", "ru": "Этот квест удалён, поэтому пользователи и администраторы его не видят.", "en": "This quest is deleted, so users and administrators cannot see it."},
+    "ask_attempts_mode": {"uz": "Barcha bosqichlar uchun urinishlar soni bir xilmi yoki har xilmi?", "ru": "Число попыток одинаково для всех этапов или разное?", "en": "Is the attempt limit the same for every stage or different?"},
+    "attempts_same": {"uz": "🔁 Bir xil (hammasi uchun bitta son)", "ru": "🔁 Одинаковое (одно число для всех)", "en": "🔁 Same for all stages"},
+    "attempts_different": {"uz": "🔢 Har xil (har bir bosqich uchun alohida)", "ru": "🔢 Разное (для каждого этапа отдельно)", "en": "🔢 Different for each stage"},
+    "ask_common_attempts": {"uz": "Barcha bosqichlar uchun urinishlar sonini kiriting (1–100):", "ru": "Введите число попыток для всех этапов (1–100):", "en": "Send the attempt limit used by every stage (1–100):"},
+    "ambiguous_message_title": {"uz": "❓ Bu javobmi yoki murojaatmi?", "ru": "❓ Это ответ или обращение?", "en": "❓ Is this an answer or a support message?"},
+    "ambiguous_message_body": {"uz": "Sizda javob kutilayotgan kvest bosqichi bor. Yuborgan matningizni qanday qabul qilishimni tanlang:", "ru": "У вас есть этап квеста, ожидающий ответа. Выберите, как обработать отправленный текст:", "en": "You have a quest stage waiting for an answer. Choose how to treat the text you just sent:"},
+    "btn_pending_as_answer": {"uz": "🎯 «{title}» kvestiga javob", "ru": "🎯 Ответ на квест «{title}»", "en": "🎯 Answer for “{title}”"},
+    "btn_pending_as_ticket": {"uz": "💬 Murojaat sifatida yuborish", "ru": "💬 Отправить как обращение", "en": "💬 Send as a support message"},
+    "participant_message_heading_admin": {"uz": "📩 Kvest administratoridan xabar · {title}", "ru": "📩 Сообщение от администратора квеста · {title}", "en": "📩 Message from the quest administrator · {title}"},
     "error_generic": {"uz": "Xatolik yuz berdi. Qayta urinib ko‘ring.", "ru": "Произошла ошибка. Попробуйте ещё раз.", "en": "Something went wrong. Please try again."},
+    "btn_open_quest": {"uz": "🧭 Kvestni ochish", "ru": "🧭 Открыть квест", "en": "🧭 Open quest"},
+    "invalid_quest_start_min": {"uz": "⚠️ Boshlanish vaqti hozirdan kamida 10 daqiqa keyin bo‘lishi kerak.", "ru": "⚠️ Время начала должно быть не раньше, чем через 10 минут.", "en": "⚠️ The start time must be at least 10 minutes from now."},
+    "btn_purge_quest": {"uz": "🧨 Butunlay o‘chirish", "ru": "🧨 Удалить навсегда", "en": "🧨 Delete permanently"},
+    "btn_confirm_purge_quest": {"uz": "🧨 Ha, butunlay o‘chirish", "ru": "🧨 Да, удалить навсегда", "en": "🧨 Yes, delete permanently"},
+    "confirm_purge_quest": {"uz": "🧨 «{title}» butunlay o‘chiriladi: kvest, savollar, ishtirokchilar va javoblar bazadan o‘chib ketadi. Bu amalni qaytarib bo‘lmaydi.", "ru": "🧨 «{title}» будет удалён навсегда: квест, вопросы, участники и ответы исчезнут из базы. Отменить это действие нельзя.", "en": "🧨 “{title}” will be deleted permanently: the quest, its questions, participants, and answers are removed from the database. This cannot be undone."},
+    "quest_purged": {"uz": "🧨 «{title}» butunlay o‘chirildi.", "ru": "🧨 «{title}» полностью удалён.", "en": "🧨 “{title}” was permanently deleted."},
+    "deleted_quest_purge_hint": {"uz": "Agar bu kvest umuman kerak bo‘lmasa, uni bazadan butunlay o‘chirish mumkin.", "ru": "Если квест больше не нужен, его можно удалить из базы навсегда.", "en": "If this quest is not needed at all, it can be removed from the database permanently."},
+    "admin_detail_title": {"uz": "👤 Administrator: {name}", "ru": "👤 Администратор: {name}", "en": "👤 Administrator: {name}"},
+    "admin_detail_body": {"uz": "{role} · ID: {user_id}\n🧭 Kvestlari: {quests} · 🗑 O‘chirilganlari: {deleted}", "ru": "{role} · ID: {user_id}\n🧭 Квестов: {quests} · 🗑 Удалённых: {deleted}", "en": "{role} · ID: {user_id}\n🧭 Quests: {quests} · 🗑 Deleted: {deleted}"},
+    "btn_admin_quests": {"uz": "🧭 Kvestlarini ko‘rish", "ru": "🧭 Его квесты", "en": "🧭 Their quests"},
+    "btn_message_admin": {"uz": "✉️ Xabar yuborish", "ru": "✉️ Написать", "en": "✉️ Send message"},
+    "admin_quests_title": {"uz": "🧭 {name} kvestlari", "ru": "🧭 Квесты: {name}", "en": "🧭 Quests of {name}"},
+    "admin_quests_empty": {"uz": "Bu administratorning kvestlari yo‘q.", "ru": "У этого администратора нет квестов.", "en": "This administrator has no quests."},
+    "ask_admin_message": {"uz": "✉️ {name} ga yuboriladigan xabarni yozing (1–2000 belgi):", "ru": "✉️ Напишите сообщение для {name} (1–2000 символов):", "en": "✉️ Write the message to send to {name} (1–2,000 characters):"},
+    "admin_message_sent": {"uz": "✅ Xabar {name} ga yuborildi.", "ru": "✅ Сообщение отправлено: {name}.", "en": "✅ Message sent to {name}."},
+    "admin_message_heading": {"uz": "📩 Bosh administrator xabari", "ru": "📩 Сообщение от суперадминистратора", "en": "📩 Message from the superadmin"},
+    "logs_terminal_hint": {"uz": "🖥 Oxirgi {count} yozuv · yangilash uchun «{button}» tugmasini bosing.", "ru": "🖥 Последние {count} записей · нажмите «{button}», чтобы обновить.", "en": "🖥 Last {count} entries · press “{button}” to refresh."},
+    "btn_refresh": {"uz": "🔄 Yangilash", "ru": "🔄 Обновить", "en": "🔄 Refresh"},
+    "no_admins": {"uz": "📭 Administratorlar yo‘q.", "ru": "📭 Администраторов пока нет.", "en": "📭 No administrators yet."},
+    "invalid_quest_end": {"uz": "⚠️ Tugash vaqti boshlanish vaqtidan keyin bo‘lishi kerak (Toshkent vaqti, YYYY-MM-DD HH:MM).", "ru": "⚠️ Время окончания должно быть позже времени начала (по Ташкенту, YYYY-MM-DD HH:MM).", "en": "⚠️ The end time must be later than the start time (Tashkent local time, YYYY-MM-DD HH:MM)."},
+    "quest_still_joinable": {"uz": "🟢 Kvest hali yakunlanmagan — unga qo‘shilib, joriy bosqichdan boshlash mumkin.", "ru": "🟢 Квест ещё не завершён — можно присоединиться и начать с текущего этапа.", "en": "🟢 The quest has not finished yet — you can still join and start from the current stage."},
 }
 
 
@@ -338,3 +416,46 @@ def tr(language: str | None, key: str, **values: object) -> str:
         return text.format(**values)
     except KeyError:
         return text
+
+
+_LETTER_SUBSTITUTIONS = (
+    ("O‘", "Ö"),
+    ("o‘", "ö"),
+    ("G‘", "Ğ"),
+    ("g‘", "ğ"),
+    ("SH", "Ş"),
+    ("Sh", "Ş"),
+    ("sh", "ş"),
+    ("CH", "Ç"),
+    ("Ch", "Ç"),
+    ("ch", "ç"),
+)
+
+# {chat} and {chat_id} are format placeholders, not prose: translating the "ch"
+# inside them would break tr()'s formatting, so they are copied unchanged.
+_PLACEHOLDER = re.compile(r"\{[^{}]*\}")
+
+
+def yangi_uzbek(text: str) -> str:
+    """Rewrite Uzbek text with the four letters of «Yangi o‘zbek».
+
+    Only o‘→ö, g‘→ğ, sh→ş, and ch→ç (both letter cases) change; every other
+    character, including punctuation and {placeholders}, is untouched.
+    """
+    parts = _PLACEHOLDER.split(text)
+    placeholders = _PLACEHOLDER.findall(text)
+    result: list[str] = []
+    for index, part in enumerate(parts):
+        for source, target in _LETTER_SUBSTITUTIONS:
+            part = part.replace(source, target)
+        result.append(part)
+        if index < len(placeholders):
+            result.append(placeholders[index])
+    return "".join(result)
+
+
+# Both extra languages are derived from the base dictionaries, so they always
+# cover exactly the same keys as Uzbek, Russian, and English.
+for _key, _translations in TEXTS.items():
+    _translations["uzn"] = yangi_uzbek(_translations["uz"])
+    _translations["kaa"] = KARAKALPAK_TEXTS[_key]
