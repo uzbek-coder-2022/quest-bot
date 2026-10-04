@@ -60,6 +60,7 @@ class ModerationFlow(StatesGroup):
 
 class SuperadminFlow(StatesGroup):
     add_admin_id = State()
+    admin_message = State()
     add_chat_id = State()
     add_whitelist_id = State()
     participant_message = State()

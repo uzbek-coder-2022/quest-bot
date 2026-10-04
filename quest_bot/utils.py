@@ -37,6 +37,19 @@ def format_datetime(value: str | None, language: str) -> str:
         return str(value)
 
 
+RANK_MEDALS = ("🥇", "🥈", "🥉", "🏅", "🎖")
+
+
+def rank_label(rank: int) -> str:
+    """Prefix the first five ranks with their medal, e.g. ``🥇 1``.
+
+    Every other rank stays a plain number so long lists remain readable.
+    """
+    if 1 <= rank <= len(RANK_MEDALS):
+        return f"{RANK_MEDALS[rank - 1]} {rank}"
+    return str(rank)
+
+
 def display_name(
     full_name: str | None, username: str | None, user_id: int | None = None
 ) -> str:

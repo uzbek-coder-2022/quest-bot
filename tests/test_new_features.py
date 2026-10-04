@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import json
 import re
 import tempfile
 import unittest
+from datetime import datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -14,16 +17,37 @@ from quest_bot.handlers.creation import (
     attempts_mode_same,
     common_attempts_received,
 )
-from quest_bot.handlers.quests import participant_answer, show_leaderboard
+from quest_bot.handlers.quests import (
+    _process_answer,
+    aggregate_leaderboard,
+    manage_quest_callback,
+    participant_answer,
+    show_leaderboard,
+)
 from quest_bot.keyboards import (
+    admin_detail_keyboard,
+    admin_list_keyboard,
     admin_panel,
+    admin_quests_keyboard,
+    confirm_purge_quest_keyboard,
+    deleted_quest_keyboard,
     language_keyboard,
     main_menu,
+    open_quest_keyboard,
     quest_detail,
 )
+from quest_bot.handlers.admin import (
+    admin_message_received,
+    confirm_quest_purge,
+    purge_quest_confirmed,
+    show_admin_quests,
+    show_logs,
+)
+from quest_bot.handlers.creation import start_time_received
 from quest_bot.handlers.support import pending_text_as_ticket
 from quest_bot.localization import LANGUAGES, TEXTS, yangi_uzbek
 from quest_bot.states import CreateQuest
+from quest_bot.utils import rank_label
 
 
 class FakeState:
@@ -124,7 +148,9 @@ class MenuAndCardKeyboardTests(unittest.TestCase):
 
     def test_quest_card_keeps_the_start_button_below_the_rating_button(self) -> None:
         start_card = quest_detail("en", self._quest(), joined=True, can_continue=True)
-        self.assertEqual(start_card.inline_keyboard[0][0].callback_data, "rating:show:17:browse")
+        self.assertEqual(
+            start_card.inline_keyboard[0][0].callback_data, "rating:show:17:card:browse"
+        )
         self.assertEqual(start_card.inline_keyboard[1][0].callback_data, "quest:continue:17")
         self.assertEqual(start_card.inline_keyboard[1][0].text, TEXTS["btn_start_quest"]["en"])
 
@@ -145,7 +171,8 @@ class MenuAndCardKeyboardTests(unittest.TestCase):
             my_quests_page=2,
         )
         self.assertEqual(
-            card.inline_keyboard[0][0].callback_data, "rating:show:17:my:private:2"
+            card.inline_keyboard[0][0].callback_data,
+            "rating:show:17:card:my:private:2",
         )
 
 
@@ -164,6 +191,7 @@ class DatabaseFeatureTests(unittest.IsolatedAsyncioTestCase):
     async def create_quest(
         self, progression: str = "immediate", answer_mode: str = "auto"
     ) -> int:
+        self._quest_seq = getattr(self, "_quest_seq", 0) + 1
         quest = {
             "title": "Scheduled quest",
             "description": "Description",
@@ -172,7 +200,7 @@ class DatabaseFeatureTests(unittest.IsolatedAsyncioTestCase):
             "start_at": self.start_at,
             "duration_seconds": 0,
             "chat_id": None,
-            "invite_token": "feature-token",
+            "invite_token": f"feature-token-{self._quest_seq}",
         }
         stages = [
             {
@@ -217,6 +245,77 @@ class DatabaseFeatureTests(unittest.IsolatedAsyncioTestCase):
             [quest_id],
         )
         self.assertFalse(await self.db.soft_delete_quest(quest_id + 99, 1, utc_now()))
+
+    async def test_purge_removes_a_deleted_quest_and_all_its_data(self) -> None:
+        quest_id = await self.create_quest()
+        await self.db.set_quest_status(quest_id, "active")
+        joined = await self.db.join_quest(quest_id, 20, None, utc_now())
+        self.assertEqual(joined["code"], "joined")
+        stage = await self.db.get_stage(quest_id, 1)
+        await self.db.activate_stage_for_participant(quest_id, 20, stage, utc_now())
+        await self.db.mark_stage_delivered(quest_id, 20, int(stage["id"]), utc_now())
+        await self.db.submit_answer(quest_id, 20, "Exact", utc_now())
+
+        # A live quest can never be erased by accident.
+        self.assertFalse(await self.db.purge_quest(quest_id, 1))
+        self.assertIsNotNone(await self.db.get_quest(quest_id))
+
+        self.assertTrue(await self.db.soft_delete_quest(quest_id, 1, utc_now()))
+        self.assertTrue(await self.db.purge_quest(quest_id, 1))
+
+        self.assertIsNone(await self.db.get_quest(quest_id, include_deleted=True))
+        self.assertIsNone(await self.db.get_stage(quest_id, 1))
+        self.assertIsNone(await self.db.participant(quest_id, 20))
+        self.assertEqual(
+            await self.db.list_manageable_quests(1, True, None, 0, 10, deleted=True), []
+        )
+        # The deletion itself stays in the audit log.
+        actions = [row["action"] for row in await self.db.latest_logs(20)]
+        self.assertIn("quest.purged", actions)
+        self.assertFalse(await self.db.purge_quest(quest_id, 1))
+
+    async def test_a_late_joiner_can_still_join_and_play(self) -> None:
+        quest_id = await self.create_quest()
+        await self.db.set_quest_status(quest_id, "active")
+
+        # Every stage start time is long past: the quest is running, not over.
+        joined = await self.db.join_quest(quest_id, 20, None, utc_now())
+        self.assertEqual(joined["code"], "joined")
+        self.assertEqual(
+            (await self.db.participant(quest_id, 20))["status"], "active"
+        )
+        stage = await self.db.next_deliverable_stage(quest_id, 20, utc_now())
+        self.assertEqual(stage["stage_order"], 1)
+        self.assertTrue(
+            await self.db.activate_stage_for_participant(quest_id, 20, stage, utc_now())
+        )
+        self.assertTrue(
+            await self.db.mark_stage_delivered(
+                quest_id, 20, int(stage["id"]), utc_now()
+            )
+        )
+        self.assertEqual(len(await self.db.open_stages_for_user(20)), 1)
+
+        # A scheduled quest hands a late joiner the stage that is due right now.
+        scheduled_id = await self.create_quest(progression="scheduled")
+        await self.db.set_quest_status(scheduled_id, "active")
+        joined_late = await self.db.join_quest(scheduled_id, 20, None, utc_now())
+        self.assertEqual(joined_late["code"], "joined")
+        due = await self.db.next_deliverable_stage(scheduled_id, 20, utc_now())
+        self.assertEqual(due["stage_order"], 2)
+
+    async def test_joining_closes_once_the_quest_is_finished(self) -> None:
+        quest_id = await self.create_quest()
+        await self.db.set_quest_status(quest_id, "active")
+        await self.db.ensure_user(21, "late", "Late Player")
+        self.assertEqual(
+            (await self.db.join_quest(quest_id, 21, None, utc_now()))["code"], "joined"
+        )
+        await self.db.set_quest_status(quest_id, "completed")
+        await self.db.ensure_user(22, "later", "Later Player")
+        self.assertEqual(
+            (await self.db.join_quest(quest_id, 22, None, utc_now()))["code"], "closed"
+        )
 
     async def test_new_start_time_shifts_the_scheduled_stages(self) -> None:
         quest_id = await self.create_quest(progression="scheduled")
@@ -364,7 +463,29 @@ class LeaderboardBackButtonTests(unittest.IsolatedAsyncioTestCase):
                 return None
 
             async def leaderboard(self, quest_id: int):
-                return []
+                return [
+                    {
+                        "user_id": 20,
+                        "full_name": "First Player",
+                        "status": "completed",
+                        "solved": 3,
+                        "completed_at": "2026-10-01T10:00:00+00:00",
+                    },
+                    {
+                        "user_id": 21,
+                        "full_name": "Second Player",
+                        "status": "active",
+                        "solved": 2,
+                        "completed_at": None,
+                    },
+                    {
+                        "user_id": 22,
+                        "full_name": "Sixth Player",
+                        "status": "failed",
+                        "solved": 1,
+                        "completed_at": None,
+                    },
+                ]
 
             async def get_role(self, user_id: int) -> str:
                 return "admin" if self.manager else "user"
@@ -378,15 +499,57 @@ class LeaderboardBackButtonTests(unittest.IsolatedAsyncioTestCase):
                 answer=AsyncMock(),
             )
             await show_leaderboard(callback, Db(manager))
+            return message
+
+        # A rating opened from a quest card returns to that card, not to the
+        # participating-quest list, and offers a way back to the quest as well.
+        def markup(message):
             return message.edit_text.await_args.kwargs["reply_markup"]
 
-        joined = await render("my:private:1", manager=False)
-        self.assertEqual(joined.inline_keyboard[0][0].callback_data, "quest:mylist:private:1")
-        self.assertEqual(joined.inline_keyboard[1][0].callback_data, "menu:home")
+        def text(message):
+            return json.dumps(
+                message.edit_text.await_args.kwargs["rich_message"].model_dump(
+                    mode="json"
+                ),
+                ensure_ascii=False,
+            )
+
+        joined = await render("card:my:private:1", manager=False)
+        self.assertEqual(
+            markup(joined).inline_keyboard[0][0].callback_data,
+            "quest:view:my:private:1:17",
+        )
+        self.assertEqual(
+            markup(joined).inline_keyboard[1][0].callback_data,
+            "quest:view:my:private:1:17",
+        )
+        self.assertEqual(
+            markup(joined).inline_keyboard[2][0].callback_data, "menu:home"
+        )
+
+        browsed = await render("card:browse", manager=False)
+        self.assertEqual(markup(browsed).inline_keyboard[1][0].callback_data, "quest:view:17")
 
         managed = await render("manage", manager=True)
-        self.assertEqual(managed.inline_keyboard[0][0].callback_data, "manage:quest:17")
-        self.assertEqual(managed.inline_keyboard[1][0].callback_data, "admin:home")
+        self.assertEqual(markup(managed).inline_keyboard[0][0].callback_data, "manage:quest:17")
+        self.assertEqual(markup(managed).inline_keyboard[1][0].callback_data, "manage:quest:17")
+        self.assertEqual(markup(managed).inline_keyboard[2][0].callback_data, "admin:home")
+
+        listed = await render("list:managed:2", manager=True)
+        self.assertEqual(
+            markup(listed).inline_keyboard[1][0].callback_data, "ratings:list:managed:2"
+        )
+
+        legacy = await render("my:private:1", manager=False)
+        self.assertEqual(
+            markup(legacy).inline_keyboard[1][0].callback_data, "quest:mylist:private:1"
+        )
+
+        # The first five ranks carry medals, later ones stay plain numbers.
+        rendered = text(joined)
+        self.assertIn("🥇 1.", rendered)
+        self.assertIn("🥈 2.", rendered)
+        self.assertIn("🥉 3.", rendered)
 
 
 class SupportPendingTextTests(unittest.IsolatedAsyncioTestCase):
@@ -488,6 +651,459 @@ class AnswerRoutingTests(unittest.IsolatedAsyncioTestCase):
 
         silent = await send(Db(None))
         self.assertFalse(silent.answer.await_count)
+
+
+class RankMedalTests(unittest.TestCase):
+    def test_only_the_first_five_ranks_get_a_medal(self) -> None:
+        self.assertEqual(
+            [rank_label(rank) for rank in range(1, 7)],
+            ["🥇 1", "🥈 2", "🥉 3", "🏅 4", "🎖 5", "6"],
+        )
+
+
+class QuestPageButtonTests(unittest.TestCase):
+    def test_participant_notices_link_back_to_the_quest(self) -> None:
+        markup = open_quest_keyboard("en", 17)
+        self.assertEqual(
+            markup.inline_keyboard[0][0].callback_data, "quest:view:my:all:0:17"
+        )
+        self.assertEqual(
+            markup.inline_keyboard[0][0].text, TEXTS["btn_open_quest"]["en"]
+        )
+
+    def test_deleted_quest_offers_restore_and_permanent_deletion(self) -> None:
+        markup = deleted_quest_keyboard("en", 17)
+        self.assertEqual(
+            markup.inline_keyboard[0][0].callback_data, "manage:restore:17"
+        )
+        self.assertEqual(
+            markup.inline_keyboard[1][0].callback_data, "manage:purge:17"
+        )
+
+        confirm = confirm_purge_quest_keyboard("en", 17)
+        self.assertEqual(
+            confirm.inline_keyboard[0][0].callback_data, "manage:purgeconfirm:17"
+        )
+        self.assertEqual(confirm.inline_keyboard[1][0].callback_data, "manage:quest:17")
+
+    def test_join_confirmation_promises_a_start_notice(self) -> None:
+        self.assertIn("xabar beriladi", TEXTS["join_success"]["uz"])
+        self.assertIn("notified", TEXTS["join_success"]["en"])
+        self.assertNotIn("Savollar va javob natijalari", TEXTS["join_success"]["uz"])
+
+
+class AdminOverviewTests(unittest.IsolatedAsyncioTestCase):
+    def test_admin_list_has_message_and_detail_buttons(self) -> None:
+        admins = [
+            {"telegram_id": 5, "role": "admin", "full_name": "Quest Admin"},
+            {"telegram_id": 1, "role": "superadmin", "full_name": "Chief"},
+        ]
+        rows = admin_list_keyboard("en", admins).inline_keyboard
+        self.assertEqual(rows[0][0].callback_data, "super:admin:5")
+        self.assertEqual(rows[0][1].callback_data, "super:adminmsg:5")
+        self.assertEqual(rows[1][0].callback_data, "super:admin:1")
+        self.assertEqual(rows[1][1].callback_data, "super:adminmsg:1")
+
+        admin = {"telegram_id": 5, "role": "admin", "full_name": "Quest Admin"}
+        detail = admin_detail_keyboard("en", admin, 3).inline_keyboard
+        self.assertEqual(detail[0][0].callback_data, "super:adminquests:5:0")
+        self.assertEqual(detail[1][0].callback_data, "super:adminmsg:5")
+        self.assertEqual(detail[2][0].callback_data, "super:removeadmin:5")
+        superadmin = {"telegram_id": 1, "role": "superadmin", "full_name": "Chief"}
+        codes = [
+            row[0].callback_data
+            for row in admin_detail_keyboard("en", superadmin, 0).inline_keyboard
+        ]
+        self.assertNotIn("super:removeadmin:1", codes)
+
+    async def test_admin_quest_list_marks_deleted_quests(self) -> None:
+        class Db:
+            async def get_language(self, user_id: int) -> str:
+                return "en"
+
+            async def get_role(self, user_id: int) -> str:
+                return "superadmin"
+
+            async def settings_get(self, key: str, default: str) -> str:
+                return "10"
+
+            async def list_admins(self):
+                return [
+                    {"telegram_id": 5, "role": "admin", "full_name": "Quest Admin"}
+                ]
+
+            async def list_owner_quests(self, owner_id: int, include_deleted=False):
+                return [
+                    {"id": 17, "title": "Live quest", "status": "active", "deleted": 0},
+                    {"id": 18, "title": "Gone quest", "status": "completed", "deleted": 1},
+                ]
+
+        message = SimpleNamespace(
+            chat=SimpleNamespace(type="private"), edit_text=AsyncMock()
+        )
+        callback = SimpleNamespace(
+            data="super:adminquests:5:0",
+            from_user=SimpleNamespace(id=1),
+            message=message,
+            answer=AsyncMock(),
+        )
+
+        await show_admin_quests(callback, Db())
+
+        payload = json.dumps(
+            message.edit_text.await_args.kwargs["rich_message"].model_dump(mode="json"),
+            ensure_ascii=False,
+        )
+        self.assertIn("Live quest", payload)
+        self.assertIn("Gone quest", payload)
+        self.assertIn("🗑", payload)
+        markup = message.edit_text.await_args.kwargs["reply_markup"]
+        self.assertEqual(
+            [button.callback_data for row in markup.inline_keyboard for button in row],
+            ["manage:quest:17", "manage:quest:18", "super:admin:5", "admin:home"],
+        )
+
+    async def test_superadmin_message_reaches_the_admin(self) -> None:
+        recorded: dict = {}
+
+        class Db:
+            async def get_language(self, user_id: int) -> str:
+                return "en"
+
+            async def get_role(self, user_id: int) -> str:
+                return "superadmin"
+
+            async def list_admins(self):
+                return [
+                    {"telegram_id": 5, "role": "admin", "full_name": "Quest Admin"}
+                ]
+
+            async def log_action(self, *args):
+                recorded["log"] = args
+
+        bot = SimpleNamespace(send_message=AsyncMock())
+        message = SimpleNamespace(
+            from_user=SimpleNamespace(id=1),
+            text="Please review your quests today.",
+            bot=bot,
+            answer=AsyncMock(),
+        )
+        state = FakeState({"admin_message_to": 5})
+
+        await admin_message_received(message, state, Db())
+
+        self.assertEqual(bot.send_message.await_args.args[0], 5)
+        self.assertIn("Please review your quests today.", bot.send_message.await_args.args[1])
+        self.assertEqual(recorded["log"][1], "admin.message.sent")
+        self.assertEqual(recorded["log"][3], 5)
+        self.assertEqual(state.data, {})
+        self.assertIn("Quest Admin", message.answer.await_args.args[0])
+
+
+class TerminalLogTests(unittest.IsolatedAsyncioTestCase):
+    async def test_audit_log_renders_as_a_terminal_block(self) -> None:
+        class Db:
+            async def get_language(self, user_id: int) -> str:
+                return "en"
+
+            async def get_role(self, user_id: int) -> str:
+                return "superadmin"
+
+            async def latest_logs(self, limit: int = 20):
+                return [
+                    {
+                        "created_at": "2026-10-04T09:30:00+00:00",
+                        "action": "quest.purged",
+                        "entity_type": "quest",
+                        "entity_id": "17",
+                        "actor_id": 1,
+                    },
+                    {
+                        "created_at": "2026-10-04T09:29:00+00:00",
+                        "action": "participant.joined",
+                        "entity_type": "quest",
+                        "entity_id": "17",
+                        "actor_id": None,
+                    },
+                ]
+
+        message = SimpleNamespace(
+            chat=SimpleNamespace(type="private"), edit_text=AsyncMock()
+        )
+        callback = SimpleNamespace(
+            data="super:logs",
+            from_user=SimpleNamespace(id=1),
+            message=message,
+            answer=AsyncMock(),
+        )
+
+        await show_logs(callback, Db())
+
+        rich = message.edit_text.await_args.kwargs["rich_message"]
+        blocks = rich.model_dump(mode="json")["blocks"]
+        pre = [block for block in blocks if block["type"] == "pre"]
+        self.assertEqual(len(pre), 1)
+        lines = pre[0]["text"].split("\n")
+        self.assertEqual(len(lines), 2)
+        self.assertIn("2026-10-04 09:30:00", lines[0])
+        self.assertIn("quest.purged", lines[0])
+        self.assertIn("@1", lines[0])
+        self.assertIn("@system", lines[1])
+        self.assertEqual(lines[0].index("quest.purged"), lines[1].index("participant.joined"))
+        markup = message.edit_text.await_args.kwargs["reply_markup"]
+        self.assertEqual(
+            [button.callback_data for row in markup.inline_keyboard for button in row],
+            ["super:logs", "admin:home"],
+        )
+
+
+class AggregateMedalTests(unittest.IsolatedAsyncioTestCase):
+    async def test_aggregate_rows_use_the_same_medals(self) -> None:
+        class Db:
+            async def get_language(self, user_id: int) -> str:
+                return "en"
+
+            async def aggregate_leaderboard(self, start_at, end_at, limit=30):
+                names = ["First", "Second", "Third", "Fourth", "Fifth", "Sixth"]
+                return [
+                    {
+                        "user_id": 20 + index,
+                        "full_name": name,
+                        "solved": 10 - index,
+                        "completed_quests": 6 - index,
+                    }
+                    for index, name in enumerate(names)
+                ]
+
+            async def get_role(self, user_id: int) -> str:
+                return "user"
+
+        message = SimpleNamespace(edit_text=AsyncMock())
+        callback = SimpleNamespace(
+            data="ratings:period:week",
+            from_user=SimpleNamespace(id=20),
+            message=message,
+            answer=AsyncMock(),
+        )
+
+        await aggregate_leaderboard(callback, Db())
+
+        payload = json.dumps(
+            message.edit_text.await_args.kwargs["rich_message"].model_dump(mode="json"),
+            ensure_ascii=False,
+        )
+        for medal, rank in zip(("🥇", "🥈", "🥉", "🏅", "🎖"), range(1, 6)):
+            self.assertIn(f"{medal} {rank}.", payload)
+        # The sixth rank stays a plain number.
+        self.assertIn('"text": "6. Sixth', payload)
+
+
+class SoftDeleteVisibilityTests(unittest.IsolatedAsyncioTestCase):
+    """A deleted quest record is visible to superadmins only."""
+
+    class Db:
+        def __init__(self, role: str) -> None:
+            self.role = role
+            self.answer_calls: list[dict] = []
+
+        async def get_language(self, user_id: int) -> str:
+            return "en"
+
+        async def get_role(self, user_id: int) -> str:
+            return self.role
+
+        async def get_quest(self, quest_id: int, include_deleted: bool = False):
+            if not include_deleted:
+                return None
+            return {
+                "id": quest_id,
+                "owner_id": 9,
+                "title": "Gone quest",
+                "status": "completed",
+                "deleted": 1,
+            }
+
+    def _callback(self):
+        return SimpleNamespace(
+            data="manage:quest:17",
+            from_user=SimpleNamespace(id=9),
+            message=SimpleNamespace(
+                chat=SimpleNamespace(type="private"), edit_text=AsyncMock()
+            ),
+            answer=AsyncMock(),
+        )
+
+    async def test_a_regular_admin_never_sees_a_deleted_quest(self) -> None:
+        callback = self._callback()
+        await manage_quest_callback(callback, self.Db("admin"))
+
+        callback.message.edit_text.assert_not_awaited()
+        self.assertTrue(callback.answer.await_args.kwargs["show_alert"])
+
+    async def test_a_superadmin_sees_the_deleted_quest_and_can_restore_it(self) -> None:
+        callback = self._callback()
+        await manage_quest_callback(callback, self.Db("superadmin"))
+
+        markup = callback.message.edit_text.await_args.kwargs["reply_markup"]
+        codes = [button.callback_data for row in markup.inline_keyboard for button in row]
+        self.assertIn("manage:restore:17", codes)
+        self.assertIn("manage:purge:17", codes)
+        payload = json.dumps(
+            callback.message.edit_text.await_args.kwargs["rich_message"].model_dump(
+                mode="json"
+            ),
+            ensure_ascii=False,
+        )
+        self.assertIn("deleted", payload.lower())
+
+
+class PurgeQuestHandlerTests(unittest.IsolatedAsyncioTestCase):
+    class Db:
+        def __init__(self, role: str = "superadmin") -> None:
+            self.role = role
+            self.purged: list[int] = []
+
+        async def get_language(self, user_id: int) -> str:
+            return "en"
+
+        async def get_role(self, user_id: int) -> str:
+            return self.role
+
+        async def get_quest(self, quest_id: int, include_deleted: bool = False):
+            return {
+                "id": quest_id,
+                "owner_id": 9,
+                "title": "Gone quest",
+                "status": "completed",
+                "deleted": 1,
+            }
+
+        async def quest_archive_references(self, quest_id: int):
+            return [(555, 777)]
+
+        async def purge_quest(self, quest_id: int, actor_id: int) -> bool:
+            self.purged.append(quest_id)
+            return True
+
+    async def test_only_a_superadmin_gets_the_purge_confirmation(self) -> None:
+        callback = SimpleNamespace(
+            data="manage:purge:17",
+            from_user=SimpleNamespace(id=9),
+            bot=SimpleNamespace(),
+            message=SimpleNamespace(
+                chat=SimpleNamespace(type="private"), answer=AsyncMock()
+            ),
+            answer=AsyncMock(),
+        )
+        await confirm_quest_purge(callback, self.Db("admin"))
+
+        callback.message.answer.assert_not_awaited()
+        self.assertTrue(callback.answer.await_args.kwargs["show_alert"])
+
+    async def test_confirming_erases_the_quest_and_its_archived_copies(self) -> None:
+        db = self.Db()
+        bot = SimpleNamespace(delete_message=AsyncMock())
+        message = SimpleNamespace(
+            chat=SimpleNamespace(type="private"), edit_text=AsyncMock()
+        )
+        callback = SimpleNamespace(
+            data="manage:purgeconfirm:17",
+            from_user=SimpleNamespace(id=1),
+            message=message,
+            answer=AsyncMock(),
+        )
+
+        await purge_quest_confirmed(callback, db, bot)
+
+        self.assertEqual(db.purged, [17])
+        self.assertEqual(
+            bot.delete_message.await_args.kwargs,
+            {"chat_id": 555, "message_id": 777},
+        )
+        self.assertEqual(
+            message.edit_text.await_args.kwargs["text"],
+            TEXTS["quest_purged"]["en"].format(title="Gone quest"),
+        )
+
+
+class LeadershipNoticeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_exhausted_attempts_offer_the_quest_page(self) -> None:
+        class Db:
+            async def get_language(self, user_id: int) -> str:
+                return "en"
+
+            async def submit_answer(self, quest_id, user_id, answer, now):
+                return {"code": "wrong", "exhausted": True}
+
+            async def participant(self, quest_id: int, user_id: int):
+                return {"ban_reason": None}
+
+            async def maybe_complete_quest(self, quest_id: int) -> bool:
+                return True
+
+        message = SimpleNamespace(
+            from_user=SimpleNamespace(id=20), text="last guess", answer=AsyncMock()
+        )
+        await _process_answer(message, 17, Db(), SimpleNamespace())
+
+        self.assertEqual(
+            message.answer.await_args.args[0], TEXTS["attempts_exhausted"]["en"]
+        )
+        markup = message.answer.await_args.kwargs["reply_markup"]
+        self.assertEqual(markup.inline_keyboard[0][0].callback_data, "quest:view:my:all:0:17")
+
+    async def test_a_finished_participation_offers_the_quest_page(self) -> None:
+        class Db:
+            async def get_language(self, user_id: int) -> str:
+                return "en"
+
+            async def submit_answer(self, quest_id, user_id, answer, now):
+                return {"code": "correct", "final": True}
+
+            async def maybe_complete_quest(self, quest_id: int) -> bool:
+                return True
+
+        message = SimpleNamespace(
+            from_user=SimpleNamespace(id=20), text="final answer", answer=AsyncMock()
+        )
+        await _process_answer(message, 17, Db(), SimpleNamespace())
+
+        self.assertEqual(message.answer.await_args.args[0], TEXTS["correct_done"]["en"])
+        markup = message.answer.await_args.kwargs["reply_markup"]
+        self.assertEqual(markup.inline_keyboard[0][0].callback_data, "quest:view:my:all:0:17")
+
+
+class StartLeadTimeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_creation_requires_a_ten_minute_lead_time(self) -> None:
+        class Db:
+            async def get_language(self, user_id: int) -> str:
+                return "en"
+
+        def stamp(minutes: int) -> str:
+            moment = datetime.now(ZoneInfo("Asia/Tashkent")) + timedelta(minutes=minutes)
+            return moment.strftime("%Y-%m-%d %H:%M")
+
+        too_soon = SimpleNamespace(
+            from_user=SimpleNamespace(id=5), text=stamp(5), answer=AsyncMock()
+        )
+        state = FakeState()
+        await start_time_received(too_soon, state, Db())
+
+        self.assertEqual(
+            too_soon.answer.await_args.args[0],
+            TEXTS["invalid_quest_start_min"]["en"],
+        )
+        self.assertNotIn("start_at", state.data)
+        self.assertIsNone(state.current_state)
+
+        accepted = SimpleNamespace(
+            from_user=SimpleNamespace(id=5), text=stamp(15), answer=AsyncMock()
+        )
+        state = FakeState()
+        await start_time_received(accepted, state, Db())
+
+        self.assertIn("start_at", state.data)
+        self.assertEqual(state.current_state, CreateQuest.duration)
 
 
 if __name__ == "__main__":

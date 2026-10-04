@@ -136,9 +136,9 @@ def quest_detail(
             and quest["status"] in {"scheduled", "active"}):
         rows.append([button(tr(language, "btn_join"), f"quest:join:{quest['id']}")])
     rating_origin = (
-        f"my:{my_quests_visibility}:{max(0, my_quests_page)}"
+        f"card:my:{my_quests_visibility}:{max(0, my_quests_page)}"
         if from_my_quests
-        else "browse"
+        else "card:browse"
     )
     rows.append(
         [
@@ -582,8 +582,102 @@ def confirm_delete_quest_keyboard(language: str, quest_id: int) -> InlineKeyboar
     )
 
 
+def open_quest_keyboard(language: str, quest_id: int) -> InlineKeyboardMarkup:
+    """Let a participant jump to the quest page from a notice."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                button(
+                    tr(language, "btn_open_quest"),
+                    f"quest:view:my:all:0:{quest_id}",
+                )
+            ]
+        ]
+    )
+
+
+def confirm_purge_quest_keyboard(language: str, quest_id: int) -> InlineKeyboardMarkup:
+    """Ask a superadmin to confirm removing a deleted quest from the database."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                button(
+                    tr(language, "btn_confirm_purge_quest"),
+                    f"manage:purgeconfirm:{quest_id}",
+                    style="danger",
+                )
+            ],
+            [button(tr(language, "btn_cancel"), f"manage:quest:{quest_id}")],
+        ]
+    )
+
+
+def admin_detail_keyboard(
+    language: str, admin: dict, quest_count: int
+) -> InlineKeyboardMarkup:
+    """Per-admin actions: their quests, a direct message, and removal."""
+    rows = [
+        [
+            button(
+                f"{tr(language, 'btn_admin_quests')} ({quest_count})",
+                f"super:adminquests:{admin['telegram_id']}:0",
+            )
+        ],
+        [
+            button(
+                tr(language, "btn_message_admin"),
+                f"super:adminmsg:{admin['telegram_id']}",
+            )
+        ],
+    ]
+    if admin["role"] == "admin":
+        rows.append(
+            [
+                button(
+                    tr(language, "btn_remove"),
+                    f"super:removeadmin:{admin['telegram_id']}",
+                    style="danger",
+                )
+            ]
+        )
+    rows.append([button(tr(language, "btn_back"), "super:admins")])
+    rows.append([button(tr(language, "btn_admin_home"), "admin:home")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def admin_quests_keyboard(
+    language: str,
+    owner_id: int,
+    quests: list[dict],
+    page: int = 0,
+    page_size: int = 10,
+) -> InlineKeyboardMarkup:
+    """List one administrator's quests, including soft-deleted ones."""
+    rows = []
+    for quest in quests:
+        marker = "🗑 " if quest.get("deleted") else "🧭 "
+        rows.append(
+            [
+                button(
+                    f"{marker}{quest['title'][:42]}",
+                    f"manage:quest:{quest['id']}",
+                )
+            ]
+        )
+    nav = []
+    if page > 0:
+        nav.append(button("⬅️", f"super:adminquests:{owner_id}:{page - 1}"))
+    if len(quests) >= page_size:
+        nav.append(button("➡️", f"super:adminquests:{owner_id}:{page + 1}"))
+    if nav:
+        rows.append(nav)
+    rows.append([button(tr(language, "btn_back"), f"super:admin:{owner_id}")])
+    rows.append([button(tr(language, "btn_admin_home"), "admin:home")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 def deleted_quest_keyboard(language: str, quest_id: int) -> InlineKeyboardMarkup:
-    """Show a soft-deleted quest with the superadmin restore action."""
+    """Show a soft-deleted quest with the superadmin restore and purge actions."""
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -591,6 +685,13 @@ def deleted_quest_keyboard(language: str, quest_id: int) -> InlineKeyboardMarkup
                     tr(language, "btn_restore_quest"),
                     f"manage:restore:{quest_id}",
                     style="success",
+                )
+            ],
+            [
+                button(
+                    tr(language, "btn_purge_quest"),
+                    f"manage:purge:{quest_id}",
+                    style="danger",
                 )
             ],
             [button(tr(language, "btn_back"), "adminq:filter:deleted:0")],
@@ -641,10 +742,18 @@ def admin_list_keyboard(language: str, admins: list[dict]) -> InlineKeyboardMark
         name = admin.get("full_name") or admin.get("username") or str(admin["telegram_id"])
         role_icon = "⭐" if admin["role"] == "superadmin" else "👤"
         role_label = tr(language, f"role_{admin['role']}")
-        if admin["role"] == "admin":
-            rows.append([button(f"{role_icon} {role_label} · {name[:20]} · {admin['telegram_id']}", f"super:removeadmin:{admin['telegram_id']}")])
-        else:
-            rows.append([button(f"{role_icon} {role_label} · {name[:20]} · {admin['telegram_id']}", "super:noop")])
+        rows.append(
+            [
+                button(
+                    f"{role_icon} {role_label} · {name[:20]} · {admin['telegram_id']}",
+                    f"super:admin:{admin['telegram_id']}",
+                ),
+                button(
+                    tr(language, "btn_message_admin"),
+                    f"super:adminmsg:{admin['telegram_id']}",
+                ),
+            ]
+        )
     rows.append([button(tr(language, "btn_add"), "super:addadmin")])
     rows.append([button(tr(language, "btn_admin_home"), "admin:home")])
     return InlineKeyboardMarkup(inline_keyboard=rows)

@@ -1542,6 +1542,74 @@ class Database:
             await connection.commit()
             return {"code": "joined", "quest": quest}
 
+    async def list_owner_quests(
+        self, owner_id: int, include_deleted: bool = False
+    ) -> list[dict[str, Any]]:
+        """List the quests created by one administrator, newest first."""
+        clause = "" if include_deleted else " AND deleted=0"
+        async with self._connection() as connection:
+            cursor = await connection.execute(
+                "SELECT q.*, (SELECT COUNT(*) FROM stages s WHERE s.quest_id=q.id) AS stage_count, "
+                "(SELECT COUNT(*) FROM quest_participants p WHERE p.quest_id=q.id) AS participant_count "
+                f"FROM quests q WHERE q.owner_id=?{clause} ORDER BY q.created_at DESC",
+                (owner_id,),
+            )
+            return [dict(row) for row in await cursor.fetchall()]
+
+    async def quest_archive_references(self, quest_id: int) -> list[tuple[int, int]]:
+        """Return the archived Telegram messages that belong to a quest."""
+        async with self._connection() as connection:
+            cursor = await connection.execute(
+                "SELECT cover_chat_id,cover_message_id FROM quests WHERE id=?",
+                (quest_id,),
+            )
+            row = await cursor.fetchone()
+            references: list[tuple[int, int]] = []
+            if row and row["cover_chat_id"] is not None and row["cover_message_id"] is not None:
+                references.append((int(row["cover_chat_id"]), int(row["cover_message_id"])))
+            cursor = await connection.execute(
+                "SELECT source_chat_id,source_message_id FROM stages WHERE quest_id=?",
+                (quest_id,),
+            )
+            for stage in await cursor.fetchall():
+                if stage["source_chat_id"] is not None and stage["source_message_id"] is not None:
+                    references.append(
+                        (int(stage["source_chat_id"]), int(stage["source_message_id"]))
+                    )
+            return references
+
+    async def purge_quest(self, quest_id: int, actor_id: int) -> bool:
+        """Remove a soft-deleted quest and everything attached to it for good.
+
+        Only quests that were already marked deleted can be purged, so an
+        accidental tap can never erase a live quest.
+        """
+        async with self._connection() as connection:
+            await connection.execute("BEGIN IMMEDIATE")
+            cursor = await connection.execute(
+                "SELECT title,deleted FROM quests WHERE id=?", (quest_id,)
+            )
+            row = await cursor.fetchone()
+            if not row or not int(row["deleted"]):
+                await connection.rollback()
+                return False
+            title = str(row["title"])
+            await connection.execute("DELETE FROM quests WHERE id=?", (quest_id,))
+            await connection.execute(
+                "INSERT INTO audit_logs(actor_id,action,entity_type,entity_id,details,created_at) "
+                "VALUES(?,?,?,?,?,?)",
+                (
+                    actor_id,
+                    "quest.purged",
+                    "quest",
+                    str(quest_id),
+                    json.dumps({"title": title}, ensure_ascii=False),
+                    utc_now(),
+                ),
+            )
+            await connection.commit()
+            return True
+
     async def participant(self, quest_id: int, user_id: int) -> dict[str, Any] | None:
         async with self._connection() as connection:
             cursor = await connection.execute(

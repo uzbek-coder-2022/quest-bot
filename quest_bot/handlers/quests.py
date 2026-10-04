@@ -31,6 +31,7 @@ from ..keyboards import (
     home_keyboard,
     join_confirmation_keyboard,
     manage_quest,
+    open_quest_keyboard,
     participating_quests_keyboard,
     quest_detail,
     ratings_overview_keyboard,
@@ -64,6 +65,7 @@ from ..utils import (
     ensure_private_callback,
     format_datetime,
     parse_local_datetime,
+    rank_label,
     safe_edit,
 )
 
@@ -541,29 +543,72 @@ async def participant_chat_invite(
     await callback.answer()
 
 
-def _leaderboard_back_target(data: str, quest_id: int) -> str:
-    """Translate a leaderboard callback origin into its return destination."""
+def _leaderboard_origin(data: str) -> tuple[str, list[str]]:
+    """Split a leaderboard callback into its origin name and extra parts."""
     parts = (data or "").split(":")
-    origin = parts[3] if len(parts) > 3 else "browse"
-    if origin == "my":
-        visibility = parts[4] if len(parts) > 4 and parts[4] in {"all", "public", "private"} else "all"
+    if len(parts) <= 3:
+        return "browse", []
+    return parts[3], parts[4:]
+
+
+def _quest_card_target(quest_id: int, extra: list[str]) -> str:
+    """Quest-page callback that keeps the card's own Back destination."""
+    if extra and extra[0] == "my":
+        visibility = (
+            extra[1]
+            if len(extra) > 1 and extra[1] in {"all", "public", "private"}
+            else "all"
+        )
         try:
-            page = max(0, int(parts[5]))
+            page = max(0, int(extra[2]))
+        except (IndexError, ValueError):
+            page = 0
+        return f"quest:view:my:{visibility}:{page}:{quest_id}"
+    return f"quest:view:{quest_id}"
+
+
+def _leaderboard_back_target(data: str, quest_id: int) -> str:
+    """Translate a leaderboard callback origin into its return destination.
+
+    A rating opened from a quest card returns to that card; a rating opened
+    from the ratings list returns to the list it was opened from.
+    """
+    origin, extra = _leaderboard_origin(data)
+    if origin == "card":
+        return _quest_card_target(quest_id, extra)
+    if origin == "my":
+        visibility = (
+            extra[0] if extra and extra[0] in {"all", "public", "private"} else "all"
+        )
+        try:
+            page = max(0, int(extra[1]))
         except (IndexError, ValueError):
             page = 0
         return f"quest:mylist:{visibility}:{page}"
     if origin == "manage":
         return f"manage:quest:{quest_id}"
     if origin == "list":
-        scope = parts[4] if len(parts) > 4 and parts[4] in {"all", "managed"} else "all"
+        scope = (
+            extra[0] if extra and extra[0] in {"all", "managed"} else "all"
+        )
         try:
-            page = max(0, int(parts[5]))
+            page = max(0, int(extra[1]))
         except (IndexError, ValueError):
             page = 0
         return f"ratings:list:{scope}:{page}"
     if origin == "browse":
         return "browse:filter:all:0"
     return "menu:home"
+
+
+def _leaderboard_open_target(data: str, quest_id: int) -> str:
+    """Destination of the Open-quest button under a leaderboard."""
+    origin, extra = _leaderboard_origin(data)
+    if origin == "card":
+        return _quest_card_target(quest_id, extra)
+    if origin == "manage":
+        return f"manage:quest:{quest_id}"
+    return f"quest:view:{quest_id}"
 
 
 @router.callback_query(F.data.startswith("rating:show:"))
@@ -614,7 +659,7 @@ async def show_leaderboard(callback: CallbackQuery, db: Database) -> None:
             tr(
                 language,
                 "leaderboard_row",
-                rank=rank,
+                rank=rank_label(rank),
                 name=name,
                 solved=item["solved"],
                 status=_participant_status(language, item["status"]),
@@ -631,6 +676,12 @@ async def show_leaderboard(callback: CallbackQuery, db: Database) -> None:
         else button(tr(language, "btn_home"), "menu:home")
     )
     rows = [
+        [
+            button(
+                tr(language, "btn_open_quest"),
+                _leaderboard_open_target(callback.data, quest_id),
+            )
+        ],
         [
             button(
                 tr(language, "btn_back"),
@@ -682,7 +733,7 @@ async def aggregate_leaderboard(callback: CallbackQuery, db: Database) -> None:
             tr(
                 language,
                 "aggregate_leaderboard_row",
-                rank=rank,
+                rank=rank_label(rank),
                 name=name,
                 points=item["solved"],
                 completed=item["completed_quests"],
@@ -796,7 +847,9 @@ async def manage_quest_callback(callback: CallbackQuery, db: Database) -> None:
                     callback,
                     information_message(
                         tr(language, "deleted_quest_view_title"),
-                        tr(language, "deleted_quest_view_body"),
+                        tr(language, "deleted_quest_view_body")
+                        + "\n\n"
+                        + tr(language, "deleted_quest_purge_hint"),
                     ),
                     reply_markup=deleted_quest_keyboard(language, quest_id),
                 )
@@ -2150,10 +2203,16 @@ async def _process_answer(
         await message.answer(tr(language, "no_active_question"))
         return
     if code == "overall_timeout":
-        await message.answer(tr(language, "quest_ended"))
+        await message.answer(
+            tr(language, "quest_ended"),
+            reply_markup=open_quest_keyboard(language, quest_id),
+        )
         return
     if code == "timeout":
-        await message.answer(tr(language, "stage_timeout"))
+        await message.answer(
+            tr(language, "stage_timeout"),
+            reply_markup=open_quest_keyboard(language, quest_id),
+        )
         await db.maybe_complete_quest(quest_id)
         return
     if code == "pending":
@@ -2166,7 +2225,10 @@ async def _process_answer(
         return
     if code == "wrong":
         if result.get("exhausted"):
-            await message.answer(tr(language, "attempts_exhausted"))
+            await message.answer(
+                tr(language, "attempts_exhausted"),
+                reply_markup=open_quest_keyboard(language, quest_id),
+            )
             await db.maybe_complete_quest(quest_id)
         else:
             await message.answer(
@@ -2177,7 +2239,10 @@ async def _process_answer(
         await message.answer(tr(language, "error_generic"))
         return
     if result.get("final"):
-        await message.answer(tr(language, "correct_done"))
+        await message.answer(
+            tr(language, "correct_done"),
+            reply_markup=open_quest_keyboard(language, quest_id),
+        )
         await db.maybe_complete_quest(quest_id)
         return
     if result.get("next_stage_order"):

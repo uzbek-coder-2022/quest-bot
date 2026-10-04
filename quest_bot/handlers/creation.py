@@ -275,8 +275,15 @@ async def progression_selected(callback: CallbackQuery, state: FSMContext, db: D
 async def start_time_received(message: Message, state: FSMContext, db: Database) -> None:
     language = await db.get_language(message.from_user.id)
     start_at = parse_local_datetime(message.text or "")
-    if not start_at or datetime.fromisoformat(start_at) < datetime.now(timezone.utc) - timedelta(seconds=5):
+    if not start_at:
         await message.answer(tr(language, "invalid_datetime"))
+        return
+    # A quest needs a short lead time so participants can see it before the
+    # first stage starts.
+    if datetime.fromisoformat(start_at) < datetime.now(timezone.utc) + timedelta(
+        minutes=10
+    ):
+        await message.answer(tr(language, "invalid_quest_start_min"))
         return
     await state.update_data(start_at=start_at)
     await state.set_state(CreateQuest.duration)

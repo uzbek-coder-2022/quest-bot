@@ -13,6 +13,7 @@ from aiogram.types import (
     InputRichBlockListItem,
     InputRichBlockParagraph,
     InputRichBlockPhoto,
+    InputRichBlockPreformatted,
     InputRichBlockSectionHeading,
     InputRichBlockVideo,
     InputRichMessage,
@@ -73,6 +74,13 @@ def quote(*parts: RichTextUnion) -> InputRichBlockBlockQuotation:
         raise ValueError("A quotation must contain text")
     content: RichTextUnion = parts[0] if len(parts) == 1 else list(parts)
     return InputRichBlockBlockQuotation(blocks=[paragraph(content)])
+
+
+def preformatted(text: str, language: str | None = None) -> InputRichBlockPreformatted:
+    """Render monospaced text, optionally with syntax-highlighting language."""
+    if not text.strip():
+        raise ValueError("A preformatted block must contain text")
+    return InputRichBlockPreformatted(text=text, language=language)
 
 
 def divider() -> InputRichBlockDivider:

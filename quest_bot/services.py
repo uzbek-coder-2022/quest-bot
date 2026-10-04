@@ -10,7 +10,7 @@ from aiogram.exceptions import TelegramAPIError, TelegramForbiddenError
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, InputRichMessage
 
 from .database import Database, utc_now
-from .keyboards import continue_keyboard
+from .keyboards import continue_keyboard, open_quest_keyboard
 from .localization import tr
 from .rich_text import (
     bold,
@@ -132,7 +132,11 @@ async def notify_quest_end(
     for user_id in user_ids:
         try:
             language = await db.get_language(user_id)
-            await bot.send_message(user_id, tr(language, "quest_ended"))
+            await bot.send_message(
+                user_id,
+                tr(language, "quest_ended"),
+                reply_markup=open_quest_keyboard(language, quest_id),
+            )
         except TelegramAPIError:
             logger.info("Could not send quest end notice to %s", user_id)
 

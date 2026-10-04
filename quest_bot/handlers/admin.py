@@ -17,13 +17,17 @@ from aiogram.types import (
 from ..bot_commands import clear_app_admin_commands, set_app_admin_commands
 from ..database import Database, utc_now
 from ..keyboards import (
+    admin_detail_keyboard,
     admin_home_keyboard,
     admin_list_keyboard,
     admin_panel,
+    admin_quests_keyboard,
     button,
     confirm_delete_quest_keyboard,
+    confirm_purge_quest_keyboard,
     manage_chat_keyboard,
     managed_chats_keyboard,
+    open_quest_keyboard,
     page_sizes_keyboard,
     participants_keyboard,
     review_keyboard,
@@ -32,9 +36,10 @@ from ..keyboards import (
 )
 from ..localization import tr
 from ..presentation import activity_message, information_message
-from ..rich_text import heading, paragraph, quote, rich_message
+from ..rich_text import heading, paragraph, preformatted, quote, rich_message
 from ..services import (
     answer_deep_link,
+    delete_archived_message,
     notify_next_stage_ready,
 )
 from ..states import ModerationFlow, SuperadminFlow
@@ -243,6 +248,232 @@ async def remove_admin_callback(
         )
 
 
+def _admin_name(admin: dict) -> str:
+    return str(
+        admin.get("full_name") or admin.get("username") or admin["telegram_id"]
+    )
+
+
+async def _find_admin(db: Database, admin_id: int) -> dict | None:
+    for admin in await db.list_admins():
+        if int(admin["telegram_id"]) == admin_id:
+            return admin
+    return None
+
+
+@router.callback_query(F.data.regexp(r"^super:admin:-?\d+$"))
+async def show_admin_detail(callback: CallbackQuery, db: Database) -> None:
+    """Show one administrator with their quests and contact actions."""
+    if not await _require_superadmin(callback, db):
+        return
+    language = await db.get_language(callback.from_user.id)
+    admin_id = int(callback.data.rsplit(":", 1)[1])
+    admin = await _find_admin(db, admin_id)
+    if not admin:
+        await callback.answer(tr(language, "superadmin_only"), show_alert=True)
+        return
+    quests = await db.list_owner_quests(admin_id, include_deleted=True)
+    deleted = sum(1 for quest in quests if quest["deleted"])
+    body = tr(
+        language,
+        "admin_detail_body",
+        role=tr(language, f"role_{admin['role']}"),
+        user_id=admin_id,
+        quests=len(quests),
+        deleted=deleted,
+    )
+    if callback.message:
+        await safe_edit(
+            callback,
+            information_message(
+                tr(language, "admin_detail_title", name=_admin_name(admin)), body
+            ),
+            reply_markup=admin_detail_keyboard(language, admin, len(quests)),
+        )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("super:adminquests:"))
+async def show_admin_quests(callback: CallbackQuery, db: Database) -> None:
+    """List every quest of one administrator, including deleted ones."""
+    if not await _require_superadmin(callback, db):
+        return
+    language = await db.get_language(callback.from_user.id)
+    parts = callback.data.split(":")
+    if len(parts) < 4:
+        await callback.answer()
+        return
+    try:
+        owner_id = int(parts[2])
+        page = max(0, int(parts[3]))
+    except ValueError:
+        await callback.answer()
+        return
+    page_size = int(await db.settings_get("page_size", "10"))
+    admin = await _find_admin(db, owner_id)
+    name = _admin_name(admin) if admin else str(owner_id)
+    quests = await db.list_owner_quests(owner_id, include_deleted=True)
+    window = quests[page * page_size : (page + 1) * page_size]
+    lines = []
+    for quest in window:
+        status_label = tr(language, "filter_" + str(quest["status"]))
+        marker = "🗑" if quest["deleted"] else "🧭"
+        lines.append(f"{marker} {quest['title']} · {status_label}")
+    if callback.message:
+        await safe_edit(
+            callback,
+            activity_message(
+                tr(language, "admin_quests_title", name=name),
+                lines,
+                None if lines else tr(language, "admin_quests_empty"),
+            ),
+            reply_markup=admin_quests_keyboard(
+                language, owner_id, window, page, page_size
+            ),
+        )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("super:adminmsg:"))
+async def begin_admin_message(
+    callback: CallbackQuery, state: FSMContext, db: Database
+) -> None:
+    """Ask the superadmin what to write to one administrator."""
+    if not await _require_superadmin(callback, db):
+        return
+    language = await db.get_language(callback.from_user.id)
+    try:
+        admin_id = int(callback.data.rsplit(":", 1)[1])
+    except ValueError:
+        await callback.answer()
+        return
+    admin = await _find_admin(db, admin_id)
+    if not admin:
+        await callback.answer(tr(language, "superadmin_only"), show_alert=True)
+        return
+    if await state.get_state() is not None:
+        await callback.answer(
+            tr(language, "participant_message_finish_current_flow"), show_alert=True
+        )
+        return
+    await state.set_state(SuperadminFlow.admin_message)
+    await state.update_data(admin_message_to=admin_id)
+    if callback.message:
+        await callback.message.answer(
+            tr(language, "ask_admin_message", name=_admin_name(admin)),
+            reply_markup=admin_home_keyboard(language),
+        )
+    await callback.answer()
+
+
+@router.message(SuperadminFlow.admin_message)
+async def admin_message_received(
+    message: Message, state: FSMContext, db: Database
+) -> None:
+    if not message.from_user:
+        return
+    language = await db.get_language(message.from_user.id)
+    if await db.get_role(message.from_user.id) != "superadmin":
+        await state.clear()
+        await message.answer(tr(language, "superadmin_only"))
+        return
+    text = (message.text or "").strip()
+    if not 1 <= len(text) <= 2000:
+        await message.answer(tr(language, "invalid_participant_message"))
+        return
+    data = await state.get_data()
+    admin_id = int(data.get("admin_message_to") or 0)
+    await state.clear()
+    admin = await _find_admin(db, admin_id)
+    if not admin:
+        await message.answer(tr(language, "superadmin_only"))
+        return
+    name = _admin_name(admin)
+    target_language = await db.get_language(admin_id)
+    try:
+        await message.bot.send_message(
+            admin_id,
+            f"{tr(target_language, 'admin_message_heading')}\n\n{text}",
+        )
+        sent = True
+    except TelegramAPIError:
+        sent = False
+    await db.log_action(
+        message.from_user.id, "admin.message.sent", "admin", admin_id
+    )
+    await message.answer(
+        tr(
+            language,
+            "admin_message_sent" if sent else "participant_message_delivery_failed",
+            name=name,
+        ),
+        reply_markup=admin_home_keyboard(language),
+    )
+
+
+@router.callback_query(F.data.startswith("manage:purge:"))
+async def confirm_quest_purge(callback: CallbackQuery, db: Database) -> None:
+    """Ask a superadmin to confirm erasing a deleted quest for good."""
+    if not await ensure_private_callback(callback, db):
+        return
+    language = await db.get_language(callback.from_user.id)
+    if await db.get_role(callback.from_user.id) != "superadmin":
+        await callback.answer(tr(language, "superadmin_only"), show_alert=True)
+        return
+    try:
+        quest_id = int(callback.data.rsplit(":", 1)[1])
+    except (ValueError, AttributeError):
+        await callback.answer()
+        return
+    quest = await db.get_quest(quest_id, include_deleted=True)
+    if not quest or not quest["deleted"]:
+        await callback.answer(tr(language, "quest_not_found"), show_alert=True)
+        return
+    if callback.message:
+        await callback.message.answer(
+            tr(language, "confirm_purge_quest", title=quest["title"]),
+            reply_markup=confirm_purge_quest_keyboard(language, quest_id),
+        )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("manage:purgeconfirm:"))
+async def purge_quest_confirmed(
+    callback: CallbackQuery, db: Database, bot: Bot
+) -> None:
+    """Erase a soft-deleted quest and all of its data from the database."""
+    if not await ensure_private_callback(callback, db):
+        return
+    language = await db.get_language(callback.from_user.id)
+    if await db.get_role(callback.from_user.id) != "superadmin":
+        await callback.answer(tr(language, "superadmin_only"), show_alert=True)
+        return
+    try:
+        quest_id = int(callback.data.rsplit(":", 1)[1])
+    except (ValueError, AttributeError):
+        await callback.answer()
+        return
+    quest = await db.get_quest(quest_id, include_deleted=True)
+    if not quest or not quest["deleted"]:
+        await callback.answer(tr(language, "quest_not_found"), show_alert=True)
+        return
+    title = quest["title"]
+    references = await db.quest_archive_references(quest_id)
+    if not await db.purge_quest(quest_id, callback.from_user.id):
+        await callback.answer(tr(language, "error_generic"), show_alert=True)
+        return
+    # The quest rows are gone; archived copies are best-effort cleanup.
+    for chat_id, message_id in references:
+        await delete_archived_message(bot, chat_id, message_id)
+    if callback.message:
+        await safe_edit(
+            callback,
+            tr(language, "quest_purged", title=title),
+            reply_markup=admin_home_keyboard(language),
+        )
+    await callback.answer()
+
+
 @router.callback_query(F.data == "super:noop")
 async def superadmin_noop(callback: CallbackQuery) -> None:
     await callback.answer()
@@ -266,24 +497,43 @@ async def show_stats(callback: CallbackQuery, db: Database) -> None:
     await callback.answer()
 
 
+def _terminal_log_lines(rows: list[dict]) -> str:
+    """Format audit rows as aligned, monospaced terminal output."""
+    lines = []
+    for row in rows:
+        stamp = str(row.get("created_at") or "")[:19].replace("T", " ")
+        action = str(row.get("action") or "-")[:32].ljust(32)
+        entity = f"{row.get('entity_type') or '-'}:{row.get('entity_id') or '-'}"
+        actor = f"@{row.get('actor_id')}" if row.get("actor_id") else "@system"
+        lines.append(f"{stamp}  {action}  {entity}  {actor}")
+    return "\n".join(lines)
+
+
 @router.callback_query(F.data == "super:logs")
 async def show_logs(callback: CallbackQuery, db: Database) -> None:
     if not await _require_superadmin(callback, db):
         return
     language = await db.get_language(callback.from_user.id)
     rows = await db.latest_logs(20)
-    log_lines = [
-        f"{row['created_at']} · {row['action']} · {row['entity_type']} "
-        f"{row.get('entity_id') or ''} · actor {row.get('actor_id') or 'system'}"
-        for row in rows
+    refresh = tr(language, "btn_refresh")
+    blocks = [
+        heading(f"🖥 {tr(language, 'logs_title')}", size=1),
+        paragraph(
+            tr(language, "logs_terminal_hint", count=len(rows), button=refresh)
+        ),
     ]
-    text = activity_message(
-        tr(language, "logs_title"),
-        log_lines,
-        None if log_lines else tr(language, "no_logs"),
+    if rows:
+        blocks.append(preformatted(_terminal_log_lines(rows), language="bash"))
+    else:
+        blocks.append(paragraph(tr(language, "no_logs")))
+    markup = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [button(refresh, "super:logs")],
+            [button(tr(language, "btn_admin_home"), "admin:home")],
+        ]
     )
     if callback.message:
-        await safe_edit(callback, text, reply_markup=admin_home_keyboard(language))
+        await safe_edit(callback, rich_message(*blocks), reply_markup=markup)
     await callback.answer()
 
 
@@ -1006,12 +1256,14 @@ async def review_answer(callback: CallbackQuery, db: Database, bot: Bot) -> None
     )
     if accepted and result.get("final"):
         await bot.send_message(
-            int(item["user_id"]), tr(target_language, "correct_done")
+            int(item["user_id"]),
+            tr(target_language, "correct_done"),
+            reply_markup=open_quest_keyboard(
+                target_language, int(item["quest_id"])
+            ),
         )
     elif accepted and result.get("next_stage_order"):
-        await bot.send_message(
-            int(item["user_id"]), tr(target_language, "correct_next")
-        )
+        # The next-stage notice already carries a Continue button.
         await _send_question_after_review(
             bot,
             db,
@@ -1021,7 +1273,11 @@ async def review_answer(callback: CallbackQuery, db: Database, bot: Bot) -> None
         )
     elif not accepted and result.get("exhausted"):
         await bot.send_message(
-            int(item["user_id"]), tr(target_language, "attempts_exhausted")
+            int(item["user_id"]),
+            tr(target_language, "attempts_exhausted"),
+            reply_markup=open_quest_keyboard(
+                target_language, int(item["quest_id"])
+            ),
         )
     elif not accepted and not result.get("obsolete"):
         await bot.send_message(

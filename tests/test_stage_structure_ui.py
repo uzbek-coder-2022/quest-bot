@@ -56,7 +56,9 @@ class FakeBot:
     async def delete_message(self, **kwargs) -> None:
         self.deletes.append(kwargs)
 
-    async def send_message(self, chat_id: int, text: str) -> None:
+    async def send_message(
+        self, chat_id: int, text: str, reply_markup=None
+    ) -> None:
         self.sent.append((chat_id, text))
 
 
