@@ -79,6 +79,13 @@ def home_keyboard(language: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[[button(tr(language, "btn_home"), "menu:home")]])
 
 
+def guide_keyboard(language: str, role: str | None) -> InlineKeyboardMarkup:
+    """Main-menu buttons plus an explicit Main menu row on the guide screen."""
+    rows = [*main_menu(language, role).inline_keyboard]
+    rows.append([button(tr(language, "btn_home"), "menu:home")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 def admin_home_keyboard(language: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[[button(tr(language, "btn_admin_home"), "admin:home")]])
 
@@ -343,6 +350,7 @@ def edit_quest_details_keyboard(language: str, quest_id: int) -> InlineKeyboardM
         [button(tr(language, "btn_edit_title"), f"manage:edit:title:{quest_id}")],
         [button(tr(language, "btn_edit_description"), f"manage:edit:description:{quest_id}")],
         [button(tr(language, "btn_edit_start"), f"manage:edit:start:{quest_id}")],
+        [button(tr(language, "btn_edit_duration"), f"manage:edit:duration:{quest_id}")],
         [button(tr(language, "btn_edit_cover"), f"manage:edit:cover:{quest_id}")],
         [button(tr(language, "btn_back"), f"manage:quest:{quest_id}")],
         [button(tr(language, "btn_admin_home"), "admin:home")],

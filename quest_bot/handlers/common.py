@@ -13,6 +13,7 @@ from ..config import Settings
 from ..database import Database
 from ..keyboards import (
     admin_home_keyboard,
+    guide_keyboard,
     join_confirmation_keyboard,
     language_keyboard,
     main_menu,
@@ -202,7 +203,7 @@ async def help_command(message: Message, db: Database) -> None:
     language = await db.get_language(message.from_user.id if message.from_user else 0)
     role = await db.get_role(message.from_user.id) if message.from_user else None
     await message.answer_rich(
-        guide_message(language), reply_markup=main_menu(language, role)
+        guide_message(language), reply_markup=guide_keyboard(language, role)
     )
 
 
@@ -231,7 +232,9 @@ async def guide_callback(callback: CallbackQuery, db: Database) -> None:
         await safe_edit(
             callback,
             guide_message(language),
-            reply_markup=main_menu(language, await db.get_role(callback.from_user.id)),
+            reply_markup=guide_keyboard(
+                language, await db.get_role(callback.from_user.id)
+            ),
         )
     await callback.answer()
 

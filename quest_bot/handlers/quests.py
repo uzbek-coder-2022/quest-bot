@@ -64,7 +64,10 @@ from ..utils import (
     display_name,
     ensure_private_callback,
     format_datetime,
+    parse_duration_input,
     parse_local_datetime,
+    quest_duration_label,
+    quest_end_at,
     rank_label,
     safe_edit,
 )
@@ -601,16 +604,6 @@ def _leaderboard_back_target(data: str, quest_id: int) -> str:
     return "menu:home"
 
 
-def _leaderboard_open_target(data: str, quest_id: int) -> str:
-    """Destination of the Open-quest button under a leaderboard."""
-    origin, extra = _leaderboard_origin(data)
-    if origin == "card":
-        return _quest_card_target(quest_id, extra)
-    if origin == "manage":
-        return f"manage:quest:{quest_id}"
-    return f"quest:view:{quest_id}"
-
-
 @router.callback_query(F.data.startswith("rating:show:"))
 async def show_leaderboard(callback: CallbackQuery, db: Database) -> None:
     parts = (callback.data or "").split(":")
@@ -677,13 +670,9 @@ async def show_leaderboard(callback: CallbackQuery, db: Database) -> None:
         if origin == "manage"
         else button(tr(language, "btn_home"), "menu:home")
     )
+    # Back is enough: from a quest card it returns to that card, and from the
+    # ratings list it returns to the list. The main menu closes the screen.
     rows = [
-        [
-            button(
-                tr(language, "btn_open_quest"),
-                _leaderboard_open_target(callback.data, quest_id),
-            )
-        ],
         [
             button(
                 tr(language, "btn_back"),
@@ -886,6 +875,12 @@ async def edit_quest_details_menu(callback: CallbackQuery, db: Database) -> None
             rich_message(
                 heading(f"🛠 {tr(language, 'edit_quest_details_title')}", size=1),
                 paragraph(bold(f"🧭 {quest['title']}")),
+                paragraph(
+                    f"⏳ {tr(language, 'quest_label_duration')}: "
+                    + quest_duration_label(
+                        language, int(quest.get("duration_seconds") or 0)
+                    )
+                ),
                 quote(f"💡 {tr(language, 'edit_quest_details_hint')}"),
             ),
             reply_markup=edit_quest_details_keyboard(language, quest_id),
@@ -932,6 +927,11 @@ async def _begin_metadata_edit(
     if field == "start_at" and quest["status"] != "scheduled":
         await callback.answer(tr(language, "quest_start_edit_closed"), show_alert=True)
         return
+    if field == "duration" and quest["status"] not in {"scheduled", "active"}:
+        await callback.answer(
+            tr(language, "quest_duration_edit_closed"), show_alert=True
+        )
+        return
 
     await _clear_fsm_and_archived_drafts(state, callback.message.bot)
     await state.update_data(edit_quest_id=quest_id, edit_context="quest_metadata")
@@ -951,6 +951,20 @@ async def _begin_metadata_edit(
                     language,
                     "quest_start_edit_hint",
                     current=format_datetime(quest["start_at"], language),
+                )
+            ),
+        )
+    elif field == "duration":
+        await state.set_state(EditQuestDetails.duration)
+        prompt = rich_message(
+            heading(f"⏳ {tr(language, 'ask_duration')}", size=1),
+            quote(
+                tr(
+                    language,
+                    "quest_duration_edit_hint",
+                    current=quest_duration_label(
+                        language, int(quest.get("duration_seconds") or 0)
+                    ),
                 )
             ),
         )
@@ -987,6 +1001,13 @@ async def begin_quest_start_edit(
     callback: CallbackQuery, state: FSMContext, db: Database
 ) -> None:
     await _begin_metadata_edit(callback, state, db, "start_at")
+
+
+@router.callback_query(F.data.startswith("manage:edit:duration:"))
+async def begin_quest_duration_edit(
+    callback: CallbackQuery, state: FSMContext, db: Database
+) -> None:
+    await _begin_metadata_edit(callback, state, db, "duration")
 
 
 @router.callback_query(F.data.regexp(r"^manage:edit:cover:\d+$"))
@@ -1241,6 +1262,51 @@ async def quest_start_received(
             heading(f"✅ {tr(language, 'quest_start_updated')}", size=1),
             paragraph(bold(f"🕒 {tr(language, 'btn_edit_start')}")),
             quote(format_datetime(start_at, language)),
+        ),
+        reply_markup=edit_quest_details_keyboard(language, quest_id),
+    )
+
+
+@router.message(EditQuestDetails.duration)
+async def quest_duration_received(
+    message: Message, state: FSMContext, db: Database
+) -> None:
+    """Store an edited overall time given as minutes or as an end time."""
+    if not message.from_user:
+        return
+    language = await db.get_language(message.from_user.id)
+    access = await _metadata_message_quest(message, state, db)
+    if not access:
+        return
+    quest_id, quest = access
+    duration_seconds, error = parse_duration_input(
+        message.text or "", quest.get("start_at")
+    )
+    if error:
+        await message.answer(
+            f"⚠️ {tr(language, error)}", reply_markup=edit_prompt_keyboard(language)
+        )
+        return
+    previous = await db.update_quest_duration(
+        quest_id, int(duration_seconds or 0), message.from_user.id, utc_now()
+    )
+    if previous is None:
+        await state.clear()
+        await message.answer(tr(language, "quest_duration_edit_closed"))
+        return
+    await state.clear()
+    saved = int(duration_seconds or 0)
+    value = quest_duration_label(language, saved)
+    if saved:
+        value += (
+            f" · {tr(language, 'quest_label_end')} "
+            f"{format_datetime(quest_end_at(dict(quest, duration_seconds=saved)), language)}"
+        )
+    await message.answer_rich(
+        rich_message(
+            heading(f"✅ {tr(language, 'quest_duration_updated')}", size=1),
+            paragraph(bold(f"⏳ {tr(language, 'btn_edit_duration')}")),
+            quote(value),
         ),
         reply_markup=edit_quest_details_keyboard(language, quest_id),
     )

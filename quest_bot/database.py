@@ -736,6 +736,52 @@ class Database:
             await connection.commit()
             return previous
 
+    async def update_quest_duration(
+        self,
+        quest_id: int,
+        duration_seconds: int,
+        actor_id: int,
+        now: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Change a quest's overall time while it is scheduled or running."""
+        now = now or utc_now()
+        async with self._connection() as connection:
+            await connection.execute("BEGIN IMMEDIATE")
+            cursor = await connection.execute(
+                "SELECT * FROM quests WHERE id=? AND status IN ('scheduled','active') "
+                "AND deleted=0",
+                (quest_id,),
+            )
+            row = await cursor.fetchone()
+            if not row:
+                await connection.rollback()
+                return None
+            previous = dict(row)
+            await connection.execute(
+                "UPDATE quests SET duration_seconds=?,updated_at=? WHERE id=? AND deleted=0",
+                (int(duration_seconds), now, quest_id),
+            )
+            await connection.execute(
+                "INSERT INTO audit_logs(actor_id,action,entity_type,entity_id,details,created_at) "
+                "VALUES(?,?,?,?,?,?)",
+                (
+                    actor_id,
+                    "quest.duration_updated",
+                    "quest",
+                    str(quest_id),
+                    json.dumps(
+                        {
+                            "from": int(previous["duration_seconds"] or 0),
+                            "to": int(duration_seconds),
+                        },
+                        ensure_ascii=False,
+                    ),
+                    now,
+                ),
+            )
+            await connection.commit()
+            return previous
+
     async def update_quest_start_at(
         self, quest_id: int, start_at: str, actor_id: int, now: str | None = None
     ) -> dict[str, Any] | None:
@@ -2237,16 +2283,31 @@ class Database:
             return [int(row["user_id"]) for row in await cursor.fetchall()]
 
     async def maybe_complete_quest(self, quest_id: int) -> bool:
+        """Complete a quest once its overall time has run out.
+
+        Finishing early remains an explicit admin action: while a quest still
+        has time left (or no overall limit) it keeps accepting new
+        participants, even when everyone who joined so far already finished or
+        failed. Without this, the last participant's result would close the
+        quest and latecomers could no longer take part.
+        """
         now = utc_now()
         async with self._connection() as connection:
             await connection.execute("BEGIN IMMEDIATE")
             cursor = await connection.execute(
-                "SELECT COUNT(*) AS total,SUM(CASE WHEN status IN ('joined','active') THEN 1 ELSE 0 END) AS remaining "
-                "FROM quest_participants WHERE quest_id=?",
+                "SELECT status,duration_seconds,start_at FROM quests WHERE id=?",
                 (quest_id,),
             )
-            result = await cursor.fetchone()
-            if int(result["total"] or 0) == 0 or int(result["remaining"] or 0) > 0:
+            quest = await cursor.fetchone()
+            if not quest or quest["status"] != "active":
+                await connection.rollback()
+                return False
+            duration = int(quest["duration_seconds"] or 0)
+            if duration <= 0:
+                await connection.rollback()
+                return False
+            deadline = _as_utc_datetime(quest["start_at"]) + timedelta(seconds=duration)
+            if _as_utc_datetime(now) < deadline:
                 await connection.rollback()
                 return False
             cursor = await connection.execute(

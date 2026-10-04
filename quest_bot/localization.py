@@ -136,6 +136,12 @@ TEXTS: dict[str, dict[str, str]] = {
     "quest_label_participants": {"uz": "Qatnashchilar soni", "ru": "Количество участников", "en": "Participants"},
     "quest_label_progression": {"uz": "Keyingi bosqich", "ru": "Переход к этапам", "en": "Progression"},
     "quest_label_duration": {"uz": "Umumiy vaqt", "ru": "Общее время", "en": "Overall time"},
+    "quest_label_end": {"uz": "tugash", "ru": "окончание", "en": "ends"},
+    "btn_edit_duration": {"uz": "⏳ Davomiylikni o‘zgartirish", "ru": "⏳ Изменить длительность", "en": "⏳ Change duration"},
+    "quest_duration_updated": {"uz": "Kvest davomiyligi yangilandi.", "ru": "Длительность квеста обновлена.", "en": "The quest time was updated."},
+    "quest_duration_edit_closed": {"uz": "⚠️ Davomiylikni faqat hali yakunlanmagan kvestda o‘zgartirish mumkin.", "ru": "⚠️ Изменить длительность можно только у незавершённого квеста.", "en": "⚠️ Only a quest that has not finished yet can be re-timed."},
+    "quest_duration_edit_hint": {"uz": "Hozirgi davomiylik: {current}. Yangi qiymatni daqiqada yoki tugash vaqtini YYYY-MM-DD HH:MM ko‘rinishida yuboring. 0 — cheklovsiz.", "ru": "Текущая длительность: {current}. Отправьте новое значение в минутах или время окончания в виде YYYY-MM-DD HH:MM. 0 — без ограничения.", "en": "Current overall time: {current}. Send a new value in minutes or the end time as YYYY-MM-DD HH:MM. 0 — no limit."},
+    "quest_duration_unlimited": {"uz": "cheklanmagan", "ru": "без ограничения", "en": "no limit"},
     "quest_label_chat": {"uz": "Savollar guruhi", "ru": "Чат вопросов", "en": "Question chat"},
     "quest_not_found": {"uz": "⚠️ Kvest topilmadi yoki unga kirish huquqingiz yo‘q.", "ru": "⚠️ Квест не найден или у вас нет доступа.", "en": "⚠️ Quest not found or you do not have access."},
     "join_success": {"uz": "✅ Kvestga qo‘shildingiz. Kvest boshlanganda sizga xabar beriladi; savol «Boshlash» tugmasi bosilganda yuboriladi.", "ru": "✅ Вы присоединились к квесту. Когда квест начнётся, придёт уведомление; вопрос отправляется после нажатия «Начать».", "en": "✅ You joined the quest. You will be notified when it starts; the question is sent after you press Start."},
@@ -160,7 +166,7 @@ TEXTS: dict[str, dict[str, str]] = {
     "ask_stage_count": {"uz": "Bosqichlar sonini kiriting (1–30):", "ru": "Укажите количество этапов (1–30):", "en": "Enter the number of stages (1–30):"},
     "ask_progression": {"uz": "⚙️ Keyingi bosqich qanday yuborilsin?", "ru": "⚙️ Как отправлять следующий этап?", "en": "⚙️ How should the next stage be delivered?"},
     "ask_start": {"uz": "Boshlanish vaqtini Toshkent vaqti bo‘yicha kiriting: YYYY-MM-DD HH:MM\nMasalan: 2026-10-03 18:30", "ru": "Введите время начала по Ташкенту: YYYY-MM-DD HH:MM\nНапример: 2026-10-03 18:30", "en": "Enter the start time in Tashkent local time: YYYY-MM-DD HH:MM\nExample: 2026-10-03 18:30"},
-    "ask_duration": {"uz": "Umumiy vaqtni daqiqada kiriting. 0 — cheklanmagan:", "ru": "Общее время в минутах. 0 — без ограничения:", "en": "Overall time in minutes. Use 0 for no limit:"},
+    "ask_duration": {"uz": "Umumiy davomiylikni daqiqada kiriting (masalan 90) yoki kvest tugash vaqtini yozing: YYYY-MM-DD HH:MM\n0 — vaqt cheklanmagan:", "ru": "Введите общую длительность в минутах (например 90) или время окончания квеста: YYYY-MM-DD HH:MM\n0 — без ограничения:", "en": "Send the overall duration in minutes (for example 90) or the quest end time: YYYY-MM-DD HH:MM\nUse 0 for no time limit:"},
     "ask_chat": {"uz": "Savollar qayerda e’lon qilinsin? Guruh/kanalni tanlang yoki faqat botni tanlang.", "ru": "Где публиковать вопросы? Выберите группу/канал или только бота.", "en": "Where should questions be announced? Choose a group/channel or bot only."},
     "chat_private_only": {"uz": "Faqat bot", "ru": "Только бот", "en": "Bot only"},
     "ask_question": {"uz": "❓ {number}-bosqich uchun matn, rasm yoki videoni yuboring (izoh ixtiyoriy):", "ru": "❓ Отправьте текст, фото или видео для этапа {number} (подпись необязательна):", "en": "❓ Send the text, photo, or video for stage {number} (a caption is optional):"},
@@ -391,6 +397,8 @@ TEXTS: dict[str, dict[str, str]] = {
     "logs_terminal_hint": {"uz": "🖥 Oxirgi {count} yozuv · yangilash uchun «{button}» tugmasini bosing.", "ru": "🖥 Последние {count} записей · нажмите «{button}», чтобы обновить.", "en": "🖥 Last {count} entries · press “{button}” to refresh."},
     "btn_refresh": {"uz": "🔄 Yangilash", "ru": "🔄 Обновить", "en": "🔄 Refresh"},
     "no_admins": {"uz": "📭 Administratorlar yo‘q.", "ru": "📭 Администраторов пока нет.", "en": "📭 No administrators yet."},
+    "invalid_quest_end": {"uz": "⚠️ Tugash vaqti boshlanish vaqtidan keyin bo‘lishi kerak (Toshkent vaqti, YYYY-MM-DD HH:MM).", "ru": "⚠️ Время окончания должно быть позже времени начала (по Ташкенту, YYYY-MM-DD HH:MM).", "en": "⚠️ The end time must be later than the start time (Tashkent local time, YYYY-MM-DD HH:MM)."},
+    "quest_still_joinable": {"uz": "🟢 Kvest hali yakunlanmagan — unga qo‘shilib, joriy bosqichdan boshlash mumkin.", "ru": "🟢 Квест ещё не завершён — можно присоединиться и начать с текущего этапа.", "en": "🟢 The quest has not finished yet — you can still join and start from the current stage."},
 }
 
 

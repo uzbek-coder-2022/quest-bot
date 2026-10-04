@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from aiogram.exceptions import TelegramBadRequest
@@ -35,6 +35,62 @@ def format_datetime(value: str | None, language: str) -> str:
         return stamp.astimezone(LOCAL_TZ).strftime("%Y-%m-%d %H:%M")
     except (ValueError, TypeError):
         return str(value)
+
+
+def parse_duration_input(
+    raw: str, start_at: str | None
+) -> tuple[int | None, str | None]:
+    """Read a duration message as minutes, or as a Tashkent-local end time.
+
+    Returns ``(duration_seconds, error_key)`` where ``0`` means no overall
+    limit at all.
+    """
+    raw = (raw or "").strip()
+    if raw.isdigit():
+        minutes = int(raw)
+        if not 0 <= minutes <= 525600:
+            return None, "invalid_number"
+        return minutes * 60, None
+    if not start_at:
+        return None, "invalid_number"
+    end_at = parse_local_datetime(raw)
+    if not end_at:
+        return None, "invalid_number"
+    try:
+        start = datetime.fromisoformat(str(start_at))
+        end = datetime.fromisoformat(end_at)
+    except (TypeError, ValueError):
+        return None, "invalid_number"
+    if start.tzinfo is None:
+        start = start.replace(tzinfo=timezone.utc)
+    if end <= start:
+        return None, "invalid_quest_end"
+    minutes = int((end - start).total_seconds() // 60)
+    if minutes > 525600:
+        return None, "invalid_number"
+    return minutes * 60, None
+
+
+def quest_duration_label(language: str, duration_seconds: int) -> str:
+    """Human-readable overall time, ``0`` meaning unlimited."""
+    if int(duration_seconds or 0) <= 0:
+        return tr(language, "quest_duration_unlimited")
+    return f"{int(duration_seconds) // 60} min"
+
+
+def quest_end_at(quest: dict) -> str | None:
+    """Return the ISO timestamp at which a quest's overall time runs out."""
+    duration = int(quest.get("duration_seconds") or 0)
+    start_at = quest.get("start_at")
+    if not duration or not start_at:
+        return None
+    try:
+        start = datetime.fromisoformat(str(start_at))
+    except (TypeError, ValueError):
+        return None
+    if start.tzinfo is None:
+        start = start.replace(tzinfo=timezone.utc)
+    return (start + timedelta(seconds=duration)).isoformat()
 
 
 RANK_MEDALS = ("🥇", "🥈", "🥉", "🏅", "🎖")

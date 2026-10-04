@@ -30,7 +30,7 @@ from ..services import (
     question_media_details,
 )
 from ..states import CreateQuest
-from ..utils import format_datetime, parse_local_datetime
+from ..utils import format_datetime, parse_duration_input, parse_local_datetime
 
 router = Router(name="creation")
 logger = logging.getLogger(__name__)
@@ -292,16 +292,16 @@ async def start_time_received(message: Message, state: FSMContext, db: Database)
 
 @router.message(CreateQuest.duration)
 async def duration_received(message: Message, state: FSMContext, db: Database) -> None:
+    """Accept either an overall duration in minutes or an explicit end time."""
     language = await db.get_language(message.from_user.id)
-    try:
-        minutes = int((message.text or "").strip())
-    except ValueError:
-        await message.answer(tr(language, "invalid_number"))
+    data = await state.get_data()
+    duration_seconds, error = parse_duration_input(
+        message.text or "", data.get("start_at")
+    )
+    if error:
+        await message.answer(tr(language, error))
         return
-    if not 0 <= minutes <= 525600:
-        await message.answer(tr(language, "invalid_number"))
-        return
-    await state.update_data(duration_seconds=minutes * 60)
+    await state.update_data(duration_seconds=int(duration_seconds or 0))
     chats = await db.managed_chats()
     await state.set_state(CreateQuest.chat)
     await message.answer(tr(language, "ask_chat"), reply_markup=creation_chat(language, chats))

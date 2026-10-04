@@ -125,6 +125,12 @@ KARAKALPAK_TEXTS: dict[str, str] = {
     "quest_label_participants": "Qatnasıwshılar sanı",
     "quest_label_progression": "Keyingi basqısh",
     "quest_label_duration": "Ulıwma waqıt",
+    "quest_label_end": "tamamlanıwı",
+    "btn_edit_duration": "⏳ Dawamlılıqtı ózgertiw",
+    "quest_duration_updated": "Kvest dawamlılıǵı jańalandı.",
+    "quest_duration_edit_closed": "⚠️ Dawamlılıqtı tek ele tamamlanbaǵan kvestte ózgertiw múmkin.",
+    "quest_duration_edit_hint": "Házirgi dawamlılıq: {current}. Jańa mánisti minutta yamasa tamamlanıw waqtın YYYY-MM-DD HH:MM kórinisinde jiberiń. 0 — sheklengen emes.",
+    "quest_duration_unlimited": "sheklengen emes",
     "quest_label_chat": "Sorawlar toparı",
     "quest_not_found": "⚠️ Kvest tabılmadı yamasa oǵan kiriw huqıqıńız joq.",
     "join_success": "✅ Siz kvestke qosıldıńız. Kvest baslanǵanda sizge xabar jiberiledi; soraw «Baslaw» túmesi basılǵanda jiberiledi.",
@@ -149,7 +155,7 @@ KARAKALPAK_TEXTS: dict[str, str] = {
     "ask_stage_count": "Basqıshlar sanın kiritiń (1–30):",
     "ask_progression": "⚙️ Keyingi basqısh qanday jiberilsin?",
     "ask_start": "Baslanıw waqtın Tashkent waqtı boyınsha kiritiń: YYYY-MM-DD HH:MM\nMısalı: 2026-10-03 18:30",
-    "ask_duration": "Ulıwma waqıttı minutta kiritiń. 0 — sheklengen emes:",
+    "ask_duration": "Ulıwma dawamlılıqtı minutta kiritiń (mısalı 90) yamasa kvesttıń tamamlanıw waqtın jazıń: YYYY-MM-DD HH:MM\n0 — waqıt sheklengen emes:",
     "ask_chat": "Sorawlar qayerde járiyalansın? Topar/kanaldı tańlań yamasa tek bottı tańlań.",
     "chat_private_only": "Tek bot",
     "ask_question": "❓ {number}-basqısh ushın tekst, súwret yamasa video jiberiń (eskertpe ixtıyarlı):",
@@ -371,6 +377,8 @@ KARAKALPAK_TEXTS: dict[str, str] = {
     "logs_terminal_hint": "🖥 Aqırǵı {count} jazıw · jańalaw ushın «{button}» túymesin basıń.",
     "btn_refresh": "🔄 Jańalaw",
     "no_admins": "📭 Administratorlar joq.",
+    "invalid_quest_end": "⚠️ Tamamlanıw waqtı baslanıw waqtınan keyin bolıwı kerek (Tashkent waqtı, YYYY-MM-DD HH:MM).",
+    "quest_still_joinable": "🟢 Kvest ele tamamlanbaǵan — oǵan qosılıp, házirgi basqıshtan baslaw múmkin.",
 }
 
 

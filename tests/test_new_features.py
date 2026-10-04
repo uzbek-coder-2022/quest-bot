@@ -33,6 +33,7 @@ from quest_bot.keyboards import (
     admin_quests_keyboard,
     confirm_purge_quest_keyboard,
     deleted_quest_keyboard,
+    guide_keyboard,
     language_keyboard,
     main_menu,
     managed_chats_keyboard,
@@ -48,7 +49,8 @@ from quest_bot.handlers.admin import (
     show_logs,
     show_managed_chats_page,
 )
-from quest_bot.handlers.creation import start_time_received
+from quest_bot.handlers.creation import duration_received, start_time_received
+from quest_bot.handlers.quests import quest_duration_received
 from quest_bot.handlers.support import (
     list_my_tickets_page,
     open_support_page,
@@ -567,35 +569,32 @@ class LeaderboardBackButtonTests(unittest.IsolatedAsyncioTestCase):
                 ensure_ascii=False,
             )
 
+        # Back alone returns to the quest card, and the main menu closes the
+        # screen; no separate Open-quest button is needed.
         joined = await render("card:my:private:1", manager=False)
         self.assertEqual(
             markup(joined).inline_keyboard[0][0].callback_data,
             "quest:view:my:private:1:17",
         )
         self.assertEqual(
-            markup(joined).inline_keyboard[1][0].callback_data,
-            "quest:view:my:private:1:17",
-        )
-        self.assertEqual(
-            markup(joined).inline_keyboard[2][0].callback_data, "menu:home"
+            markup(joined).inline_keyboard[1][0].callback_data, "menu:home"
         )
 
         browsed = await render("card:browse", manager=False)
-        self.assertEqual(markup(browsed).inline_keyboard[1][0].callback_data, "quest:view:17")
+        self.assertEqual(markup(browsed).inline_keyboard[0][0].callback_data, "quest:view:17")
 
         managed = await render("manage", manager=True)
         self.assertEqual(markup(managed).inline_keyboard[0][0].callback_data, "manage:quest:17")
-        self.assertEqual(markup(managed).inline_keyboard[1][0].callback_data, "manage:quest:17")
-        self.assertEqual(markup(managed).inline_keyboard[2][0].callback_data, "admin:home")
+        self.assertEqual(markup(managed).inline_keyboard[1][0].callback_data, "admin:home")
 
         listed = await render("list:managed:2", manager=True)
         self.assertEqual(
-            markup(listed).inline_keyboard[1][0].callback_data, "ratings:list:managed:2"
+            markup(listed).inline_keyboard[0][0].callback_data, "ratings:list:managed:2"
         )
 
         legacy = await render("my:private:1", manager=False)
         self.assertEqual(
-            markup(legacy).inline_keyboard[1][0].callback_data, "quest:mylist:private:1"
+            markup(legacy).inline_keyboard[0][0].callback_data, "quest:mylist:private:1"
         )
 
         # The first five ranks carry medals, later ones stay plain numbers.
@@ -1126,6 +1125,164 @@ class LeadershipNoticeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(markup.inline_keyboard[0][0].callback_data, "quest:view:my:all:0:17")
 
 
+class QuestDurationEditTests(unittest.IsolatedAsyncioTestCase):
+    """A running quest's overall time can be changed from the admin panel."""
+
+    class Db:
+        def __init__(self) -> None:
+            self.updated: list[tuple[int, int]] = []
+
+        async def get_language(self, user_id: int) -> str:
+            return "en"
+
+        async def get_role(self, user_id: int) -> str:
+            return "admin"
+
+        async def get_quest(self, quest_id: int) -> dict:
+            return {
+                "id": quest_id,
+                "owner_id": 5,
+                "status": "active",
+                "start_at": "2026-10-05T06:00:00+00:00",
+                "duration_seconds": 0,
+                "title": "Timed",
+            }
+
+        async def update_quest_duration(self, quest_id, duration, actor_id, now):
+            self.updated.append((quest_id, int(duration)))
+            return {"duration_seconds": 0}
+
+    def _message(self, text: str):
+        return SimpleNamespace(
+            from_user=SimpleNamespace(id=5),
+            text=text,
+            answer=AsyncMock(),
+            answer_rich=AsyncMock(),
+        )
+
+    async def test_minutes_update_the_quest_time(self) -> None:
+        db = self.Db()
+        state = FakeState({"edit_quest_id": 17, "edit_context": "quest_metadata"})
+        message = self._message("120")
+
+        await quest_duration_received(message, state, db)
+
+        self.assertEqual(db.updated, [(17, 7200)])
+        self.assertIsNone(state.current_state)
+        sent = message.answer_rich.await_args.args[0]
+        self.assertIn(TEXTS["quest_duration_updated"]["en"], sent.blocks[0].text)
+
+    async def test_an_end_time_updates_the_quest_time(self) -> None:
+        db = self.Db()
+        state = FakeState({"edit_quest_id": 17, "edit_context": "quest_metadata"})
+        message = self._message("2026-10-05 08:00")
+
+        await quest_duration_received(message, state, db)
+
+        # 06:00 UTC start, local Tashkent 08:00 is 03:00 UTC -> too early.
+        self.assertEqual(db.updated, [])
+        self.assertEqual(
+            message.answer.await_args.args[0],
+            f"⚠️ {TEXTS['invalid_quest_end']['en']}",
+        )
+
+    async def test_a_later_end_time_is_accepted(self) -> None:
+        db = self.Db()
+        state = FakeState({"edit_quest_id": 17, "edit_context": "quest_metadata"})
+        message = self._message("2026-10-05 13:00")
+
+        await quest_duration_received(message, state, db)
+
+        self.assertEqual(db.updated, [(17, 2 * 3600)])
+
+    async def test_zero_removes_the_time_limit(self) -> None:
+        db = self.Db()
+        state = FakeState({"edit_quest_id": 17, "edit_context": "quest_metadata"})
+        message = self._message("0")
+
+        await quest_duration_received(message, state, db)
+
+        self.assertEqual(db.updated, [(17, 0)])
+
+
+class GuideKeyboardTests(unittest.TestCase):
+    def test_the_guide_ends_with_a_main_menu_button(self) -> None:
+        for role in (None, "user", "admin", "superadmin"):
+            with self.subTest(role=role):
+                codes = [
+                    button.callback_data
+                    for row in guide_keyboard("en", role).inline_keyboard
+                    for button in row
+                ]
+                self.assertEqual(codes[-1], "menu:home")
+                self.assertIn("menu:guide", codes)
+                if role in {"admin", "superadmin"}:
+                    self.assertIn("admin:home", codes)
+
+
+class QuestDurationTests(unittest.IsolatedAsyncioTestCase):
+    """Creation accepts minutes or an explicit end time."""
+
+    class Db:
+        async def get_language(self, user_id: int) -> str:
+            return "en"
+
+        async def managed_chats(self):
+            return []
+
+    async def test_minutes_are_stored_as_seconds(self) -> None:
+        state = FakeState({"start_at": "2026-10-05T06:00:00+00:00"})
+        message = SimpleNamespace(
+            from_user=SimpleNamespace(id=5), text="90", answer=AsyncMock()
+        )
+
+        await duration_received(message, state, self.Db())
+
+        self.assertEqual(state.data["duration_seconds"], 5400)
+        self.assertEqual(state.current_state, CreateQuest.chat)
+
+    async def test_an_end_time_sets_the_duration_of_the_quest(self) -> None:
+        state = FakeState({"start_at": "2026-10-05T06:00:00+00:00"})
+        message = SimpleNamespace(
+            from_user=SimpleNamespace(id=5),
+            text="2026-10-05 13:00",
+            answer=AsyncMock(),
+        )
+
+        await duration_received(message, state, self.Db())
+
+        # Local Tashkent 13:00 is 08:00 UTC, two hours after the start.
+        self.assertEqual(state.data["duration_seconds"], 2 * 3600)
+        self.assertEqual(state.current_state, CreateQuest.chat)
+
+    async def test_an_end_time_before_the_start_is_rejected(self) -> None:
+        state = FakeState({"start_at": "2026-10-05T06:00:00+00:00"})
+        message = SimpleNamespace(
+            from_user=SimpleNamespace(id=5),
+            text="2026-10-05 05:00",
+            answer=AsyncMock(),
+        )
+
+        await duration_received(message, state, self.Db())
+
+        self.assertEqual(
+            message.answer.await_args.args[0], TEXTS["invalid_quest_end"]["en"]
+        )
+        self.assertNotIn("duration_seconds", state.data)
+        self.assertIsNone(state.current_state)
+
+    async def test_zero_means_no_time_limit(self) -> None:
+        state = FakeState({"start_at": "2026-10-05T06:00:00+00:00"})
+        message = SimpleNamespace(
+            from_user=SimpleNamespace(id=5), text="0", answer=AsyncMock()
+        )
+
+        await duration_received(message, state, self.Db())
+
+        self.assertEqual(state.data["duration_seconds"], 0)
+        self.assertEqual(state.current_state, CreateQuest.chat)
+
+
 class StartLeadTimeTests(unittest.IsolatedAsyncioTestCase):
     async def test_creation_requires_a_ten_minute_lead_time(self) -> None:
         class Db:
@@ -1299,7 +1456,7 @@ class UserFacingRatingsTests(unittest.IsolatedAsyncioTestCase):
             ].inline_keyboard
             for button in row
         ]
-        self.assertEqual(codes, ["quest:view:17", "quest:view:17", "menu:home"])
+        self.assertEqual(codes, ["quest:view:17", "menu:home"])
 
     async def test_quest_rating_opened_from_the_admin_side_keeps_the_panel_button(
         self,
@@ -1314,7 +1471,7 @@ class UserFacingRatingsTests(unittest.IsolatedAsyncioTestCase):
             ].inline_keyboard
             for button in row
         ]
-        self.assertEqual(codes, ["manage:quest:17", "manage:quest:17", "admin:home"])
+        self.assertEqual(codes, ["manage:quest:17", "admin:home"])
 
     async def test_public_ratings_list_has_no_admin_panel_button(self) -> None:
         callback = self._callback("ratings:list:all:0")

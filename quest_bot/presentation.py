@@ -20,7 +20,7 @@ from .rich_text import (
     quote,
     rich_message,
 )
-from .utils import format_datetime
+from .utils import format_datetime, quest_end_at
 
 logger = logging.getLogger(__name__)
 
@@ -69,13 +69,28 @@ def quest_preview(
             ": ",
             tr(language, f"progression_{quest['progression']}"),
         ],
-        [bold(f"⏳ {tr(language, 'quest_label_duration')}"), ": ", duration],
+        [
+            bold(f"⏳ {tr(language, 'quest_label_duration')}"),
+            ": ",
+            duration
+            + (
+                f" · {tr(language, 'quest_label_end')} "
+                f"{format_datetime(quest_end_at(quest), language)}"
+                if duration_seconds
+                else ""
+            ),
+        ],
         [bold(f"📣 {tr(language, 'quest_label_chat')}"), ": ", str(chat_title)],
     ]
     blocks = [heading(f"🧭 {quest['title']}", size=1)]
     cover_file_id = quest.get("cover_file_id")
     if isinstance(cover_file_id, str) and cover_file_id.strip():
         blocks.append(photo_block(cover_file_id))
+    joinable = (
+        quest["status"] in {"scheduled", "active"}
+        and not quest.get("paused_at")
+        and quest.get("visibility") == "public"
+    )
     blocks.extend(
         (
             heading(f"📝 {tr(language, 'quest_label_description')}", size=4),
@@ -84,6 +99,8 @@ def quest_preview(
             bullet_list(details),
         )
     )
+    if joinable:
+        blocks.extend((divider(), paragraph(tr(language, "quest_still_joinable"))))
     return rich_message(*blocks)
 
 

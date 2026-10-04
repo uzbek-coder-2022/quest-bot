@@ -41,6 +41,7 @@ class EditQuestDetails(StatesGroup):
     title = State()
     description = State()
     start_at = State()
+    duration = State()
     cover_photo = State()
 
 
