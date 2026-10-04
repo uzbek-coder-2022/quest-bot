@@ -2489,8 +2489,18 @@ class Database:
             await connection.commit()
 
     async def create_ticket(
-        self, user_id: int, quest_id: int | None, target_admin_id: int | None, message: str
+        self,
+        user_id: int,
+        quest_id: int | None,
+        target_admin_id: int | None,
+        message: str,
+        sender_id: int | None = None,
     ) -> int:
+        """Open a numbered conversation; an admin may also start it.
+
+        ``sender_id`` defaults to the participant, but an administrator who
+        writes first is stored as the author of the opening message.
+        """
         now = utc_now()
         async with self._connection() as connection:
             await connection.execute("BEGIN IMMEDIATE")
@@ -2502,10 +2512,43 @@ class Database:
             ticket_id = int(cursor.lastrowid)
             await connection.execute(
                 "INSERT INTO support_messages(ticket_id,sender_id,message,created_at) VALUES(?,?,?,?)",
-                (ticket_id, user_id, message, now),
+                (ticket_id, int(sender_id) if sender_id is not None else user_id, message, now),
             )
             await connection.commit()
             return ticket_id
+
+    async def close_ticket(
+        self, ticket_id: int, actor_id: int | None = None, now: str | None = None
+    ) -> bool:
+        """Close a conversation so nobody can keep replying in it."""
+        now = now or utc_now()
+        async with self._connection() as connection:
+            await connection.execute("BEGIN IMMEDIATE")
+            cursor = await connection.execute(
+                "SELECT status FROM support_tickets WHERE id=?", (ticket_id,)
+            )
+            ticket = await cursor.fetchone()
+            if not ticket or ticket["status"] != "open":
+                await connection.rollback()
+                return False
+            await connection.execute(
+                "UPDATE support_tickets SET status='closed',updated_at=? WHERE id=?",
+                (now, ticket_id),
+            )
+            await connection.execute(
+                "INSERT INTO audit_logs(actor_id,action,entity_type,entity_id,details,created_at) "
+                "VALUES(?,?,?,?,?,?)",
+                (
+                    actor_id,
+                    "support.ticket.closed",
+                    "support_ticket",
+                    str(ticket_id),
+                    "{}",
+                    now,
+                ),
+            )
+            await connection.commit()
+            return True
 
     async def add_ticket_message(self, ticket_id: int, sender_id: int, message: str) -> bool:
         now = utc_now()

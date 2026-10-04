@@ -907,11 +907,20 @@ def support_start_keyboard(
 
 
 def ticket_reply_keyboard(
-    language: str, ticket_id: int, back_target: str | None = None
+    language: str,
+    ticket_id: int,
+    back_target: str | None = None,
+    can_reply: bool = True,
 ) -> InlineKeyboardMarkup:
-    rows = [
-        [button(tr(language, "btn_reply_ticket"), f"support:reply:{ticket_id}")]
-    ]
+    """Reply, Close, and (optionally) Back for one numbered conversation."""
+    rows: list[list[InlineKeyboardButton]] = []
+    if can_reply:
+        rows.append(
+            [button(tr(language, "btn_reply_ticket"), f"support:reply:{ticket_id}")]
+        )
+    rows.append(
+        [button(tr(language, "btn_close_ticket"), f"support:close:{ticket_id}")]
+    )
     if back_target:
         rows.append([button(tr(language, "btn_back"), back_target)])
     return InlineKeyboardMarkup(inline_keyboard=rows)

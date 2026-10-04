@@ -62,12 +62,15 @@ from quest_bot.handlers.admin import (
 from quest_bot.handlers.creation import duration_received, start_time_received
 from quest_bot.handlers.quests import quest_duration_received
 from quest_bot.handlers.support import (
+    begin_ticket_reply,
+    close_ticket_callback,
     list_my_tickets_page,
     open_support_page,
     pending_text_as_ticket,
     show_ticket_history,
 )
 from quest_bot.localization import LANGUAGES, TEXTS, yangi_uzbek
+from quest_bot.presentation import support_notification, support_reply, thread_tag
 from quest_bot.states import CreateQuest
 from quest_bot.services import answer_button
 from quest_bot.utils import rank_label
@@ -690,9 +693,10 @@ class SupportPendingTextTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(recorded["text"], "Should this be a ticket?")
         self.assertEqual(recorded["log"][1], "support.ticket.created")
         self.assertEqual(state.data, {})
-        self.assertEqual(
-            callback.message.answer.await_args.args[0], TEXTS["support_created"]["en"]
-        )
+        # The confirmation carries the numbered, searchable thread tag.
+        confirmation = callback.message.answer.await_args.args[0]
+        self.assertTrue(confirmation.startswith(TEXTS["support_created"]["en"]))
+        self.assertIn("#T55", confirmation)
 
 
 class AnswerRoutingTests(unittest.IsolatedAsyncioTestCase):
@@ -871,10 +875,16 @@ class AdminOverviewTests(unittest.IsolatedAsyncioTestCase):
                     {"telegram_id": 5, "role": "admin", "full_name": "Quest Admin"}
                 ]
 
-            async def log_action(self, *args):
+            async def create_ticket(
+                self, user_id, quest_id, target_admin_id, message, sender_id=None
+            ):
+                recorded["ticket"] = (user_id, quest_id, target_admin_id, sender_id)
+                return 77
+
+            async def log_action(self, *args, **kwargs):
                 recorded["log"] = args
 
-        bot = SimpleNamespace(send_message=AsyncMock())
+        bot = SimpleNamespace(send_rich_message=AsyncMock())
         message = SimpleNamespace(
             from_user=SimpleNamespace(id=1),
             text="Please review your quests today.",
@@ -885,12 +895,25 @@ class AdminOverviewTests(unittest.IsolatedAsyncioTestCase):
 
         await admin_message_received(message, state, Db())
 
-        self.assertEqual(bot.send_message.await_args.args[0], 5)
-        self.assertIn("Please review your quests today.", bot.send_message.await_args.args[1])
+        self.assertEqual(bot.send_rich_message.await_args.args[0], 5)
+        payload = bot.send_rich_message.await_args.args[1]
+        self.assertIn("Please review your quests today.", str(payload.model_dump(mode="json")))
+        # The conversation is numbered and every message carries its tag.
+        self.assertEqual(recorded["ticket"], (5, None, None, 1))
+        self.assertIn("#T77", str(payload.model_dump(mode="json")))
+        codes = [
+            item.callback_data
+            for row in bot.send_rich_message.await_args.kwargs[
+                "reply_markup"
+            ].inline_keyboard
+            for item in row
+        ]
+        self.assertEqual(codes, ["support:reply:77", "support:close:77"])
         self.assertEqual(recorded["log"][1], "admin.message.sent")
         self.assertEqual(recorded["log"][3], 5)
         self.assertEqual(state.data, {})
         self.assertIn("Quest Admin", message.answer.await_args.args[0])
+        self.assertIn("#T77", message.answer.await_args.args[0])
 
 
 class TerminalLogTests(unittest.IsolatedAsyncioTestCase):
@@ -1622,6 +1645,161 @@ class BackButtonAuditTests(unittest.IsolatedAsyncioTestCase):
             for button in row
         ]
         self.assertIn("support:tickets:1", codes)
+
+
+class NumberedThreadTests(unittest.IsolatedAsyncioTestCase):
+    """Sent messages become numbered threads with a tag and a Close button."""
+
+    class Db:
+        def __init__(self, status: str = "open") -> None:
+            self.status = status
+            self.closed: list[int] = []
+
+        async def get_language(self, user_id: int) -> str:
+            return "en"
+
+        async def get_ticket(self, ticket_id: int) -> dict:
+            return {
+                "id": ticket_id,
+                "user_id": 20,
+                "status": self.status,
+                "quest_id": 17,
+                "quest_title": "Night Quest",
+                "target_admin_id": 5,
+                "language": "en",
+            }
+
+        async def support_admin_recipients(self, ticket_id: int) -> list[int]:
+            return [5, 1]
+
+        async def close_ticket(self, ticket_id: int, actor_id=None, now=None) -> bool:
+            if self.status != "open":
+                return False
+            self.status = "closed"
+            self.closed.append(ticket_id)
+            return True
+
+        async def add_ticket_message(self, ticket_id, sender_id, text) -> bool:
+            return self.status == "open"
+
+    def _callback(self, data: str, user_id: int = 1):
+        return SimpleNamespace(
+            data=data,
+            from_user=SimpleNamespace(id=user_id),
+            message=SimpleNamespace(
+                chat=SimpleNamespace(type="private"),
+                edit_text=AsyncMock(),
+                edit_reply_markup=AsyncMock(),
+                answer=AsyncMock(),
+            ),
+            answer=AsyncMock(),
+            bot=SimpleNamespace(send_message=AsyncMock()),
+        )
+
+    def test_the_tag_is_a_searchable_hashtag(self) -> None:
+        self.assertEqual(thread_tag(12), "#T12")
+        self.assertEqual(thread_tag("31"), "#T31")
+        for builder in (
+            support_reply("Quest admin", "Hello", 31),
+            support_notification(31, "Superadmin", "Player", "Hello"),
+        ):
+            payload = str(builder.model_dump(mode="json"))
+            self.assertIn("#T31", payload)
+            self.assertIn("#31", payload)
+
+    def test_the_reply_keyboard_carries_reply_and_close(self) -> None:
+        codes = [
+            item.callback_data
+            for row in ticket_reply_keyboard("en", 31, back_target="support:tickets:1").inline_keyboard
+            for item in row
+        ]
+        self.assertEqual(
+            codes, ["support:reply:31", "support:close:31", "support:tickets:1"]
+        )
+        answered = [
+            item.callback_data
+            for row in ticket_reply_keyboard("en", 31, can_reply=False).inline_keyboard
+            for item in row
+        ]
+        self.assertEqual(answered, ["support:close:31"])
+
+    async def test_closing_a_thread_ends_it_for_both_sides(self) -> None:
+        db = self.Db()
+        callback = self._callback("support:close:31", user_id=20)
+
+        await close_ticket_callback(callback, db)
+
+        self.assertEqual(db.closed, [31])
+        notified = [
+            call.args[0] for call in callback.bot.send_message.await_args_list
+        ]
+        self.assertEqual(notified, [5, 1])
+        self.assertIn("#T31", callback.bot.send_message.await_args_list[0].args[1])
+        screen = str(
+            callback.message.edit_text.await_args.kwargs[
+                "rich_message"
+            ].model_dump(mode="json")
+        )
+        self.assertIn("closed", screen.lower())
+
+    async def test_only_the_participants_can_close_a_thread(self) -> None:
+        db = self.Db()
+        callback = self._callback("support:close:31", user_id=999)
+
+        await close_ticket_callback(callback, db)
+
+        self.assertEqual(db.closed, [])
+        self.assertTrue(callback.answer.await_args.kwargs["show_alert"])
+
+    async def test_an_already_closed_thread_reports_that(self) -> None:
+        db = self.Db(status="closed")
+        callback = self._callback("support:close:31")
+
+        await close_ticket_callback(callback, db)
+
+        self.assertIn("closed", callback.answer.await_args.args[0].lower())
+
+    async def test_answering_removes_the_reply_button_of_that_message(self) -> None:
+        db = self.Db()
+        callback = self._callback("support:reply:31")
+
+        await begin_ticket_reply(callback, FakeState({"ticket_id": 31}), db)
+
+        markup = callback.message.edit_reply_markup.await_args.kwargs["reply_markup"]
+        codes = [item.callback_data for row in markup.inline_keyboard for item in row]
+        self.assertEqual(codes, ["support:close:31"])
+
+    async def test_a_closed_thread_refuses_new_replies(self) -> None:
+        db = self.Db(status="closed")
+        callback = self._callback("support:reply:31")
+
+        await begin_ticket_reply(callback, FakeState({"ticket_id": 31}), db)
+
+        self.assertIn("closed", callback.answer.await_args.args[0].lower())
+        callback.message.edit_reply_markup.assert_not_awaited()
+
+    async def test_ticket_history_offers_close_and_hides_reply_when_closed(self) -> None:
+        class Db(self.Db):
+            async def ticket_messages(self, ticket_id: int):
+                return [{"sender_id": 20, "message": "Hello"}]
+
+            async def get_role(self, user_id: int) -> str:
+                return "user"
+
+        for status, can_reply in (("open", True), ("closed", False)):
+            db = Db(status)
+            callback = self._callback("support:ticket:31:0", user_id=20)
+            await show_ticket_history(callback, db)
+            codes = [
+                item.callback_data
+                for row in callback.message.edit_text.await_args.kwargs[
+                    "reply_markup"
+                ].inline_keyboard
+                for item in row
+            ]
+            with self.subTest(status=status):
+                self.assertIn("support:close:31", codes)
+                self.assertEqual("support:reply:31" in codes, can_reply)
 
 
 class GuideKeyboardTests(unittest.TestCase):

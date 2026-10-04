@@ -139,12 +139,25 @@ def information_message(
     return rich_message(*blocks)
 
 
+THREAD_TAG_PREFIX = "#T"
+
+
+def thread_tag(ticket_id: int) -> str:
+    """Searchable Telegram hashtag that groups every message of one thread.
+
+    Telegram only indexes hashtags that start with a letter, so the numeric
+    conversation id is prefixed: conversation ``12`` is searchable as ``#T12``.
+    """
+    return f"{THREAD_TAG_PREFIX}{int(ticket_id)}"
+
+
 def support_reply(source: str, message: str, ticket_id: int) -> InputRichMessage:
     """Build a rich ticket reply with sender context and safely quoted user text."""
     return rich_message(
         heading(f"🎫 #{ticket_id}", size=2),
         paragraph(bold(source)),
         quote(message),
+        paragraph(thread_tag(ticket_id)),
     )
 
 
@@ -156,6 +169,7 @@ def support_notification(
         heading(f"🎫 #{ticket_id} · {source}", size=2),
         paragraph(bold(sender_name)),
         quote(message),
+        paragraph(thread_tag(ticket_id)),
     )
 
 

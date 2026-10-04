@@ -156,6 +156,16 @@ class FeatureFlowTests(unittest.IsolatedAsyncioTestCase):
             async def get_user(self, user_id: int) -> dict:
                 return {"full_name": "Player One", "username": "player"}
 
+            async def create_ticket(
+                self, user_id, quest_id, target_admin_id, message, sender_id=None
+            ) -> int:
+                self.ticket = (user_id, quest_id, target_admin_id, sender_id)
+                return 12
+
+            async def close_ticket(self, ticket_id, actor_id=None, now=None) -> bool:
+                self.closed = ticket_id
+                return True
+
             async def log_action(self, *args, **kwargs) -> None:
                 self.actions.append((args, kwargs))
 
@@ -190,15 +200,27 @@ class FeatureFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(recipient, 42)
         self.assertEqual(payload["rich_message"].blocks[0].text, "📩 Message from the superadmin · Night Quest")
         self.assertEqual(payload["rich_message"].blocks[1].text, message_text)
+        # The message opens conversation #12 and carries its searchable tag.
+        self.assertEqual(db.ticket, (42, 17, None, 1))
+        self.assertEqual(payload["rich_message"].blocks[2].text, "#T12")
+        reply_codes = [
+            item.callback_data
+            for row in payload["reply_markup"].inline_keyboard
+            for item in row
+        ]
+        self.assertEqual(reply_codes, ["support:reply:12", "support:close:12"])
         self.assertEqual(db.actions[0][0][1:4], ("participant.message.sent", "quest_participant", "17:42"))
         self.assertNotIn(message_text, str(db.actions))
         self.assertTrue(state.cleared)
         self.assertIn("Player One", message.answer.await_args.args[0])
+        self.assertIn("#T12", message.answer.await_args.args[0])
+        ack_rows = message.answer.await_args.kwargs["reply_markup"].inline_keyboard
         self.assertEqual(
-            payload_markup := message.answer.await_args.kwargs["reply_markup"].inline_keyboard[0][0].callback_data,
-            "manage:participants:17:2",
+            [item.callback_data for item in ack_rows[0]], ["support:close:12"]
         )
-        self.assertTrue(payload_markup)
+        self.assertEqual(
+            ack_rows[1][0].callback_data, "manage:participants:17:2"
+        )
 
     async def test_participant_rows_offer_status_and_message_buttons(self) -> None:
         participants = [{"user_id": 42, "full_name": "Player One", "status": "blocked"}]
@@ -1021,7 +1043,13 @@ class FeatureFlowTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn(expected_source, reply_text)
             self.assertIn("#31", reply_text)
             self.assertIsNotNone(reply["reply_markup"])
-            self.assertNotIn("reply_markup", message.answer.await_args.kwargs)
+            # The acknowledgement offers no unnecessary Reply button, but it
+            # does offer the Close button for the numbered conversation.
+            markup = message.answer.await_args.kwargs["reply_markup"]
+            codes = [
+                item.callback_data for row in markup.inline_keyboard for item in row
+            ]
+            self.assertEqual(codes, ["support:close:31"])
 
     async def test_safe_rich_text_keeps_user_markup_literal(self) -> None:
         preview = quest_preview(self._quest(), "en", 4)

@@ -33,10 +33,11 @@ from ..keyboards import (
     participants_keyboard,
     review_keyboard,
     settings_keyboard,
+    ticket_reply_keyboard,
     whitelist_keyboard,
 )
 from ..localization import tr
-from ..presentation import activity_message, information_message
+from ..presentation import activity_message, information_message, thread_tag
 from ..rich_text import heading, paragraph, preformatted, quote, rich_message
 from ..services import (
     answer_deep_link,
@@ -47,6 +48,16 @@ from ..states import ModerationFlow, SuperadminFlow
 from ..utils import can_manage_quest, display_name, ensure_private_callback, safe_edit
 
 router = Router(name="admin")
+
+
+def _numbered_ack(
+    language: str, key: str, ticket_id: int, **values: object
+) -> str:
+    """Acknowledgement text plus the searchable tag of the new conversation."""
+    return (
+        f"{tr(language, key, **values)}\n{thread_tag(ticket_id)}\n"
+        f"{tr(language, 'support_thread_started', ticket=ticket_id)}"
+    )
 
 
 def _back_to_list_keyboard(language: str, back_target: str) -> InlineKeyboardMarkup:
@@ -437,24 +448,47 @@ async def admin_message_received(
         return
     name = _admin_name(admin)
     target_language = await db.get_language(admin_id)
+    ticket_id = await db.create_ticket(
+        admin_id, None, None, text, sender_id=message.from_user.id
+    )
     try:
-        await message.bot.send_message(
+        await message.bot.send_rich_message(
             admin_id,
-            f"{tr(target_language, 'admin_message_heading')}\n\n{text}",
+            rich_message(
+                heading(tr(target_language, "admin_message_heading"), size=2),
+                paragraph(text),
+                paragraph(thread_tag(ticket_id)),
+            ),
+            reply_markup=ticket_reply_keyboard(target_language, ticket_id),
         )
         sent = True
     except TelegramAPIError:
+        await db.close_ticket(ticket_id, message.from_user.id)
         sent = False
     await db.log_action(
-        message.from_user.id, "admin.message.sent", "admin", admin_id
+        message.from_user.id,
+        "admin.message.sent",
+        "admin",
+        admin_id,
+        {"ticket_id": ticket_id},
     )
     await message.answer(
-        tr(
+        _numbered_ack(
             language,
             "admin_message_sent" if sent else "participant_message_delivery_failed",
+            ticket_id,
             name=name,
         ),
-        reply_markup=admin_home_keyboard(language),
+        reply_markup=(
+            ticket_reply_keyboard(
+                language,
+                ticket_id,
+                back_target=f"super:admin:{admin_id}",
+                can_reply=False,
+            )
+            if sent
+            else admin_home_keyboard(language)
+        ),
     )
 
 
@@ -1078,6 +1112,15 @@ async def participant_message_received(
         target_user.get("full_name"), target_user.get("username"), user_id
     )
     target_language = await db.get_language(user_id)
+    # Every message sent to a participant opens a numbered conversation so the
+    # participant can reply in the same thread and the admin can close it.
+    ticket_id = await db.create_ticket(
+        user_id,
+        quest_id,
+        message.from_user.id if role == "admin" else None,
+        text,
+        sender_id=message.from_user.id,
+    )
     try:
         await bot.send_rich_message(
             user_id,
@@ -1091,9 +1134,12 @@ async def participant_message_received(
                     size=2,
                 ),
                 paragraph(text),
+                paragraph(thread_tag(ticket_id)),
             ),
+            reply_markup=ticket_reply_keyboard(target_language, ticket_id),
         )
     except TelegramAPIError:
+        await db.close_ticket(ticket_id, message.from_user.id)
         await state.clear()
         await message.answer(tr(language, "participant_message_delivery_failed"))
         return
@@ -1102,13 +1148,25 @@ async def participant_message_received(
         "participant.message.sent",
         "quest_participant",
         f"{quest_id}:{user_id}",
+        {"ticket_id": ticket_id},
     )
     await state.clear()
     await message.answer(
-        tr(language, "participant_message_sent", user=target_name),
+        _numbered_ack(language, "participant_message_sent", ticket_id, user=target_name),
         reply_markup=InlineKeyboardMarkup(
             inline_keyboard=[
-                [button(tr(language, "btn_back"), f"manage:participants:{quest_id}:{page}")],
+                [
+                    button(
+                        tr(language, "btn_close_ticket"),
+                        f"support:close:{ticket_id}",
+                    )
+                ],
+                [
+                    button(
+                        tr(language, "btn_back"),
+                        f"manage:participants:{quest_id}:{page}",
+                    )
+                ],
                 [button(tr(language, "btn_admin_home"), "admin:home")],
             ]
         ),

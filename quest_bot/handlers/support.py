@@ -21,8 +21,10 @@ from ..presentation import (
     support_history,
     support_notification,
     support_reply,
+    thread_tag,
 )
 from ..states import SupportFlow
+from ..rich_text import heading, paragraph, rich_message
 from ..utils import safe_edit
 
 router = Router(name="support")
@@ -59,6 +61,11 @@ def _tickets_keyboard(
     rows.append([button(tr(language, "btn_back"), back_target)])
     rows.append([button(tr(language, "btn_home"), "menu:home")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _tagged(language: str, key: str, ticket_id: int, **kwargs: object) -> str:
+    """A localized confirmation line followed by the searchable thread tag."""
+    return f"{tr(language, key, **kwargs)}\n{thread_tag(ticket_id)}"
 
 
 async def _notify_admins(
@@ -213,7 +220,11 @@ async def _submit_support_ticket(
     )
     language = await db.get_language(user_id)
     await state.clear()
-    await message.answer(tr(language, "support_created"))
+    await message.answer(
+        _tagged(language, "support_created", ticket_id)
+        + "\n"
+        + tr(language, "support_thread_started", ticket=ticket_id)
+    )
     await _notify_admins(message, db, ticket_id, text)
 
 
@@ -365,13 +376,17 @@ async def show_ticket_history(callback: CallbackQuery, db: Database) -> None:
         ),
         messages="",
     ).strip()
+    header = f"{header} · {thread_tag(ticket_id)}"
     history = support_history(labelled_messages, header, "—")
     if callback.message:
         await safe_edit(
             callback,
             history,
             reply_markup=ticket_reply_keyboard(
-                language, ticket_id, back_target=f"support:tickets:{list_page}"
+                language,
+                ticket_id,
+                back_target=f"support:tickets:{list_page}",
+                can_reply=ticket["status"] == "open",
             ),
         )
     await callback.answer()
@@ -390,8 +405,13 @@ async def begin_ticket_reply(
         return
     ticket = await db.get_ticket(ticket_id)
     language = await db.get_language(callback.from_user.id)
-    if not ticket or ticket["status"] != "open":
+    if not ticket:
         await callback.answer(tr(language, "error_generic"), show_alert=True)
+        return
+    if ticket["status"] != "open":
+        await callback.answer(
+            tr(language, "support_ticket_closed", ticket=ticket_id), show_alert=True
+        )
         return
     if int(ticket["user_id"]) == callback.from_user.id:
         await state.update_data(ticket_id=ticket_id)
@@ -403,10 +423,80 @@ async def begin_ticket_reply(
         await callback.answer(tr(language, "admin_only"), show_alert=True)
         return
     if callback.message:
+        # The message that was answered no longer offers Reply, so the same
+        # notification cannot be answered twice.
+        try:
+            await callback.message.edit_reply_markup(
+                reply_markup=ticket_reply_keyboard(
+                    language, ticket_id, can_reply=False
+                )
+            )
+        except TelegramAPIError:
+            pass
         await callback.message.answer(
             tr(language, "support_reply_prompt", ticket=ticket_id)
         )
     await callback.answer()
+
+
+@router.callback_query(F.data.startswith("support:close:"))
+async def close_ticket_callback(
+    callback: CallbackQuery, db: Database
+) -> None:
+    """Close one conversation so it stops waiting for a reply."""
+    if not await _ensure_private(callback, db):
+        return
+    try:
+        ticket_id = int(callback.data.rsplit(":", 1)[1])
+    except (ValueError, AttributeError):
+        await callback.answer()
+        return
+    ticket = await db.get_ticket(ticket_id)
+    language = await db.get_language(callback.from_user.id)
+    if not ticket:
+        await callback.answer(tr(language, "error_generic"), show_alert=True)
+        return
+    recipients = await db.support_admin_recipients(ticket_id)
+    is_user = int(ticket["user_id"]) == callback.from_user.id
+    if not is_user and callback.from_user.id not in recipients:
+        await callback.answer(tr(language, "admin_only"), show_alert=True)
+        return
+    if not await db.close_ticket(ticket_id, callback.from_user.id):
+        await callback.answer(
+            tr(language, "support_ticket_closed", ticket=ticket_id), show_alert=True
+        )
+        return
+    if callback.message:
+        await safe_edit(
+            callback,
+            rich_message(
+                heading(
+                    tr(language, "support_thread_closed_title", ticket=ticket_id),
+                    size=2,
+                ),
+                paragraph(tr(language, "support_thread_closed_body")),
+                paragraph(thread_tag(ticket_id)),
+            ),
+        )
+    # Tell the other side that this conversation is over.
+    notices: list[int] = []
+    if is_user:
+        notices = recipients
+    else:
+        notices = [int(ticket["user_id"])]
+    for target_id in notices:
+        target_language = await db.get_language(target_id)
+        try:
+            await callback.bot.send_message(
+                target_id,
+                f"{tr(target_language, 'support_thread_closed_notice', ticket=ticket_id)}\n"
+                f"{thread_tag(ticket_id)}",
+            )
+        except TelegramAPIError:
+            continue
+    await callback.answer(
+        tr(language, "support_thread_closed_notice", ticket=ticket_id)
+    )
 
 
 @router.message(SupportFlow.user_reply)
@@ -420,10 +510,16 @@ async def user_ticket_reply(message: Message, state: FSMContext, db: Database) -
     ticket_id = int(data["ticket_id"])
     if not await db.add_ticket_message(ticket_id, message.from_user.id, text):
         await state.clear()
-        await message.answer(tr(language, "error_generic"))
+        await message.answer(
+            tr(language, "support_ticket_closed", ticket=ticket_id)
+        )
         return
     await state.clear()
-    await message.answer(tr(language, "support_created"))
+    await message.answer(
+        _tagged(language, "support_created", ticket_id)
+        + "\n"
+        + tr(language, "support_thread_started", ticket=ticket_id)
+    )
     await _notify_admins(message, db, ticket_id, text)
 
 
@@ -445,7 +541,9 @@ async def admin_ticket_reply(message: Message, state: FSMContext, db: Database) 
         ticket_id, message.from_user.id, text
     ):
         await state.clear()
-        await message.answer(tr(language, "error_generic"))
+        await message.answer(
+            tr(language, "support_ticket_closed", ticket=ticket_id)
+        )
         return
     await state.clear()
     user_language = ticket["language"]
@@ -468,4 +566,7 @@ async def admin_ticket_reply(message: Message, state: FSMContext, db: Database) 
         )
     except TelegramAPIError:
         pass
-    await message.answer(tr(language, "support_admin_reply_sent"))
+    await message.answer(
+        _tagged(language, "support_admin_reply_sent", ticket_id),
+        reply_markup=ticket_reply_keyboard(language, ticket_id, can_reply=False),
+    )
