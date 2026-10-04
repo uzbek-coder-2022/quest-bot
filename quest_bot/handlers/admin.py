@@ -22,7 +22,6 @@ from ..keyboards import (
     admin_panel,
     button,
     confirm_delete_quest_keyboard,
-    deleted_quest_keyboard,
     manage_chat_keyboard,
     managed_chats_keyboard,
     page_sizes_keyboard,
@@ -37,7 +36,6 @@ from ..rich_text import heading, paragraph, quote, rich_message
 from ..services import (
     answer_deep_link,
     notify_next_stage_ready,
-    send_stage_to_user,
 )
 from ..states import ModerationFlow, SuperadminFlow
 from ..utils import can_manage_quest, display_name, ensure_private_callback, safe_edit

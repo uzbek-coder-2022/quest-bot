@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -59,6 +60,17 @@ class LanguageTests(unittest.TestCase):
         for key, translations in TEXTS.items():
             with self.subTest(key=key):
                 self.assertEqual(translations["uzn"], yangi_uzbek(translations["uz"]))
+
+    def test_new_uzbek_keeps_the_format_placeholders(self) -> None:
+        placeholder = re.compile(r"\{[^{}]*\}")
+        for key, translations in TEXTS.items():
+            with self.subTest(key=key):
+                self.assertEqual(
+                    sorted(placeholder.findall(translations["uzn"])),
+                    sorted(placeholder.findall(translations["uz"])),
+                )
+        self.assertIn("{chat_id}", TEXTS["chat_id_result"]["uzn"])
+        self.assertIn("{chat}", TEXTS["quest_details"]["uzn"])
 
     def test_karakalpak_is_a_full_translation(self) -> None:
         translated = sum(

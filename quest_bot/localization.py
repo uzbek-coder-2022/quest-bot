@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 from .localization_kaa import KARAKALPAK_TEXTS
 
 # "uzn" is «Yangi o‘zbek» — the same Uzbek interface written with the letters
@@ -383,24 +385,40 @@ def tr(language: str | None, key: str, **values: object) -> str:
         return text
 
 
+_LETTER_SUBSTITUTIONS = (
+    ("O‘", "Ö"),
+    ("o‘", "ö"),
+    ("G‘", "Ğ"),
+    ("g‘", "ğ"),
+    ("SH", "Ş"),
+    ("Sh", "Ş"),
+    ("sh", "ş"),
+    ("CH", "Ç"),
+    ("Ch", "Ç"),
+    ("ch", "ç"),
+)
+
+# {chat} and {chat_id} are format placeholders, not prose: translating the "ch"
+# inside them would break tr()'s formatting, so they are copied unchanged.
+_PLACEHOLDER = re.compile(r"\{[^{}]*\}")
+
+
 def yangi_uzbek(text: str) -> str:
     """Rewrite Uzbek text with the four letters of «Yangi o‘zbek».
 
     Only o‘→ö, g‘→ğ, sh→ş, and ch→ç (both letter cases) change; every other
-    character, including punctuation and placeholders, is untouched.
+    character, including punctuation and {placeholders}, is untouched.
     """
-    return (
-        text.replace("O‘", "Ö")
-        .replace("o‘", "ö")
-        .replace("G‘", "Ğ")
-        .replace("g‘", "ğ")
-        .replace("SH", "Ş")
-        .replace("Sh", "Ş")
-        .replace("sh", "ş")
-        .replace("CH", "Ç")
-        .replace("Ch", "Ç")
-        .replace("ch", "ç")
-    )
+    parts = _PLACEHOLDER.split(text)
+    placeholders = _PLACEHOLDER.findall(text)
+    result: list[str] = []
+    for index, part in enumerate(parts):
+        for source, target in _LETTER_SUBSTITUTIONS:
+            part = part.replace(source, target)
+        result.append(part)
+        if index < len(placeholders):
+            result.append(placeholders[index])
+    return "".join(result)
 
 
 # Both extra languages are derived from the base dictionaries, so they always
