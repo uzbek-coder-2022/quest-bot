@@ -712,7 +712,8 @@ async def show_leaderboard(callback: CallbackQuery, db: Database) -> None:
             tr(
                 language,
                 "leaderboard_row",
-                rank=rank_label(rank),
+                # A medal marks a real result: at least one solved stage.
+                rank=rank_label(rank, int(item["solved"] or 0) > 0),
                 name=name,
                 solved=item["solved"],
                 status=_participant_status(language, item["status"]),
@@ -783,7 +784,7 @@ async def aggregate_leaderboard(callback: CallbackQuery, db: Database) -> None:
             tr(
                 language,
                 "aggregate_leaderboard_row",
-                rank=rank_label(rank),
+                rank=rank_label(rank, int(item["solved"] or 0) > 0),
                 name=name,
                 points=item["solved"],
                 completed=item["completed_quests"],

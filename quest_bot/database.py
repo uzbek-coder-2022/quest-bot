@@ -2256,20 +2256,38 @@ class Database:
     async def aggregate_leaderboard(
         self, start_at: str, end_at: str, limit: int = 30
     ) -> list[dict[str, Any]]:
-        """Rank players by correctly solved public-quest stages in a time window."""
+        """Rank players by correctly solved public-quest stages in a time window.
+
+        Solved stages decide the order; a tie is first broken by the number of
+        public quests the player completed in the window and then by how early
+        the earliest of those completions happened, so equal results are
+        settled by the finishing time instead of the name.
+        """
         async with self._connection() as connection:
             cursor = await connection.execute(
                 "SELECT ps.user_id,u.full_name,u.username,COUNT(DISTINCT ps.id) AS solved,"
                 "COUNT(DISTINCT CASE WHEN p.status='completed' AND p.completed_at>=? AND p.completed_at<? "
-                "THEN p.quest_id END) AS completed_quests "
+                "THEN p.quest_id END) AS completed_quests,"
+                "MIN(CASE WHEN p.status='completed' AND p.completed_at>=? AND p.completed_at<? "
+                "THEN p.completed_at END) AS first_completed_at "
                 "FROM participant_stages ps JOIN quests q ON q.id=ps.quest_id "
                 "JOIN users u ON u.telegram_id=ps.user_id "
                 "LEFT JOIN quest_participants p ON p.quest_id=ps.quest_id AND p.user_id=ps.user_id "
                 "WHERE q.visibility='public' AND q.deleted=0 AND ps.status='correct' "
                 "AND ps.completed_at>=? AND ps.completed_at<? "
                 "GROUP BY ps.user_id,u.full_name,u.username "
-                "ORDER BY solved DESC,completed_quests DESC,u.full_name,ps.user_id LIMIT ?",
-                (start_at, end_at, start_at, end_at, max(1, min(int(limit), 100))),
+                "ORDER BY solved DESC,completed_quests DESC,"
+                "CASE WHEN first_completed_at IS NULL THEN 1 ELSE 0 END,first_completed_at,"
+                "u.full_name,ps.user_id LIMIT ?",
+                (
+                    start_at,
+                    end_at,
+                    start_at,
+                    end_at,
+                    start_at,
+                    end_at,
+                    max(1, min(int(limit), 100)),
+                ),
             )
             return [dict(row) for row in await cursor.fetchall()]
 

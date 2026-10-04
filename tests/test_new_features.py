@@ -752,6 +752,14 @@ class RankMedalTests(unittest.TestCase):
             ["🥇 1", "🥈 2", "🥉 3", "🏅 4", "🎖 5", "6"],
         )
 
+    def test_a_participant_without_a_solved_stage_gets_no_medal(self) -> None:
+        # Solving nothing yet keeps the rank number but earns no medal.
+        self.assertEqual(
+            [rank_label(rank, medals=False) for rank in range(1, 7)],
+            ["1", "2", "3", "4", "5", "6"],
+        )
+        self.assertEqual(rank_label(2), "🥈 2")
+
 
 class QuestPageButtonTests(unittest.TestCase):
     def test_participant_notices_link_back_to_the_quest(self) -> None:
@@ -1267,6 +1275,77 @@ class QuestDurationEditTests(unittest.IsolatedAsyncioTestCase):
         await quest_duration_received(message, state, db)
 
         self.assertEqual(db.updated, [(17, 0)])
+
+
+class LeaderboardMedalTests(unittest.IsolatedAsyncioTestCase):
+    """A rating shows medals only for participants who solved a stage."""
+
+    class Db:
+        async def get_language(self, user_id: int) -> str:
+            return "en"
+
+        async def get_role(self, user_id: int) -> str:
+            return "user"
+
+        async def get_quest(self, quest_id: int) -> dict:
+            return {"id": quest_id, "owner_id": 5, "visibility": "public", "title": "Night Quest"}
+
+        async def participant(self, quest_id: int, user_id: int):
+            return None
+
+        async def leaderboard(self, quest_id: int):
+            return [
+                {
+                    "user_id": 20,
+                    "full_name": "Newcomer",
+                    "status": "active",
+                    "solved": 0,
+                    "completed_at": None,
+                    "joined_at": "2026-10-01T09:00:00+00:00",
+                },
+                {
+                    "user_id": 21,
+                    "full_name": "Winner",
+                    "status": "completed",
+                    "solved": 2,
+                    "completed_at": "2026-10-01T11:00:00+00:00",
+                    "joined_at": "2026-10-01T09:05:00+00:00",
+                },
+                {
+                    "user_id": 22,
+                    "full_name": "Medal Three",
+                    "status": "completed",
+                    "solved": 1,
+                    "completed_at": "2026-10-01T12:00:00+00:00",
+                    "joined_at": "2026-10-01T09:10:00+00:00",
+                },
+            ]
+
+    async def test_the_empty_result_is_shown_as_a_plain_rank(self) -> None:
+        callback = SimpleNamespace(
+            data="rating:show:17:manage",
+            from_user=SimpleNamespace(id=9),
+            message=SimpleNamespace(
+                chat=SimpleNamespace(type="private"), edit_text=AsyncMock()
+            ),
+            answer=AsyncMock(),
+        )
+
+        await show_leaderboard(callback, self.Db())
+
+        text = json.dumps(
+            callback.message.edit_text.await_args.kwargs[
+                "rich_message"
+            ].model_dump(mode="json"),
+            ensure_ascii=False,
+        )
+        # The first place solved nothing, so it has no medal at all.
+        self.assertIn("1. Newcomer", text)
+        self.assertNotIn("🥇 1", text)
+        # The later places still carry their medal and the completion time.
+        self.assertIn("🥈 2. Winner", text)
+        self.assertIn("🥉 3. Medal Three", text)
+        self.assertIn("2026-10-01 16:00", text)
 
 
 class BackButtonAuditTests(unittest.IsolatedAsyncioTestCase):

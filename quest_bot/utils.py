@@ -96,12 +96,14 @@ def quest_end_at(quest: dict) -> str | None:
 RANK_MEDALS = ("🥇", "🥈", "🥉", "🏅", "🎖")
 
 
-def rank_label(rank: int) -> str:
+def rank_label(rank: int, medals: bool = True) -> str:
     """Prefix the first five ranks with their medal, e.g. ``🥇 1``.
 
-    Every other rank stays a plain number so long lists remain readable.
+    Every other rank stays a plain number so long lists remain readable. A
+    participant who has not solved a single stage yet earns no medal, so the
+    caller passes ``medals=False`` for them; the rank number itself is kept.
     """
-    if 1 <= rank <= len(RANK_MEDALS):
+    if medals and 1 <= rank <= len(RANK_MEDALS):
         return f"{RANK_MEDALS[rank - 1]} {rank}"
     return str(rank)
 
