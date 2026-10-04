@@ -20,6 +20,7 @@ from quest_bot.handlers.creation import (
 )
 from quest_bot.handlers.quests import (
     _leaderboard_back_target,
+    _notify_answer_reviewers,
     _parse_quest_card,
     _process_answer,
     aggregate_leaderboard,
@@ -52,11 +53,13 @@ from quest_bot.handlers.admin import (
     confirm_quest_purge,
     purge_quest_confirmed,
     remove_whitelist,
+    review_answer,
     show_admin_detail,
     show_admin_quests,
     show_admins_page,
     show_chat,
     show_logs,
+    show_pending_answers,
     show_managed_chats_page,
 )
 from quest_bot.handlers.creation import duration_received, start_time_received
@@ -1346,6 +1349,252 @@ class LeaderboardMedalTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("🥈 2. Winner", text)
         self.assertIn("🥉 3. Medal Three", text)
         self.assertIn("2026-10-01 16:00", text)
+
+
+class ManualReviewFlowTests(unittest.IsolatedAsyncioTestCase):
+    """The manual review of one answer, from the notice to the decision."""
+
+    class Db:
+        def __init__(
+            self,
+            role: str = "admin",
+            owner_id: int = 5,
+            pending: dict | None = None,
+            paused: bool = False,
+            result: dict | None = None,
+        ) -> None:
+            self.role = role
+            self.owner_id = owner_id
+            self.pending = pending
+            self.paused = paused
+            self.result = result
+            self.reviews = []
+            self.logs = []
+            self.notices = []
+
+        async def get_language(self, user_id: int) -> str:
+            return "en"
+
+        async def get_role(self, user_id: int) -> str:
+            return self.role
+
+        async def get_quest(self, quest_id: int) -> dict:
+            return {
+                "id": quest_id,
+                "owner_id": self.owner_id,
+                "visibility": "public",
+                "title": "Night Quest",
+                "status": "active",
+                "paused_at": "2026-10-01T10:00:00+00:00" if self.paused else None,
+            }
+
+        async def get_user(self, user_id: int) -> dict:
+            return {"full_name": "Player One", "username": "player"}
+
+        async def list_admins(self) -> list[dict]:
+            return [
+                {"telegram_id": 1, "role": "superadmin"},
+                {"telegram_id": 5, "role": "admin"},
+            ]
+
+        async def pending_answers(self, quest_id: int) -> list[dict]:
+            return [self.pending] if self.pending else []
+
+        async def get_pending_answer(self, answer_id: int):
+            return self.pending
+
+        async def review_answer(self, answer_id: int, reviewer_id: int, accepted: bool, now: str) -> dict:
+            self.reviews.append((answer_id, reviewer_id, accepted))
+            if self.paused:
+                return {"code": "paused", "quest_title": "Night Quest"}
+            if self.pending is None:
+                return {"code": "not_pending"}
+            self.pending = None
+            return dict(
+                {"code": "reviewed", "accepted": accepted, "user_id": 20, "quest_id": 17},
+                **(self.result or {}),
+            )
+
+        async def log_action(self, actor_id, action: str, entity: str, entity_id: int, details=None) -> None:
+            self.logs.append((actor_id, action, entity, entity_id, details))
+
+        async def maybe_complete_quest(self, quest_id: int) -> None:
+            self.completed = getattr(self, "completed", []) + [quest_id]
+
+    class Bot:
+        def __init__(self) -> None:
+            self.messages: list[tuple[int, str, object]] = []
+            self.rich: list[tuple[int, object, object]] = []
+
+        async def send_message(self, chat_id: int, text: str, **kwargs) -> None:
+            self.messages.append((chat_id, text, kwargs.get("reply_markup")))
+
+        async def send_rich_message(self, chat_id: int, rich_message, **kwargs) -> None:
+            self.rich.append((chat_id, rich_message, kwargs.get("reply_markup")))
+
+    def _callback(self, data: str, user_id: int = 5):
+        message = SimpleNamespace(
+            chat=SimpleNamespace(type="private"),
+            edit_reply_markup=AsyncMock(),
+            answer=AsyncMock(),
+        )
+        return SimpleNamespace(
+            data=data,
+            from_user=SimpleNamespace(id=user_id),
+            message=message,
+            answer=AsyncMock(),
+        )
+
+    def _pending(self) -> dict:
+        return {
+            "answer_id": 31,
+            "quest_id": 17,
+            "user_id": 20,
+            "stage_order": 2,
+            "answer_text": "The bridge at dawn",
+            "full_name": "Player One",
+            "username": "player",
+        }
+
+    async def test_the_notice_goes_to_the_owner_and_every_superadmin(self) -> None:
+        bot = self.Bot()
+        message = SimpleNamespace(
+            from_user=SimpleNamespace(id=20), bot=bot
+        )
+        db = self.Db(pending=self._pending())
+
+        await _notify_answer_reviewers(
+            message, db, await db.get_quest(17), 31, "The bridge at dawn"
+        )
+
+        self.assertEqual({chat for chat, _, _ in bot.messages}, {5, 1})
+        text = bot.messages[0][1]
+        self.assertIn("Player One", text)
+        self.assertIn("Night Quest", text)
+        self.assertIn("stage 2", text)
+        self.assertIn("The bridge at dawn", text)
+        codes = [
+            item.callback_data
+            for row in bot.messages[0][2].inline_keyboard
+            for item in row
+        ]
+        self.assertEqual(codes, ["review:31:yes", "review:31:no", "admin:home"])
+
+    async def test_the_pending_screen_lists_answers_with_review_controls(self) -> None:
+        bot = self.Bot()
+        callback = self._callback("manage:pending:17")
+        db = self.Db(pending=self._pending())
+
+        await show_pending_answers(callback, db, bot)
+
+        self.assertEqual([chat for chat, _, _ in bot.rich], [5])
+        body = json.dumps(
+            bot.rich[0][1].model_dump(mode="json"), ensure_ascii=False
+        )
+        self.assertIn("Player One, stage 2", body)
+        self.assertIn("The bridge at dawn", body)
+        codes = [
+            item.callback_data for row in bot.rich[0][2].inline_keyboard for item in row
+        ]
+        self.assertEqual(
+            codes,
+            ["review:31:yes", "review:31:no", "manage:quest:17", "admin:home"],
+        )
+
+    async def test_an_empty_pending_screen_says_so(self) -> None:
+        bot = self.Bot()
+        callback = self._callback("manage:pending:17")
+
+        await show_pending_answers(callback, self.Db(), bot)
+
+        self.assertEqual(bot.messages, [])
+        self.assertEqual(
+            callback.message.answer.await_args.args[0],
+            TEXTS["no_pending"]["en"],
+        )
+
+    async def test_an_outsider_cannot_review_an_answer(self) -> None:
+        bot = self.Bot()
+        callback = self._callback("review:31:yes", user_id=9)
+        db = self.Db(role="user", pending=self._pending())
+
+        await review_answer(callback, db, bot)
+
+        self.assertEqual(db.reviews, [])
+        self.assertEqual(bot.messages, [])
+        self.assertTrue(callback.answer.await_args.kwargs["show_alert"])
+
+    async def test_approving_notifies_the_participant_and_removes_the_buttons(self) -> None:
+        bot = self.Bot()
+        callback = self._callback("review:31:yes")
+        db = self.Db(
+            pending=self._pending(),
+            result={"final": True, "participant_status": "active"},
+        )
+
+        await review_answer(callback, db, bot)
+
+        self.assertEqual(db.reviews, [(31, 5, True)])
+        self.assertEqual(db.logs, [(5, "answer.reviewed", "answer", 31, {"accepted": True})])
+        texts = [text for chat, text, _ in bot.messages if chat == 20]
+        self.assertEqual(
+            texts[0],
+            TEXTS["review_to_user"]["en"].format(
+                result=TEXTS["correct_result"]["en"]
+            ),
+        )
+        self.assertEqual(texts[1], TEXTS["correct_done"]["en"])
+        callback.message.edit_reply_markup.assert_awaited()
+        self.assertIn(
+            TEXTS["review_approved"]["en"], callback.answer.await_args.args[0]
+        )
+
+    async def test_rejecting_spends_an_attempt_and_warns_about_exhaustion(self) -> None:
+        bot = self.Bot()
+        callback = self._callback("review:31:no")
+        db = self.Db(pending=self._pending(), result={"remaining": 1})
+
+        await review_answer(callback, db, bot)
+
+        texts = [text for chat, text, _ in bot.messages if chat == 20]
+        self.assertEqual(
+            texts[1], TEXTS["wrong_answer"]["en"].format(remaining=1)
+        )
+
+        exhausted_bot = self.Bot()
+        exhausted = self.Db(
+            pending=self._pending(), result={"exhausted": True, "remaining": 0}
+        )
+        await review_answer(self._callback("review:31:no"), exhausted, exhausted_bot)
+        texts = [text for chat, text, _ in exhausted_bot.messages if chat == 20]
+        self.assertEqual(texts[1], TEXTS["attempts_exhausted"]["en"])
+
+    async def test_a_paused_quest_refuses_the_review_and_keeps_it_pending(self) -> None:
+        bot = self.Bot()
+        callback = self._callback("review:31:yes")
+        db = self.Db(pending=self._pending(), paused=True)
+
+        await review_answer(callback, db, bot)
+
+        self.assertIsNotNone(db.pending)
+        self.assertEqual(bot.messages, [])
+        self.assertEqual(
+            callback.answer.await_args.args[0], TEXTS["quest_paused_notice"]["en"]
+        )
+
+    async def test_a_second_decision_is_refused(self) -> None:
+        bot = self.Bot()
+        callback = self._callback("review:31:yes")
+        db = self.Db(pending=self._pending(), result={"final": False})
+        await review_answer(callback, db, bot)
+
+        second = self._callback("review:31:no")
+        await review_answer(second, db, bot)
+
+        self.assertEqual(db.reviews, [(31, 5, True)])
+        self.assertEqual(
+            second.answer.await_args.args[0], TEXTS["no_pending"]["en"]
+        )
 
 
 class BackButtonAuditTests(unittest.IsolatedAsyncioTestCase):
