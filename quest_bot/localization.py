@@ -390,6 +390,7 @@ TEXTS: dict[str, dict[str, str]] = {
     "admin_message_heading": {"uz": "📩 Bosh administrator xabari", "ru": "📩 Сообщение от суперадминистратора", "en": "📩 Message from the superadmin"},
     "logs_terminal_hint": {"uz": "🖥 Oxirgi {count} yozuv · yangilash uchun «{button}» tugmasini bosing.", "ru": "🖥 Последние {count} записей · нажмите «{button}», чтобы обновить.", "en": "🖥 Last {count} entries · press “{button}” to refresh."},
     "btn_refresh": {"uz": "🔄 Yangilash", "ru": "🔄 Обновить", "en": "🔄 Refresh"},
+    "no_admins": {"uz": "📭 Administratorlar yo‘q.", "ru": "📭 Администраторов пока нет.", "en": "📭 No administrators yet."},
 }
 
 

@@ -20,8 +20,10 @@ from quest_bot.handlers.creation import (
 from quest_bot.handlers.quests import (
     _process_answer,
     aggregate_leaderboard,
+    leaderboard_quest_list,
     manage_quest_callback,
     participant_answer,
+    ratings_overview,
     show_leaderboard,
 )
 from quest_bot.keyboards import (
@@ -33,6 +35,7 @@ from quest_bot.keyboards import (
     deleted_quest_keyboard,
     language_keyboard,
     main_menu,
+    managed_chats_keyboard,
     open_quest_keyboard,
     quest_detail,
 )
@@ -41,12 +44,19 @@ from quest_bot.handlers.admin import (
     confirm_quest_purge,
     purge_quest_confirmed,
     show_admin_quests,
+    show_admins_page,
     show_logs,
+    show_managed_chats_page,
 )
 from quest_bot.handlers.creation import start_time_received
-from quest_bot.handlers.support import pending_text_as_ticket
+from quest_bot.handlers.support import (
+    list_my_tickets_page,
+    open_support_page,
+    pending_text_as_ticket,
+)
 from quest_bot.localization import LANGUAGES, TEXTS, yangi_uzbek
 from quest_bot.states import CreateQuest
+from quest_bot.services import answer_button
 from quest_bot.utils import rank_label
 
 
@@ -316,6 +326,49 @@ class DatabaseFeatureTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             (await self.db.join_quest(quest_id, 22, None, utc_now()))["code"], "closed"
         )
+
+    async def test_paged_button_lists_share_one_page_size_setting(self) -> None:
+        await self.db.add_admin(30, 1)
+        await self.db.add_admin(31, 1)
+        admins, total = await self.db.list_admins_page(0, 2)
+        self.assertEqual(total, 3)
+        self.assertEqual(len(admins), 2)
+        second, total = await self.db.list_admins_page(1, 2)
+        self.assertEqual(total, 3)
+        self.assertEqual([admin["telegram_id"] for admin in second], [31])
+        # An out-of-range page is clamped to the last one.
+        clamped, _ = await self.db.list_admins_page(99, 2)
+        self.assertEqual([admin["telegram_id"] for admin in clamped], [31])
+
+        for index in range(3):
+            await self.db.create_ticket(20, None, None, f"message {index}")
+        tickets, ticket_total, page = await self.db.user_tickets_page(20, 1, 2)
+        self.assertEqual(ticket_total, 3)
+        self.assertEqual(page, 1)
+        self.assertEqual(len(tickets), 1)
+
+        await self.db.register_chat(-1001, "Group A", "supergroup", 1)
+        await self.db.register_chat(-1002, "Group B", "supergroup", 1)
+        chats, chat_total, chat_page = await self.db.managed_chats_page(0, 1)
+        self.assertEqual((chat_total, chat_page, len(chats)), (2, 0, 1))
+
+        await self.db.add_chat_whitelist(-1001, 20, 1)
+        await self.db.add_chat_whitelist(-1001, 21, 1)
+        self.assertEqual(await self.db.chat_whitelist_count(-1001), 2)
+        first_page = await self.db.chat_whitelist(-1001, 0, 1)
+        self.assertEqual([item["user_id"] for item in first_page], [20])
+        self.assertEqual(await self.db.chat_whitelist_count(-1002), 0)
+
+        quest_id = await self.create_quest()
+        await self.db.set_quest_status(quest_id, "active")
+        await self.db.join_quest(quest_id, 20, None, utc_now())
+        self.assertEqual(await self.db.support_quest_count(20), 1)
+        self.assertEqual(
+            (await self.db.support_quest_for_user(quest_id, 20))["owner_id"], 1
+        )
+        self.assertIsNone(await self.db.support_quest_for_user(quest_id, 21))
+        page = await self.db.support_quests_for_user(20, 0, 10)
+        self.assertEqual([item["id"] for item in page], [quest_id])
 
     async def test_new_start_time_shifts_the_scheduled_stages(self) -> None:
         quest_id = await self.create_quest(progression="scheduled")
@@ -1104,6 +1157,305 @@ class StartLeadTimeTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn("start_at", state.data)
         self.assertEqual(state.current_state, CreateQuest.duration)
+
+
+class ListPaginationTests(unittest.TestCase):
+    def test_admin_list_paginates_with_the_configured_page_size(self) -> None:
+        admins = [
+            {"telegram_id": user_id, "role": "admin", "full_name": f"Admin {user_id}"}
+            for user_id in range(1, 11)
+        ]
+        first = admin_list_keyboard("en", admins, 0, 10).inline_keyboard
+        # Ten administrator rows, one navigation row, Add, and the home button.
+        self.assertEqual(len(first), 13)
+        self.assertEqual(first[-1][0].callback_data, "admin:home")
+
+        codes = [button.callback_data for row in first for button in row]
+        self.assertIn("super:admins:1", codes)
+        self.assertNotIn("super:admins:-1", codes)
+
+        last = admin_list_keyboard("en", admins[:3], 1, 10).inline_keyboard
+        codes = [button.callback_data for row in last for button in row]
+        self.assertIn("super:admins:0", codes)
+        self.assertNotIn("super:admins:2", codes)
+
+    def test_chat_list_paginates(self) -> None:
+        chats = [{"chat_id": index, "title": f"Chat {index}"} for index in range(1, 11)]
+        codes = [
+            button.callback_data
+            for row in managed_chats_keyboard("en", chats, 0, 10).inline_keyboard
+            for button in row
+        ]
+        self.assertIn("super:chats:1", codes)
+
+        codes = [
+            button.callback_data
+            for row in managed_chats_keyboard("en", chats[:2], 1, 10).inline_keyboard
+            for button in row
+        ]
+        self.assertIn("super:chats:0", codes)
+        self.assertNotIn("super:chats:2", codes)
+
+
+class AnswerButtonTests(unittest.TestCase):
+    def test_main_menu_button_sits_under_the_answer_button(self) -> None:
+        markup = answer_button("en", "https://t.me/quest_bot?start=play_7", "quest_bot")
+        self.assertEqual(len(markup.inline_keyboard), 2)
+        self.assertEqual(markup.inline_keyboard[0][0].text, TEXTS["btn_answer_privately"]["en"])
+        self.assertEqual(markup.inline_keyboard[0][0].url, "https://t.me/quest_bot?start=play_7")
+        self.assertEqual(markup.inline_keyboard[1][0].text, TEXTS["btn_home"]["en"])
+        self.assertEqual(markup.inline_keyboard[1][0].url, "https://t.me/quest_bot")
+
+
+class UserFacingRatingsTests(unittest.IsolatedAsyncioTestCase):
+    """User-facing ratings never show the Administrator panel button."""
+
+    class Db:
+        def __init__(self, role: str = "superadmin", owner_id: int = 9) -> None:
+            self.role = role
+            self.owner_id = owner_id
+
+        async def get_language(self, user_id: int) -> str:
+            return "en"
+
+        async def get_role(self, user_id: int) -> str:
+            return self.role
+
+        async def get_quest(self, quest_id: int) -> dict:
+            return {
+                "id": quest_id,
+                "owner_id": self.owner_id,
+                "visibility": "public",
+                "title": "Night Quest",
+            }
+
+        async def participant(self, quest_id: int, user_id: int):
+            return None
+
+        async def leaderboard(self, quest_id: int):
+            return []
+
+        async def aggregate_leaderboard(self, start_at, end_at, limit=30):
+            return []
+
+        async def list_public_quests(self, status, offset, limit):
+            return []
+
+        async def list_manageable_quests(
+            self, requester_id, is_superadmin, status, offset, limit, deleted=False
+        ):
+            return []
+
+        async def settings_get(self, key: str, default: str) -> str:
+            return "10"
+
+    def _callback(self, data: str, chat_type: str = "private"):
+        message = SimpleNamespace(
+            chat=SimpleNamespace(type=chat_type), edit_text=AsyncMock()
+        )
+        return SimpleNamespace(
+            data=data,
+            from_user=SimpleNamespace(id=9),
+            message=message,
+            answer=AsyncMock(),
+        )
+
+    async def test_overview_of_a_superadmin_offers_the_main_menu_only(self) -> None:
+        callback = self._callback("ratings:overview")
+        await ratings_overview(callback, self.Db())
+
+        codes = [
+            button.callback_data
+            for row in callback.message.edit_text.await_args.kwargs[
+                "reply_markup"
+            ].inline_keyboard
+            for button in row
+        ]
+        self.assertIn("menu:home", codes)
+        self.assertNotIn("admin:home", codes)
+        self.assertNotIn("ratings:list:managed:0", codes)
+
+    async def test_aggregate_leaderboard_returns_to_the_main_menu(self) -> None:
+        callback = self._callback("ratings:period:week")
+        await aggregate_leaderboard(callback, self.Db())
+
+        codes = [
+            button.callback_data
+            for row in callback.message.edit_text.await_args.kwargs[
+                "reply_markup"
+            ].inline_keyboard
+            for button in row
+        ]
+        self.assertEqual(codes, ["ratings:overview", "menu:home"])
+
+    async def test_quest_rating_opened_from_a_card_returns_to_the_main_menu(self) -> None:
+        callback = self._callback("rating:show:17:card:browse")
+        await show_leaderboard(callback, self.Db())
+
+        codes = [
+            button.callback_data
+            for row in callback.message.edit_text.await_args.kwargs[
+                "reply_markup"
+            ].inline_keyboard
+            for button in row
+        ]
+        self.assertEqual(codes, ["quest:view:17", "quest:view:17", "menu:home"])
+
+    async def test_quest_rating_opened_from_the_admin_side_keeps_the_panel_button(
+        self,
+    ) -> None:
+        callback = self._callback("rating:show:17:manage")
+        await show_leaderboard(callback, self.Db())
+
+        codes = [
+            button.callback_data
+            for row in callback.message.edit_text.await_args.kwargs[
+                "reply_markup"
+            ].inline_keyboard
+            for button in row
+        ]
+        self.assertEqual(codes, ["manage:quest:17", "manage:quest:17", "admin:home"])
+
+    async def test_public_ratings_list_has_no_admin_panel_button(self) -> None:
+        callback = self._callback("ratings:list:all:0")
+        await leaderboard_quest_list(callback, self.Db())
+
+        codes = [
+            button.callback_data
+            for row in callback.message.edit_text.await_args.kwargs[
+                "reply_markup"
+            ].inline_keyboard
+            for button in row
+        ]
+        self.assertIn("menu:home", codes)
+        self.assertNotIn("admin:home", codes)
+
+        managed = self._callback("ratings:list:managed:0")
+        await leaderboard_quest_list(managed, self.Db())
+        codes = [
+            button.callback_data
+            for row in managed.message.edit_text.await_args.kwargs[
+                "reply_markup"
+            ].inline_keyboard
+            for button in row
+        ]
+        self.assertIn("admin:home", codes)
+        self.assertNotIn("menu:home", codes)
+
+
+class PaginatedListHandlerTests(unittest.IsolatedAsyncioTestCase):
+    class Db:
+        def __init__(self) -> None:
+            self.calls: list[tuple] = []
+
+        async def get_language(self, user_id: int) -> str:
+            return "en"
+
+        async def get_role(self, user_id: int) -> str:
+            return "superadmin"
+
+        async def settings_get(self, key: str, default: str) -> str:
+            return "10"
+
+        async def list_admins_page(self, page: int, page_size: int):
+            self.calls.append(("admins", page, page_size))
+            return (
+                [
+                    {
+                        "telegram_id": user_id,
+                        "role": "admin",
+                        "full_name": f"Admin {user_id}",
+                    }
+                    for user_id in range(1, 11)
+                ],
+                12,
+            )
+
+        async def managed_chats_page(self, page: int, page_size: int):
+            self.calls.append(("chats", page, page_size))
+            return (
+                [
+                    {"chat_id": -100 - index, "title": f"Group {index}"}
+                    for index in range(1, 11)
+                ],
+                12,
+                page,
+            )
+
+        async def user_tickets_page(self, user_id: int, page: int, page_size: int):
+            self.calls.append(("tickets", user_id, page, page_size))
+            return (
+                [{"id": 5 + index, "status": "open"} for index in range(10)],
+                12,
+                page,
+            )
+
+        async def support_quest_count(self, user_id: int) -> int:
+            return 12
+
+        async def support_quests_for_user(self, user_id: int, page: int = 0, page_size: int = 1000):
+            self.calls.append(("support", user_id, page, page_size))
+            return [
+                {"id": 7 + index, "title": f"Quest {index}", "owner_id": 5}
+                for index in range(10)
+            ]
+
+    def _callback(self, data: str):
+        message = SimpleNamespace(
+            chat=SimpleNamespace(type="private"), edit_text=AsyncMock()
+        )
+        return SimpleNamespace(
+            data=data,
+            from_user=SimpleNamespace(id=1),
+            message=message,
+            answer=AsyncMock(),
+        )
+
+    async def test_admin_list_uses_the_configured_page_size(self) -> None:
+        db = self.Db()
+        callback = self._callback("super:admins:1")
+        await show_admins_page(callback, db)
+
+        self.assertEqual(db.calls, [("admins", 1, 10)])
+        markup = callback.message.edit_text.await_args.kwargs["reply_markup"]
+        codes = [button.callback_data for row in markup.inline_keyboard for button in row]
+        self.assertIn("super:admins:0", codes)
+        self.assertIn("super:admins:2", codes)
+        self.assertEqual(codes[-1], "admin:home")
+
+    async def test_chat_list_pages_through_registered_chats(self) -> None:
+        db = self.Db()
+        callback = self._callback("super:chats:1")
+        await show_managed_chats_page(callback, db)
+
+        self.assertEqual(db.calls, [("chats", 1, 10)])
+        markup = callback.message.edit_text.await_args.kwargs["reply_markup"]
+        codes = [button.callback_data for row in markup.inline_keyboard for button in row]
+        self.assertIn("super:chats:0", codes)
+        self.assertIn("super:chats:2", codes)
+
+    async def test_ticket_list_pages_through_a_users_tickets(self) -> None:
+        db = self.Db()
+        callback = self._callback("support:tickets:1")
+        await list_my_tickets_page(callback, db)
+
+        self.assertEqual(db.calls, [("tickets", 1, 1, 10)])
+        markup = callback.message.edit_text.await_args.kwargs["reply_markup"]
+        codes = [button.callback_data for row in markup.inline_keyboard for button in row]
+        self.assertIn("support:tickets:0", codes)
+        self.assertIn("support:tickets:2", codes)
+        self.assertIn("support:open", codes)
+
+    async def test_support_screen_pages_through_the_users_quests(self) -> None:
+        db = self.Db()
+        callback = self._callback("support:open:1")
+        await open_support_page(callback, db)
+
+        self.assertEqual(db.calls, [("support", 1, 1, 10)])
+        markup = callback.message.edit_text.await_args.kwargs["reply_markup"]
+        codes = [button.callback_data for row in markup.inline_keyboard for button in row]
+        self.assertIn("support:open:0", codes)
+        self.assertIn("support:open:2", codes)
 
 
 if __name__ == "__main__":

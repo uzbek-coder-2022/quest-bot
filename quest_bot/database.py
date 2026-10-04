@@ -500,6 +500,25 @@ class Database:
             )
             return [dict(row) for row in await cursor.fetchall()]
 
+    async def list_admins_page(
+        self, offset: int, limit: int
+    ) -> tuple[list[dict[str, Any]], int]:
+        """Return one stable page of administrators plus the total count."""
+        limit = max(1, int(limit))
+        async with self._connection() as connection:
+            cursor = await connection.execute("SELECT COUNT(*) AS total FROM admins")
+            total = int((await cursor.fetchone())["total"])
+            last_page = max(0, (total - 1) // limit)
+            page = min(max(0, int(offset)), last_page)
+            cursor = await connection.execute(
+                "SELECT a.telegram_id, a.role, a.added_by, a.created_at, u.username, u.full_name "
+                "FROM admins a LEFT JOIN users u ON u.telegram_id=a.telegram_id "
+                "ORDER BY CASE a.role WHEN 'superadmin' THEN 0 ELSE 1 END, a.created_at "
+                "LIMIT ? OFFSET ?",
+                (limit, page * limit),
+            )
+            return [dict(row) for row in await cursor.fetchall()], total
+
     async def add_admin(self, user_id: int, actor_id: int) -> bool:
         now = utc_now()
         async with self._connection() as connection:
@@ -2264,6 +2283,26 @@ class Database:
             cursor = await connection.execute("SELECT * FROM managed_chats ORDER BY title COLLATE NOCASE")
             return [dict(row) for row in await cursor.fetchall()]
 
+    async def managed_chats_page(
+        self, page: int, page_size: int
+    ) -> tuple[list[dict[str, Any]], int, int]:
+        """Return one page of registered chats with its total and page index."""
+        page_size = max(1, min(int(page_size), 100))
+        async with self._connection() as connection:
+            cursor = await connection.execute("SELECT COUNT(*) AS total FROM managed_chats")
+            total = int((await cursor.fetchone())["total"])
+            last_page = max(0, (total - 1) // page_size)
+            current_page = min(max(0, int(page)), last_page)
+            cursor = await connection.execute(
+                "SELECT * FROM managed_chats ORDER BY title COLLATE NOCASE LIMIT ? OFFSET ?",
+                (page_size, current_page * page_size),
+            )
+            return (
+                [dict(row) for row in await cursor.fetchall()],
+                total,
+                current_page,
+            )
+
     async def get_managed_chat(self, chat_id: int) -> dict[str, Any] | None:
         async with self._connection() as connection:
             cursor = await connection.execute("SELECT * FROM managed_chats WHERE chat_id=?", (chat_id,))
@@ -2292,12 +2331,25 @@ class Database:
             await connection.commit()
             return bool(new_value)
 
-    async def chat_whitelist(self, chat_id: int) -> list[dict[str, Any]]:
+    async def chat_whitelist(
+        self, chat_id: int, page: int = 0, page_size: int = 1000
+    ) -> list[dict[str, Any]]:
+        page_size = max(1, min(int(page_size), 1000))
         async with self._connection() as connection:
             cursor = await connection.execute(
-                "SELECT * FROM chat_whitelist WHERE chat_id=? ORDER BY user_id", (chat_id,)
+                "SELECT * FROM chat_whitelist WHERE chat_id=? ORDER BY user_id "
+                "LIMIT ? OFFSET ?",
+                (chat_id, page_size, max(0, int(page)) * page_size),
             )
             return [dict(row) for row in await cursor.fetchall()]
+
+    async def chat_whitelist_count(self, chat_id: int) -> int:
+        """Count the whitelisted users of one managed chat."""
+        async with self._connection() as connection:
+            cursor = await connection.execute(
+                "SELECT COUNT(*) AS n FROM chat_whitelist WHERE chat_id=?", (chat_id,)
+            )
+            return int((await cursor.fetchone())["n"])
 
     async def add_chat_whitelist(self, chat_id: int, user_id: int, actor_id: int) -> bool:
         async with self._connection() as connection:
@@ -2436,6 +2488,30 @@ class Database:
             )
             return [dict(row) for row in await cursor.fetchall()]
 
+    async def user_tickets_page(
+        self, user_id: int, page: int, page_size: int
+    ) -> tuple[list[dict[str, Any]], int, int]:
+        """Return one page of a user's support tickets."""
+        page_size = max(1, min(int(page_size), 100))
+        async with self._connection() as connection:
+            cursor = await connection.execute(
+                "SELECT COUNT(*) AS total FROM support_tickets WHERE user_id=?",
+                (user_id,),
+            )
+            total = int((await cursor.fetchone())["total"])
+            last_page = max(0, (total - 1) // page_size)
+            current_page = min(max(0, int(page)), last_page)
+            cursor = await connection.execute(
+                "SELECT * FROM support_tickets WHERE user_id=? "
+                "ORDER BY updated_at DESC LIMIT ? OFFSET ?",
+                (user_id, page_size, current_page * page_size),
+            )
+            return (
+                [dict(row) for row in await cursor.fetchall()],
+                total,
+                current_page,
+            )
+
     async def support_admin_recipients(self, ticket_id: int) -> list[int]:
         ticket = await self.get_ticket(ticket_id)
         if not ticket:
@@ -2450,14 +2526,41 @@ class Database:
                 cursor = await connection.execute("SELECT telegram_id FROM admins WHERE role='superadmin'")
             return [int(row["telegram_id"]) for row in await cursor.fetchall()]
 
-    async def support_quests_for_user(self, user_id: int) -> list[dict[str, Any]]:
+    async def support_quests_for_user(
+        self, user_id: int, page: int = 0, page_size: int = 1000
+    ) -> list[dict[str, Any]]:
+        page_size = max(1, min(int(page_size), 1000))
         async with self._connection() as connection:
             cursor = await connection.execute(
                 "SELECT q.id,q.title,q.owner_id FROM quests q JOIN quest_participants p ON p.quest_id=q.id "
-                "WHERE p.user_id=? AND p.status!='blocked' AND q.deleted=0 ORDER BY p.joined_at DESC LIMIT 30",
-                (user_id,),
+                "WHERE p.user_id=? AND p.status!='blocked' AND q.deleted=0 ORDER BY p.joined_at DESC "
+                "LIMIT ? OFFSET ?",
+                (user_id, page_size, max(0, int(page)) * page_size),
             )
             return [dict(row) for row in await cursor.fetchall()]
+
+    async def support_quest_count(self, user_id: int) -> int:
+        """Count the quests a user may contact their administrator about."""
+        async with self._connection() as connection:
+            cursor = await connection.execute(
+                "SELECT COUNT(*) AS n FROM quests q JOIN quest_participants p ON p.quest_id=q.id "
+                "WHERE p.user_id=? AND p.status!='blocked' AND q.deleted=0",
+                (user_id,),
+            )
+            return int((await cursor.fetchone())["n"])
+
+    async def support_quest_for_user(
+        self, quest_id: int, user_id: int
+    ) -> dict[str, Any] | None:
+        """Return one quest a user may contact support about."""
+        async with self._connection() as connection:
+            cursor = await connection.execute(
+                "SELECT q.id,q.title,q.owner_id FROM quests q JOIN quest_participants p ON p.quest_id=q.id "
+                "WHERE q.id=? AND p.user_id=? AND p.status!='blocked' AND q.deleted=0",
+                (quest_id, user_id),
+            )
+            row = await cursor.fetchone()
+            return dict(row) if row else None
 
     async def statistics(self) -> dict[str, int]:
         """Collect user activity, language, quest, and participation metrics."""

@@ -83,7 +83,12 @@ def admin_home_keyboard(language: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[[button(tr(language, "btn_admin_home"), "admin:home")]])
 
 
-def ratings_overview_keyboard(language: str, role: str | None) -> InlineKeyboardMarkup:
+def ratings_overview_keyboard(language: str) -> InlineKeyboardMarkup:
+    """Public ratings section: user-facing buttons only.
+
+    Managed-quest ratings and the admin panel live in the Administrator panel,
+    so an admin browsing as a user sees the same screen as everybody else.
+    """
     rows = [
         [
             button(tr(language, "period_week"), "ratings:period:week"),
@@ -91,13 +96,8 @@ def ratings_overview_keyboard(language: str, role: str | None) -> InlineKeyboard
         ],
         [button(tr(language, "period_year"), "ratings:period:year")],
         [button(tr(language, "btn_public_quest_ratings"), "ratings:list:all:0")],
+        [button(tr(language, "btn_home"), "menu:home")],
     ]
-    if role in {"admin", "superadmin"}:
-        rows.append([button(tr(language, "btn_managed_ratings"), "ratings:list:managed:0")])
-    if role in {"admin", "superadmin"}:
-        rows.append([button(tr(language, "btn_admin_home"), "admin:home")])
-    else:
-        rows.append([button(tr(language, "btn_home"), "menu:home")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -736,7 +736,13 @@ def review_keyboard(language: str, answer_id: int) -> InlineKeyboardMarkup:
     ])
 
 
-def admin_list_keyboard(language: str, admins: list[dict]) -> InlineKeyboardMarkup:
+def admin_list_keyboard(
+    language: str,
+    admins: list[dict],
+    page: int = 0,
+    page_size: int = 10,
+) -> InlineKeyboardMarkup:
+    """List one page of administrators with their message buttons."""
     rows = []
     for admin in admins:
         name = admin.get("full_name") or admin.get("username") or str(admin["telegram_id"])
@@ -754,6 +760,13 @@ def admin_list_keyboard(language: str, admins: list[dict]) -> InlineKeyboardMark
                 ),
             ]
         )
+    nav = []
+    if page > 0:
+        nav.append(button("⬅️", f"super:admins:{page - 1}"))
+    if len(admins) >= max(1, page_size):
+        nav.append(button("➡️", f"super:admins:{page + 1}"))
+    if nav:
+        rows.append(nav)
     rows.append([button(tr(language, "btn_add"), "super:addadmin")])
     rows.append([button(tr(language, "btn_admin_home"), "admin:home")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -775,9 +788,21 @@ def page_sizes_keyboard(language: str, current: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def managed_chats_keyboard(language: str, chats: list[dict]) -> InlineKeyboardMarkup:
+def managed_chats_keyboard(
+    language: str,
+    chats: list[dict],
+    page: int = 0,
+    page_size: int = 10,
+) -> InlineKeyboardMarkup:
     rows = [[button(tr(language, "btn_add"), "super:addchat")]]
     rows.extend([[button(f"📣 {chat['title'][:25]} · {chat['chat_id']}", f"super:chat:{chat['chat_id']}")] for chat in chats])
+    nav = []
+    if page > 0:
+        nav.append(button("⬅️", f"super:chats:{page - 1}"))
+    if len(chats) >= max(1, page_size):
+        nav.append(button("➡️", f"super:chats:{page + 1}"))
+    if nav:
+        rows.append(nav)
     rows.append([button(tr(language, "btn_back"), "super:settings")])
     rows.append([button(tr(language, "btn_admin_home"), "admin:home")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -792,17 +817,42 @@ def manage_chat_keyboard(language: str, chat: dict) -> InlineKeyboardMarkup:
     ])
 
 
-def whitelist_keyboard(language: str, chat_id: int, users: list[dict]) -> InlineKeyboardMarkup:
+def whitelist_keyboard(
+    language: str,
+    chat_id: int,
+    users: list[dict],
+    page: int = 0,
+    page_size: int = 10,
+) -> InlineKeyboardMarkup:
     rows = [[button(tr(language, "btn_add"), f"super:addwhite:{chat_id}")]]
     rows.extend([[button(f"🗑️ {item['user_id']} · {tr(language, 'btn_remove')}", f"super:delwhite:{chat_id}:{item['user_id']}")] for item in users])
+    nav = []
+    if page > 0:
+        nav.append(button("⬅️", f"super:whitelist:{chat_id}:{page - 1}"))
+    if len(users) >= max(1, page_size):
+        nav.append(button("➡️", f"super:whitelist:{chat_id}:{page + 1}"))
+    if nav:
+        rows.append(nav)
     rows.append([button(tr(language, "btn_back"), f"super:chat:{chat_id}")])
     rows.append([button(tr(language, "btn_admin_home"), "admin:home")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def support_start_keyboard(language: str, quests: list[dict]) -> InlineKeyboardMarkup:
+def support_start_keyboard(
+    language: str,
+    quests: list[dict],
+    page: int = 0,
+    page_size: int = 10,
+) -> InlineKeyboardMarkup:
     rows = [[button(tr(language, "btn_support_super"), "support:new:super")]]
     rows.extend([[button(f"💬 {tr(language, 'btn_support_quest')}: {quest['title'][:27]}", f"support:new:quest:{quest['id']}")] for quest in quests])
+    nav = []
+    if page > 0:
+        nav.append(button("⬅️", f"support:open:{page - 1}"))
+    if len(quests) >= max(1, page_size):
+        nav.append(button("➡️", f"support:open:{page + 1}"))
+    if nav:
+        rows.append(nav)
     rows.append([button(tr(language, "btn_my_tickets"), "support:tickets")])
     rows.append([button(tr(language, "btn_home"), "menu:home")])
     return InlineKeyboardMarkup(inline_keyboard=rows)

@@ -370,6 +370,7 @@ KARAKALPAK_TEXTS: dict[str, str] = {
     "admin_message_heading": "📩 Bas administrator xabarı",
     "logs_terminal_hint": "🖥 Aqırǵı {count} jazıw · jańalaw ushın «{button}» túymesin basıń.",
     "btn_refresh": "🔄 Jańalaw",
+    "no_admins": "📭 Administratorlar joq.",
 }
 
 

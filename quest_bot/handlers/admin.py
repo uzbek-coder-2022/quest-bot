@@ -146,22 +146,54 @@ async def admin_home(callback: CallbackQuery, db: Database, state: FSMContext) -
     await callback.answer()
 
 
-@router.callback_query(F.data == "super:admins")
-async def show_admins(callback: CallbackQuery, db: Database) -> None:
-    if not await _require_superadmin(callback, db):
-        return
+async def _show_admins_page(callback: CallbackQuery, db: Database, page: int) -> None:
+    """Show one page of administrators, ten per page by default."""
     language = await db.get_language(callback.from_user.id)
-    admins = await db.list_admins()
+    page_size = int(await db.settings_get("page_size", "10"))
+    admins, total = await db.list_admins_page(page, page_size)
     rows = [
         f"{tr(language, 'role_admin' if admin['role'] == 'admin' else 'role_superadmin')} · "
         f"{admin.get('full_name') or admin.get('username') or '—'} · {admin['telegram_id']}"
         for admin in admins
     ]
-    text = activity_message(tr(language, "admins_title"), rows)
+    footer = None
+    if total > page_size:
+        start = page * page_size
+        footer = f"{start + 1}–{min(start + len(admins), total)}/{total}"
+    text = activity_message(
+        tr(language, "admins_title"),
+        rows,
+        None if rows else tr(language, "no_admins"),
+        footer,
+    )
     if callback.message:
         await safe_edit(
-            callback, text, reply_markup=admin_list_keyboard(language, admins)
+            callback,
+            text,
+            reply_markup=admin_list_keyboard(
+                language, admins, max(0, page), page_size
+            ),
         )
+
+
+@router.callback_query(F.data == "super:admins")
+async def show_admins(callback: CallbackQuery, db: Database) -> None:
+    if not await _require_superadmin(callback, db):
+        return
+    await _show_admins_page(callback, db, 0)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("super:admins:"))
+async def show_admins_page(callback: CallbackQuery, db: Database) -> None:
+    if not await _require_superadmin(callback, db):
+        return
+    try:
+        page = max(0, int(callback.data.rsplit(":", 1)[1]))
+    except (ValueError, AttributeError):
+        await callback.answer()
+        return
+    await _show_admins_page(callback, db, page)
     await callback.answer()
 
 
@@ -235,17 +267,7 @@ async def remove_admin_callback(
         await callback.answer(tr(language, "admin_removed"), show_alert=True)
     else:
         await callback.answer(tr(language, "superadmin_only"), show_alert=True)
-    admins = await db.list_admins()
-    if callback.message:
-        rows = [
-            f"{tr(language, 'role_admin' if item['role'] == 'admin' else 'role_superadmin')} · "
-            f"{item.get('full_name') or item.get('username') or '—'} · {item['telegram_id']}"
-            for item in admins
-        ]
-        text = activity_message(tr(language, "admins_title"), rows)
-        await safe_edit(
-            callback, text, reply_markup=admin_list_keyboard(language, admins)
-        )
+    await _show_admins_page(callback, db, 0)
 
 
 def _admin_name(admin: dict) -> str:
@@ -605,19 +627,45 @@ async def export_data(callback: CallbackQuery, db: Database) -> None:
     await callback.answer()
 
 
+async def _show_chats_page(callback: CallbackQuery, db: Database, page: int) -> None:
+    """Show one page of registered chats, ten per page by default."""
+    language = await db.get_language(callback.from_user.id)
+    page_size = int(await db.settings_get("page_size", "10"))
+    chats, total, page = await db.managed_chats_page(page, page_size)
+    footer = None
+    if total > page_size:
+        start = page * page_size
+        footer = f"{start + 1}–{min(start + len(chats), total)}/{total}"
+    if callback.message:
+        await safe_edit(
+            callback,
+            information_message(
+                tr(language, "btn_chats"),
+                None if chats else tr(language, "chats_empty"),
+                footer,
+            ),
+            reply_markup=managed_chats_keyboard(language, chats, page, page_size),
+        )
+
+
 @router.callback_query(F.data == "super:chats")
 async def show_managed_chats(callback: CallbackQuery, db: Database) -> None:
     if not await _require_superadmin(callback, db):
         return
-    language = await db.get_language(callback.from_user.id)
-    chats = await db.managed_chats()
-    text = information_message(
-        tr(language, "btn_chats"), None if chats else tr(language, "chats_empty")
-    )
-    if callback.message:
-        await safe_edit(
-            callback, text, reply_markup=managed_chats_keyboard(language, chats)
-        )
+    await _show_chats_page(callback, db, 0)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("super:chats:"))
+async def show_managed_chats_page(callback: CallbackQuery, db: Database) -> None:
+    if not await _require_superadmin(callback, db):
+        return
+    try:
+        page = max(0, int(callback.data.rsplit(":", 1)[1]))
+    except (ValueError, AttributeError):
+        await callback.answer()
+        return
+    await _show_chats_page(callback, db, page)
     await callback.answer()
 
 
@@ -745,24 +793,45 @@ async def toggle_cleanup(callback: CallbackQuery, db: Database, bot: Bot) -> Non
     await callback.answer()
 
 
+async def _show_whitelist_page(
+    callback: CallbackQuery, db: Database, chat_id: int, page: int
+) -> None:
+    """Show one page of a chat's whitelist, ten users per page by default."""
+    language = await db.get_language(callback.from_user.id)
+    page_size = int(await db.settings_get("page_size", "10"))
+    total = await db.chat_whitelist_count(chat_id)
+    last_page = max(0, (total - 1) // max(1, page_size))
+    page = min(max(0, page), last_page)
+    users = await db.chat_whitelist(chat_id, page, page_size)
+    footer = None
+    if total > page_size:
+        start = page * page_size
+        footer = f"{start + 1}–{min(start + len(users), total)}/{total}"
+    text = information_message(
+        tr(language, "whitelist_title"),
+        None if users else tr(language, "no_whitelist"),
+        footer,
+    )
+    if callback.message:
+        await safe_edit(
+            callback,
+            text,
+            reply_markup=whitelist_keyboard(language, chat_id, users, page, page_size),
+        )
+
+
 @router.callback_query(F.data.startswith("super:whitelist:"))
 async def show_whitelist(callback: CallbackQuery, db: Database) -> None:
     if not await _require_superadmin(callback, db):
         return
     try:
-        chat_id = int(callback.data.rsplit(":", 1)[1])
-    except ValueError:
+        parts = callback.data.split(":")
+        chat_id = int(parts[2])
+        page = max(0, int(parts[3])) if len(parts) > 3 else 0
+    except (ValueError, IndexError):
         await callback.answer()
         return
-    language = await db.get_language(callback.from_user.id)
-    users = await db.chat_whitelist(chat_id)
-    text = information_message(
-        tr(language, "whitelist_title"), None if users else tr(language, "no_whitelist")
-    )
-    if callback.message:
-        await safe_edit(
-            callback, text, reply_markup=whitelist_keyboard(language, chat_id, users)
-        )
+    await _show_whitelist_page(callback, db, chat_id, page)
     await callback.answer()
 
 
@@ -808,10 +877,11 @@ async def whitelist_id_received(
         f"{chat_id}:{user_id}",
     )
     await state.clear()
-    users = await db.chat_whitelist(chat_id)
+    page_size = int(await db.settings_get("page_size", "10"))
+    users = await db.chat_whitelist(chat_id, 0, page_size)
     await message.answer(
         tr(language, "whitelist_added"),
-        reply_markup=whitelist_keyboard(language, chat_id, users),
+        reply_markup=whitelist_keyboard(language, chat_id, users, 0, page_size),
     )
 
 
@@ -833,13 +903,7 @@ async def remove_whitelist(callback: CallbackQuery, db: Database) -> None:
         f"{chat_id}:{user_id}",
     )
     language = await db.get_language(callback.from_user.id)
-    users = await db.chat_whitelist(chat_id)
-    if callback.message:
-        await safe_edit(
-            callback,
-            information_message(tr(language, "whitelist_title")),
-            reply_markup=whitelist_keyboard(language, chat_id, users),
-        )
+    await _show_whitelist_page(callback, db, chat_id, 0)
     await callback.answer(tr(language, "whitelist_removed"))
 
 
@@ -859,12 +923,15 @@ async def show_participants(callback: CallbackQuery, db: Database) -> None:
     if not quest or not await can_manage_quest(db, callback.from_user.id, quest):
         await callback.answer(tr(language, "quest_not_found"), show_alert=True)
         return
-    participants, total, page = await db.list_participants_page(quest_id, page, 20)
+    page_size = int(await db.settings_get("page_size", "10"))
+    participants, total, page = await db.list_participants_page(
+        quest_id, page, page_size
+    )
     title = tr(language, "participants_title")
     if not total:
         text = information_message(title, tr(language, "no_participants"))
     else:
-        start = page * 20
+        start = page * page_size
         text = information_message(
             title,
             f"{start + 1}–{min(start + len(participants), total)}/{total}",
@@ -878,7 +945,7 @@ async def show_participants(callback: CallbackQuery, db: Database) -> None:
                 quest_id,
                 participants,
                 page,
-                20,
+                page_size,
                 show_message_button=True,
                 total_count=total,
             ),

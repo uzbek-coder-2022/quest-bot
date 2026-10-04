@@ -225,6 +225,9 @@ class FeatureFlowTests(unittest.IsolatedAsyncioTestCase):
             async def get_role(self, user_id: int) -> str:
                 return "superadmin"
 
+            async def settings_get(self, key: str, default: str) -> str:
+                return "20"
+
             async def get_quest(self, quest_id: int):
                 return {"id": quest_id, "owner_id": 2, "title": "Night Quest"}
 

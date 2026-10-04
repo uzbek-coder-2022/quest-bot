@@ -35,11 +35,24 @@ async def _ensure_private(callback: CallbackQuery, db: Database) -> bool:
     return False
 
 
-def _tickets_keyboard(language: str, tickets: list[dict]) -> InlineKeyboardMarkup:
+def _tickets_keyboard(
+    language: str,
+    tickets: list[dict],
+    page: int = 0,
+    page_size: int = 10,
+) -> InlineKeyboardMarkup:
     rows = []
     for ticket in tickets:
         label = f"#{ticket['id']} · {tr(language, 'ticket_open' if ticket['status'] == 'open' else 'ticket_closed')}"
         rows.append([button(label, f"support:ticket:{ticket['id']}")])
+    nav = []
+    if page > 0:
+        nav.append(button("⬅️", f"support:tickets:{page - 1}"))
+    if len(tickets) >= max(1, page_size):
+        nav.append(button("➡️", f"support:tickets:{page + 1}"))
+    if nav:
+        rows.append(nav)
+    rows.append([button(tr(language, "btn_back"), "support:open")])
     rows.append([button(tr(language, "btn_home"), "menu:home")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -81,36 +94,63 @@ async def support_command(message: Message, db: Database) -> None:
     if message.chat.type != "private":
         await message.answer(tr(language, "open_private_chat"))
         return
-    quests = (
-        await db.support_quests_for_user(message.from_user.id)
-        if message.from_user
-        else []
-    )
+    if not message.from_user:
+        return
+    page_size = int(await db.settings_get("page_size", "10"))
+    quests = await db.support_quests_for_user(message.from_user.id, 0, page_size)
     await message.answer_rich(
         information_message(
             tr(language, "support_choose"),
             None if quests else tr(language, "support_no_quests"),
         ),
-        reply_markup=support_start_keyboard(language, quests),
+        reply_markup=support_start_keyboard(language, quests, 0, page_size),
     )
 
 
-@router.callback_query(F.data == "support:open")
-async def open_support(callback: CallbackQuery, db: Database) -> None:
-    if not await _ensure_private(callback, db):
-        return
+async def _show_support_page(
+    callback: CallbackQuery, db: Database, page: int
+) -> None:
+    """Show one page of quests a user can contact their administrator about."""
     language = await db.get_language(callback.from_user.id)
-    quests = await db.support_quests_for_user(callback.from_user.id)
+    page_size = int(await db.settings_get("page_size", "10"))
+    total = await db.support_quest_count(callback.from_user.id)
+    last_page = max(0, (total - 1) // max(1, page_size))
+    page = min(max(0, page), last_page)
+    quests = await db.support_quests_for_user(callback.from_user.id, page, page_size)
+    footer = None
+    if total > page_size:
+        start = page * page_size
+        footer = f"{start + 1}–{min(start + len(quests), total)}/{total}"
     if callback.message:
         await safe_edit(
             callback,
             information_message(
                 tr(language, "support_choose"),
                 None if quests else tr(language, "support_no_quests"),
+                footer,
             ),
-            reply_markup=support_start_keyboard(language, quests),
+            reply_markup=support_start_keyboard(language, quests, page, page_size),
         )
     await callback.answer()
+
+
+@router.callback_query(F.data == "support:open")
+async def open_support(callback: CallbackQuery, db: Database) -> None:
+    if not await _ensure_private(callback, db):
+        return
+    await _show_support_page(callback, db, 0)
+
+
+@router.callback_query(F.data.startswith("support:open:"))
+async def open_support_page(callback: CallbackQuery, db: Database) -> None:
+    if not await _ensure_private(callback, db):
+        return
+    try:
+        page = max(0, int(callback.data.rsplit(":", 1)[1]))
+    except (ValueError, AttributeError):
+        await callback.answer()
+        return
+    await _show_support_page(callback, db, page)
 
 
 @router.callback_query(F.data == "support:new:super")
@@ -138,8 +178,7 @@ async def new_quest_admin_ticket(
     except ValueError:
         await callback.answer()
         return
-    quests = await db.support_quests_for_user(callback.from_user.id)
-    quest = next((item for item in quests if int(item["id"]) == quest_id), None)
+    quest = await db.support_quest_for_user(quest_id, callback.from_user.id)
     language = await db.get_language(callback.from_user.id)
     if not quest:
         await callback.answer(tr(language, "quest_not_found"), show_alert=True)
@@ -218,22 +257,49 @@ async def pending_text_as_ticket(
     await callback.answer()
 
 
-@router.callback_query(F.data == "support:tickets")
-async def list_my_tickets(callback: CallbackQuery, db: Database) -> None:
-    if not await _ensure_private(callback, db):
-        return
+async def _show_tickets_page(
+    callback: CallbackQuery, db: Database, page: int
+) -> None:
+    """Show one page of a user's support tickets, ten per page by default."""
     language = await db.get_language(callback.from_user.id)
-    tickets = await db.user_tickets(callback.from_user.id)
+    page_size = int(await db.settings_get("page_size", "10"))
+    tickets, total, page = await db.user_tickets_page(
+        callback.from_user.id, page, page_size
+    )
+    footer = None
+    if total > page_size:
+        start = page * page_size
+        footer = f"{start + 1}–{min(start + len(tickets), total)}/{total}"
     if callback.message:
         await safe_edit(
             callback,
             information_message(
                 tr(language, "btn_my_tickets"),
                 None if tickets else tr(language, "no_tickets"),
+                footer,
             ),
-            reply_markup=_tickets_keyboard(language, tickets),
+            reply_markup=_tickets_keyboard(language, tickets, page, page_size),
         )
     await callback.answer()
+
+
+@router.callback_query(F.data == "support:tickets")
+async def list_my_tickets(callback: CallbackQuery, db: Database) -> None:
+    if not await _ensure_private(callback, db):
+        return
+    await _show_tickets_page(callback, db, 0)
+
+
+@router.callback_query(F.data.startswith("support:tickets:"))
+async def list_my_tickets_page(callback: CallbackQuery, db: Database) -> None:
+    if not await _ensure_private(callback, db):
+        return
+    try:
+        page = max(0, int(callback.data.rsplit(":", 1)[1]))
+    except (ValueError, AttributeError):
+        await callback.answer()
+        return
+    await _show_tickets_page(callback, db, page)
 
 
 @router.callback_query(F.data.startswith("support:ticket:"))

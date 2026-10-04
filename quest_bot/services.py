@@ -177,16 +177,29 @@ async def validate_question_archive(bot: Bot, archive_channel_id: int) -> None:
         )
 
 
-def answer_button(language: str, link: str) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
+def answer_button(language: str, link: str, bot_username: str) -> InlineKeyboardMarkup:
+    """Buttons under a group question: answer privately, then open the bot.
+
+    The main-menu row is a plain bot link, so it works for participants and for
+    people who have never opened the bot before.
+    """
+    rows = [
+        [
+            InlineKeyboardButton(
+                text=tr(language, "btn_answer_privately"), url=link, style="primary"
+            )
+        ]
+    ]
+    if bot_username:
+        rows.append(
             [
                 InlineKeyboardButton(
-                    text=tr(language, "btn_answer_privately"), url=link, style="primary"
+                    text=tr(language, "btn_home"),
+                    url=f"https://t.me/{bot_username}",
                 )
             ]
-        ]
-    )
+        )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 async def send_stage_to_user(
@@ -269,7 +282,7 @@ async def announce_stage(
     language = await db.get_language(int(quest["owner_id"]))
     try:
         link = answer_deep_link(bot_username, quest)
-        reply_markup = answer_button(language, link)
+        reply_markup = answer_button(language, link, bot_username)
         source_chat_id = stage.get("source_chat_id")
         source_message_id = stage.get("source_message_id")
         media_type = stage.get("question_media_type", "legacy")

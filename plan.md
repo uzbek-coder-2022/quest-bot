@@ -11,7 +11,7 @@ The first release runs entirely inside Telegram. Production deployments use Post
 ### A. Participant experience
 - `/start`, the main menu, `/help`, and language selection.
 - Browse public quests by status: scheduled, active, completed, or archived; revisit joined quests, including private quests, from a personal quest list.
-- Pagination size configurable by a superadmin: 5, 10, 20, or 50 records.
+- Every button list is paginated: quests, participants, joined quests, administrators, support quests and tickets, managed chats, and whitelists show **10 records per page by default**. A superadmin changes the page size (5, 10, 20, or 50) in **Settings**, and the new size applies to all of these lists.
 - Join public quests in the bot and private quests through a bot deep link. Joining always requires explicit confirmation after a preview showing title, description, stage count, start time, optional cover photo, and participant count.
 - Submit answers in a private chat with the bot. A started quest does not push its first question: it sends a start notice, and the question arrives after the participant presses **Start quest** in the quest card, below the rating button. Later stages use the same **Continue** button, including in stage-ready notices.
 - When several unfinished quests have delivered a question, the most recently delivered question is used as the answer target instead of asking which quest the message belongs to. If the text could also be a support message, the bot asks whether it is an answer or a support message.
@@ -20,6 +20,7 @@ The first release runs entirely inside Telegram. Production deployments use Post
 - Preserve each quest's leaderboard, ordered by correctly solved stages, completion time, and then join time; show the completion time for each participant who successfully completed the quest. Ranks 1–5 are prefixed with 🥇🥈🥉🏅🎖.
 - Aggregate rankings across public quests for the current calendar week, month, and year in `Asia/Tashkent`. Each correctly solved stage earns one point; break ties by the number of public quests completed in that period. The week begins Monday; months and years begin on their first calendar day. Aggregate rows use the same 🥇🥈🥉🏅🎖 medals.
 - A leaderboard opened from a quest card returns to that card with **Back** and also offers **Open quest**; a leaderboard opened from the ratings list returns to that list. Participation notices that end a playthrough (exhausted attempts, stage timeout, quest ended, quest completed) carry an **Open quest** button.
+- User-facing screens never show the Administrator panel button: the public ratings section, the aggregate leaderboards, and every quest rating opened by a user end with the **Main menu** button, and managed-quest ratings stay inside the admin panel.
 
 ### B. Quest creation and participation
 - Quest fields: title, description, public/private visibility, optional cover photo, start time, overall duration, number of stages, and the chat in which questions are published. Copy cover photos into the configured private archive channel and retain archive chat/message references plus a reusable Telegram file ID for Rich Message previews; do not download media files. Embed new covers in the quest Rich Message with inline controls attached to the same message. Existing covers without a stored file ID retain the archive-message copy fallback until replaced; in user-side quest details, send this image before a fresh Rich Message preview.
@@ -56,6 +57,7 @@ The first release runs entirely inside Telegram. Production deployments use Post
 - Superadmins register managed chats. A quest can publish to one registered group/channel or run in the bot only.
 - In scheduled mode, each stage question is copied from the private archive and announced in the selected chat once. Participants submit their answers privately to the bot.
 - In immediate mode, only the first stage is published in the chat. Later stages are copied from the archive and sent privately to each participant so one participant's progress does not reveal a later question to everyone.
+- The published question offers **Answer privately** and, directly below it, a **Main menu** button that opens the bot.
 - Superadmins can enable chat cleanup per managed chat. At quest start, the bot removes tracked members who are not on that chat's whitelist.
 - `chat_member` updates track membership changes received after a chat is registered.
 
@@ -85,7 +87,7 @@ The first release runs entirely inside Telegram. Production deployments use Post
 | Delete a quest (soft delete) | No | Own quests only | All quests |
 | List, restore, or permanently delete deleted quests | No | No | Yes |
 | Add or remove admins | No | No | Yes |
-| Archive quests, change global settings, and export data | No | No | Yes |
+| Archive quests, change the page size/global settings, and export data | No | No | Yes |
 
 ## 4. Status and time rules
 

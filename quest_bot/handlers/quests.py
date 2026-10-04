@@ -170,7 +170,7 @@ async def my_quests_command(message: Message, db: Database) -> None:
     if message.chat.type != "private":
         await message.answer(tr(language, "open_private_chat"))
         return
-    page_size = int(await db.settings_get("page_size", "20"))
+    page_size = int(await db.settings_get("page_size", "10"))
     items = await db.list_user_quests(message.from_user.id, 0, page_size)
     text = information_message(
         tr(language, "my_participating_quests_title"),
@@ -204,7 +204,7 @@ async def my_quests_callback(callback: CallbackQuery, db: Database) -> None:
         await callback.answer()
         return
     language = await db.get_language(callback.from_user.id)
-    page_size = int(await db.settings_get("page_size", "20"))
+    page_size = int(await db.settings_get("page_size", "10"))
     items = await db.list_user_quests(
         callback.from_user.id,
         page * page_size,
@@ -669,10 +669,12 @@ async def show_leaderboard(callback: CallbackQuery, db: Database) -> None:
     text = activity_message(
         title, rendered, None if rendered else tr(language, "leaderboard_empty")
     )
-    manager = await can_manage_quest(db, callback.from_user.id, quest)
+    # Only a rating opened from the quest management view belongs to the admin
+    # side; every user-facing rating returns to the main menu.
+    origin, _ = _leaderboard_origin(callback.data)
     home_button = (
         button(tr(language, "btn_admin_home"), "admin:home")
-        if manager
+        if origin == "manage"
         else button(tr(language, "btn_home"), "menu:home")
     )
     rows = [
@@ -700,12 +702,11 @@ async def show_leaderboard(callback: CallbackQuery, db: Database) -> None:
 @router.callback_query(F.data == "ratings:overview")
 async def ratings_overview(callback: CallbackQuery, db: Database) -> None:
     language = await db.get_language(callback.from_user.id)
-    role = await db.get_role(callback.from_user.id)
     if callback.message:
         await safe_edit(
             callback,
             information_message(tr(language, "ratings_overview_title")),
-            reply_markup=ratings_overview_keyboard(language, role),
+            reply_markup=ratings_overview_keyboard(language),
         )
     await callback.answer()
 
@@ -744,16 +745,10 @@ async def aggregate_leaderboard(callback: CallbackQuery, db: Database) -> None:
         rendered,
         None if rendered else tr(language, "aggregate_leaderboard_empty"),
     )
-    role = await db.get_role(callback.from_user.id)
-    return_home = (
-        button(tr(language, "btn_admin_home"), "admin:home")
-        if role in {"admin", "superadmin"}
-        else button(tr(language, "btn_home"), "menu:home")
-    )
     markup = InlineKeyboardMarkup(
         inline_keyboard=[
             [button(tr(language, "btn_back"), "ratings:overview")],
-            [return_home],
+            [button(tr(language, "btn_home"), "menu:home")],
         ]
     )
     if callback.message:
@@ -805,8 +800,9 @@ async def leaderboard_quest_list(callback: CallbackQuery, db: Database) -> None:
         nav.append(button("▶", f"ratings:list:{scope}:{page + 1}"))
     if nav:
         rows.append(nav)
-    role = await db.get_role(callback.from_user.id)
-    if role in {"admin", "superadmin"}:
+    # Managed-quest ratings are an admin screen; the public list returns to the
+    # user-facing screen and never shows the Administrator panel button.
+    if scope == "managed":
         rows.append([button(tr(language, "btn_admin_home"), "admin:home")])
     else:
         rows.append([button(tr(language, "btn_home"), "menu:home")])

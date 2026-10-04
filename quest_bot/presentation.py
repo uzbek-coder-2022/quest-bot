@@ -109,11 +109,16 @@ def guide_message(language: str) -> InputRichMessage:
     return rich_message(*blocks)
 
 
-def information_message(title: str, body: str | None = None) -> InputRichMessage:
-    """Render a short screen title and optional explanatory paragraph."""
+def information_message(
+    title: str, body: str | None = None, footer: str | None = None
+) -> InputRichMessage:
+    """Render a short screen title with an optional paragraph and footer."""
     blocks = [heading(title, size=1)]
     if body:
         blocks.append(paragraph(body))
+    if footer:
+        blocks.append(divider())
+        blocks.append(paragraph(footer))
     return rich_message(*blocks)
 
 
@@ -153,14 +158,24 @@ def support_history(
 
 
 def activity_message(
-    title: str, rows: list[str], empty_text: str | None = None
+    title: str,
+    rows: list[str],
+    empty_text: str | None = None,
+    footer: str | None = None,
 ) -> InputRichMessage:
-    """Render a compact activity or leaderboard screen as a native rich list."""
+    """Render a compact activity or leaderboard screen as a native rich list.
+
+    ``empty_text`` replaces the list when there are no rows, while ``footer``
+    is appended in both cases, for example to show a page indicator.
+    """
     blocks = [heading(title, size=1)]
     if rows:
         blocks.append(bullet_list(rows))
     elif empty_text:
         blocks.append(paragraph(empty_text))
+    if footer:
+        blocks.append(divider())
+        blocks.append(paragraph(footer))
     return rich_message(*blocks)
 
 
