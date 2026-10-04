@@ -14,13 +14,14 @@ from quest_bot.handlers.creation import (
     attempts_mode_same,
     common_attempts_received,
 )
-from quest_bot.handlers.quests import show_leaderboard
+from quest_bot.handlers.quests import participant_answer, show_leaderboard
 from quest_bot.keyboards import (
     admin_panel,
     language_keyboard,
     main_menu,
     quest_detail,
 )
+from quest_bot.handlers.support import pending_text_as_ticket
 from quest_bot.localization import LANGUAGES, TEXTS, yangi_uzbek
 from quest_bot.states import CreateQuest
 
@@ -41,6 +42,9 @@ class FakeState:
 
     async def get_state(self):
         return self.current_state
+
+    async def clear(self) -> None:
+        self.data = {}
 
 
 class LanguageTests(unittest.TestCase):
@@ -383,6 +387,107 @@ class LeaderboardBackButtonTests(unittest.IsolatedAsyncioTestCase):
         managed = await render("manage", manager=True)
         self.assertEqual(managed.inline_keyboard[0][0].callback_data, "manage:quest:17")
         self.assertEqual(managed.inline_keyboard[1][0].callback_data, "admin:home")
+
+
+class SupportPendingTextTests(unittest.IsolatedAsyncioTestCase):
+    async def test_pending_text_can_be_sent_as_a_support_ticket(self) -> None:
+        recorded: dict = {}
+
+        class Db:
+            async def get_language(self, user_id: int) -> str:
+                return "en"
+
+            async def get_ticket(self, ticket_id: int) -> dict:
+                return {"id": ticket_id, "user_id": 20, "target_admin_id": None}
+
+            async def get_user(self, user_id: int) -> dict:
+                return {"full_name": "Player"}
+
+            async def support_admin_recipients(self, ticket_id: int):
+                return []
+
+            async def create_ticket(self, user_id, quest_id, admin_id, text):
+                recorded.update(
+                    user_id=user_id, quest_id=quest_id, admin_id=admin_id, text=text
+                )
+                return 55
+
+            async def log_action(self, *args):
+                recorded["log"] = args
+
+        state = FakeState(
+            {
+                "support_quest_id": 3,
+                "support_target_admin_id": 9,
+                "pending_support_text": "Should this be a ticket?",
+            }
+        )
+        callback = SimpleNamespace(
+            data="support:pending:ticket",
+            from_user=SimpleNamespace(id=20),
+            message=SimpleNamespace(
+                chat=SimpleNamespace(type="private"), answer=AsyncMock()
+            ),
+            answer=AsyncMock(),
+        )
+
+        await pending_text_as_ticket(callback, state, Db())
+
+        self.assertEqual(recorded["user_id"], 20)
+        self.assertEqual(recorded["quest_id"], 3)
+        self.assertEqual(recorded["admin_id"], 9)
+        self.assertEqual(recorded["text"], "Should this be a ticket?")
+        self.assertEqual(recorded["log"][1], "support.ticket.created")
+        self.assertEqual(state.data, {})
+        self.assertEqual(
+            callback.message.answer.await_args.args[0], TEXTS["support_created"]["en"]
+        )
+
+
+class AnswerRoutingTests(unittest.IsolatedAsyncioTestCase):
+    async def test_text_without_an_open_stage_offers_the_live_quest(self) -> None:
+        class Db:
+            def __init__(self, quest_id: int | None, status: str = "active") -> None:
+                self.quest_id = quest_id
+                self.status = status
+
+            async def open_stages_for_user(self, user_id: int):
+                return []
+
+            async def get_language(self, user_id: int) -> str:
+                return "en"
+
+            async def latest_live_quest_id(self, user_id: int):
+                return self.quest_id
+
+            async def get_quest(self, quest_id: int) -> dict:
+                return {"id": quest_id, "status": self.status}
+
+        async def send(db: Db):
+            message = SimpleNamespace(
+                from_user=SimpleNamespace(id=20),
+                text="maybe an answer",
+                answer=AsyncMock(),
+            )
+            await participant_answer(message, FakeState(), db, SimpleNamespace())
+            return message
+
+        active = await send(Db(17))
+        self.assertIn(
+            TEXTS["btn_continue_quest"]["en"], active.answer.await_args.args[0]
+        )
+        markup = active.answer.await_args.kwargs["reply_markup"]
+        self.assertEqual(markup.inline_keyboard[0][0].callback_data, "quest:continue:17")
+
+        waiting = await send(Db(18, "scheduled"))
+        self.assertEqual(
+            waiting.answer.await_args.args[0],
+            TEXTS["quest_started_waiting"]["en"],
+        )
+        self.assertIsNone(waiting.answer.await_args.kwargs["reply_markup"])
+
+        silent = await send(Db(None))
+        self.assertFalse(silent.answer.await_count)
 
 
 if __name__ == "__main__":

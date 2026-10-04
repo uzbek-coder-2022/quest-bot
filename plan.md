@@ -2,7 +2,7 @@
 
 ## 1. Goal and scope
 
-Build a Telegram bot with aiogram 3 for creating and running quests and managing participants. The user interface supports Uzbek, «Yangi o‘zbek» (the same Uzbek interface with the letters ö, ğ, ş, and ç), Karakalpak, Russian, and English. There will be no web admin panel and no advertising.
+Build a Telegram bot with aiogram 3 for creating and running quests and managing participants. The user interface supports Uzbek, «Yangi o‘zbek» (the same Uzbek interface with the letters ö, ğ, ş, and ç; format placeholders are never rewritten), Karakalpak, Russian, and English. There will be no web admin panel and no advertising.
 
 The first release runs entirely inside Telegram. Production deployments use PostgreSQL through `asyncpg`; SQLite remains available for local development and unit tests. Quest titles, descriptions, and questions are displayed in the language entered by the quest author; changing the interface language does not automatically translate quest content.
 

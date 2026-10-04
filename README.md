@@ -183,7 +183,7 @@ Run the test suite after installing the requirements:
 .venv/bin/python -m unittest discover -s tests -v
 ```
 
-The tests cover SQLite quest flows, PostgreSQL SQL/schema compatibility, private-quest consent and viewing, archived cover/question media references, single-Rich-Message stage delivery with legacy fallbacks, database-backed participant pagination, leaderboard completion times, pause/resume clock shifting, ratings, statistics, support attribution, answer attempts, manual review, role settings, the five interface languages (including the four-letter «Yangi o‘zbek» substitution and the full Karakalpak dictionary), soft deletion with restore, start-time shifting, question delivery gating, the shared/per-stage attempt policy, and the start/continue button, plus related rules. PostgreSQL integration should also be verified against the server configured in `.env` before launch.
+The tests cover SQLite quest flows, PostgreSQL SQL/schema compatibility, private-quest consent and viewing, archived cover/question media references, single-Rich-Message stage delivery with legacy fallbacks, database-backed participant pagination, leaderboard completion times, pause/resume clock shifting, ratings, statistics, support attribution, answer attempts, manual review, role settings, the five interface languages (including the four-letter «Yangi o‘zbek» substitution, which keeps format placeholders such as `{chat_id}` intact, and the full Karakalpak dictionary), soft deletion with restore, start-time shifting, question delivery gating, the shared/per-stage attempt policy, and the start/continue button, plus related rules. PostgreSQL integration should also be verified against the server configured in `.env` before launch.
 
 ## Security checklist
 
