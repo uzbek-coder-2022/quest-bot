@@ -12,6 +12,7 @@ from aiogram.types import (
     Message,
 )
 
+from .. import navigation
 from ..database import Database
 from ..keyboards import button, support_start_keyboard, ticket_reply_keyboard
 from ..localization import tr
@@ -40,11 +41,14 @@ def _tickets_keyboard(
     tickets: list[dict],
     page: int = 0,
     page_size: int = 10,
+    back_target: str = "support:open",
 ) -> InlineKeyboardMarkup:
     rows = []
     for ticket in tickets:
         label = f"#{ticket['id']} · {tr(language, 'ticket_open' if ticket['status'] == 'open' else 'ticket_closed')}"
-        rows.append([button(label, f"support:ticket:{ticket['id']}")])
+        rows.append(
+            [button(label, f"support:ticket:{ticket['id']}:{max(0, page)}")]
+        )
     nav = []
     if page > 0:
         nav.append(button("⬅️", f"support:tickets:{page - 1}"))
@@ -52,7 +56,7 @@ def _tickets_keyboard(
         nav.append(button("➡️", f"support:tickets:{page + 1}"))
     if nav:
         rows.append(nav)
-    rows.append([button(tr(language, "btn_back"), "support:open")])
+    rows.append([button(tr(language, "btn_back"), back_target)])
     rows.append([button(tr(language, "btn_home"), "menu:home")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -112,6 +116,7 @@ async def _show_support_page(
 ) -> None:
     """Show one page of quests a user can contact their administrator about."""
     language = await db.get_language(callback.from_user.id)
+    navigation.remember(callback.from_user.id, support_page=max(0, page))
     page_size = int(await db.settings_get("page_size", "10"))
     total = await db.support_quest_count(callback.from_user.id)
     last_page = max(0, (total - 1) // max(1, page_size))
@@ -262,6 +267,7 @@ async def _show_tickets_page(
 ) -> None:
     """Show one page of a user's support tickets, ten per page by default."""
     language = await db.get_language(callback.from_user.id)
+    navigation.remember(callback.from_user.id, tickets_page=max(0, page))
     page_size = int(await db.settings_get("page_size", "10"))
     tickets, total, page = await db.user_tickets_page(
         callback.from_user.id, page, page_size
@@ -278,7 +284,16 @@ async def _show_tickets_page(
                 None if tickets else tr(language, "no_tickets"),
                 footer,
             ),
-            reply_markup=_tickets_keyboard(language, tickets, page, page_size),
+            reply_markup=_tickets_keyboard(
+                language,
+                tickets,
+                page,
+                page_size,
+                back_target=(
+                    "support:open:"
+                    f"{navigation.recall(callback.from_user.id, 'support_page', 0)}"
+                ),
+            ),
         )
     await callback.answer()
 
@@ -307,8 +322,10 @@ async def show_ticket_history(callback: CallbackQuery, db: Database) -> None:
     if not await _ensure_private(callback, db):
         return
     try:
-        ticket_id = int(callback.data.rsplit(":", 1)[1])
-    except ValueError:
+        parts = callback.data.split(":")
+        ticket_id = int(parts[2])
+        list_page = max(0, int(parts[3])) if len(parts) > 3 else 0
+    except (ValueError, IndexError):
         await callback.answer()
         return
     ticket = await db.get_ticket(ticket_id)
@@ -353,7 +370,9 @@ async def show_ticket_history(callback: CallbackQuery, db: Database) -> None:
         await safe_edit(
             callback,
             history,
-            reply_markup=ticket_reply_keyboard(language, ticket_id),
+            reply_markup=ticket_reply_keyboard(
+                language, ticket_id, back_target=f"support:tickets:{list_page}"
+            ),
         )
     await callback.answer()
 

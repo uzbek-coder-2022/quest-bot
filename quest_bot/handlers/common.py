@@ -10,6 +10,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
 from ..config import Settings
+from .. import navigation
 from ..database import Database
 from ..keyboards import (
     admin_home_keyboard,
@@ -193,7 +194,7 @@ async def language_command(message: Message, db: Database) -> None:
     await _register_message_user(message, db)
     language = await db.get_language(message.from_user.id if message.from_user else 0)
     await message.answer(
-        tr(language, "language_choose"), reply_markup=language_keyboard()
+        tr(language, "language_choose"), reply_markup=language_keyboard(language)
     )
 
 
@@ -212,6 +213,7 @@ async def home_callback(
     callback: CallbackQuery, db: Database, state: FSMContext
 ) -> None:
     await state.clear()
+    navigation.clear(callback.from_user.id)
     if not callback.from_user:
         return
     language = await db.get_language(callback.from_user.id)
@@ -244,7 +246,7 @@ async def choose_language_callback(callback: CallbackQuery, db: Database) -> Non
     language = await db.get_language(callback.from_user.id)
     if callback.message:
         await callback.message.edit_text(
-            tr(language, "language_choose"), reply_markup=language_keyboard()
+            tr(language, "language_choose"), reply_markup=language_keyboard(language)
         )
     await callback.answer()
 

@@ -14,6 +14,7 @@ from aiogram.types import (
     Message,
 )
 
+from .. import navigation
 from ..bot_commands import clear_app_admin_commands, set_app_admin_commands
 from ..database import Database, utc_now
 from ..keyboards import (
@@ -46,6 +47,16 @@ from ..states import ModerationFlow, SuperadminFlow
 from ..utils import can_manage_quest, display_name, ensure_private_callback, safe_edit
 
 router = Router(name="admin")
+
+
+def _back_to_list_keyboard(language: str, back_target: str) -> InlineKeyboardMarkup:
+    """Back plus the panel button for screens that replaced a quest list."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [button(tr(language, "btn_back"), back_target)],
+            [button(tr(language, "btn_admin_home"), "admin:home")],
+        ]
+    )
 
 
 def _role_kb(language: str, quest_id: int) -> InlineKeyboardMarkup:
@@ -137,6 +148,14 @@ async def admin_home(callback: CallbackQuery, db: Database, state: FSMContext) -
         await callback.answer(tr(language, "admin_only"), show_alert=True)
         return
     await state.clear()
+    navigation.forget(
+        callback.from_user.id,
+        "manage_quest",
+        "manage_origin",
+        "admins_page",
+        "chats_page",
+        "whitelist_page",
+    )
     if callback.message:
         await safe_edit(
             callback,
@@ -149,6 +168,7 @@ async def admin_home(callback: CallbackQuery, db: Database, state: FSMContext) -
 async def _show_admins_page(callback: CallbackQuery, db: Database, page: int) -> None:
     """Show one page of administrators, ten per page by default."""
     language = await db.get_language(callback.from_user.id)
+    navigation.remember(callback.from_user.id, admins_page=max(0, page))
     page_size = int(await db.settings_get("page_size", "10"))
     admins, total = await db.list_admins_page(page, page_size)
     rows = [
@@ -310,7 +330,12 @@ async def show_admin_detail(callback: CallbackQuery, db: Database) -> None:
             information_message(
                 tr(language, "admin_detail_title", name=_admin_name(admin)), body
             ),
-            reply_markup=admin_detail_keyboard(language, admin, len(quests)),
+            reply_markup=admin_detail_keyboard(
+                language,
+                admin,
+                len(quests),
+                navigation.recall(callback.from_user.id, "admins_page", 0),
+            ),
         )
     await callback.answer()
 
@@ -630,6 +655,7 @@ async def export_data(callback: CallbackQuery, db: Database) -> None:
 async def _show_chats_page(callback: CallbackQuery, db: Database, page: int) -> None:
     """Show one page of registered chats, ten per page by default."""
     language = await db.get_language(callback.from_user.id)
+    navigation.remember(callback.from_user.id, chats_page=max(0, page))
     page_size = int(await db.settings_get("page_size", "10"))
     chats, total, page = await db.managed_chats_page(page, page_size)
     footer = None
@@ -740,7 +766,9 @@ async def show_chat(callback: CallbackQuery, db: Database) -> None:
         await safe_edit(
             callback,
             _chat_message(language, chat),
-            reply_markup=manage_chat_keyboard(language, chat),
+            reply_markup=manage_chat_keyboard(
+                language, chat, navigation.recall(callback.from_user.id, "chats_page", 0)
+            ),
         )
     await callback.answer()
 
@@ -788,7 +816,9 @@ async def toggle_cleanup(callback: CallbackQuery, db: Database, bot: Bot) -> Non
         await safe_edit(
             callback,
             _chat_message(language, chat),
-            reply_markup=manage_chat_keyboard(language, chat),
+            reply_markup=manage_chat_keyboard(
+                language, chat, navigation.recall(callback.from_user.id, "chats_page", 0)
+            ),
         )
     await callback.answer()
 
@@ -798,6 +828,7 @@ async def _show_whitelist_page(
 ) -> None:
     """Show one page of a chat's whitelist, ten users per page by default."""
     language = await db.get_language(callback.from_user.id)
+    navigation.remember(callback.from_user.id, whitelist_page=max(0, page))
     page_size = int(await db.settings_get("page_size", "10"))
     total = await db.chat_whitelist_count(chat_id)
     last_page = max(0, (total - 1) // max(1, page_size))
@@ -890,9 +921,10 @@ async def remove_whitelist(callback: CallbackQuery, db: Database) -> None:
     if not await _require_superadmin(callback, db):
         return
     try:
-        _, _, chat_id_text, user_id_text = callback.data.split(":", 3)
-        chat_id, user_id = int(chat_id_text), int(user_id_text)
-    except ValueError:
+        parts = callback.data.split(":")
+        chat_id, user_id = int(parts[2]), int(parts[3])
+        page = max(0, int(parts[4])) if len(parts) > 4 else 0
+    except (ValueError, IndexError):
         await callback.answer()
         return
     await db.remove_chat_whitelist(chat_id, user_id)
@@ -903,7 +935,7 @@ async def remove_whitelist(callback: CallbackQuery, db: Database) -> None:
         f"{chat_id}:{user_id}",
     )
     language = await db.get_language(callback.from_user.id)
-    await _show_whitelist_page(callback, db, chat_id, 0)
+    await _show_whitelist_page(callback, db, chat_id, page)
     await callback.answer(tr(language, "whitelist_removed"))
 
 
@@ -1269,7 +1301,11 @@ async def show_pending_answers(callback: CallbackQuery, db: Database, bot: Bot) 
             await bot.send_rich_message(
                 callback.from_user.id,
                 rich_message(heading(title, size=2), quote(item["answer_text"])),
-                reply_markup=review_keyboard(language, item["answer_id"]),
+                reply_markup=review_keyboard(
+                    language,
+                    item["answer_id"],
+                    back_target=f"manage:quest:{quest_id}",
+                ),
             )
     await callback.answer()
 
@@ -1454,7 +1490,9 @@ async def archive_quest_callback(
         await safe_edit(
             callback,
             tr(language, "quest_archived"),
-            reply_markup=admin_home_keyboard(language),
+            reply_markup=_back_to_list_keyboard(
+                language, navigation.manage_back_target(callback.from_user.id, quest_id)
+            ),
         )
     await callback.answer()
 
@@ -1491,7 +1529,9 @@ async def unarchive_quest_callback(callback: CallbackQuery, db: Database) -> Non
         await safe_edit(
             callback,
             tr(language, "quest_unarchived"),
-            reply_markup=admin_home_keyboard(language),
+            reply_markup=_back_to_list_keyboard(
+                language, navigation.manage_back_target(callback.from_user.id, quest_id)
+            ),
         )
     await callback.answer()
 
@@ -1549,7 +1589,9 @@ async def delete_quest_confirmed(callback: CallbackQuery, db: Database) -> None:
         await safe_edit(
             callback,
             tr(language, "quest_deleted"),
-            reply_markup=admin_home_keyboard(language),
+            reply_markup=_back_to_list_keyboard(
+                language, navigation.manage_back_target(callback.from_user.id, quest_id)
+            ),
         )
     await callback.answer()
 
@@ -1589,7 +1631,10 @@ async def restore_quest_callback(callback: CallbackQuery, db: Database) -> None:
                     ],
                     [
                         button(
-                            tr(language, "btn_back"), "adminq:filter:deleted:0"
+                            tr(language, "btn_back"),
+                            navigation.manage_back_target(
+                                callback.from_user.id, quest_id
+                            ),
                         )
                     ],
                     [button(tr(language, "btn_admin_home"), "admin:home")],
@@ -1620,5 +1665,17 @@ async def private_invite_link(callback: CallbackQuery, db: Database, bot: Bot) -
     me = await bot.get_me()
     link = answer_deep_link(me.username or "", quest)
     if callback.message:
-        await callback.message.answer(link)
+        await callback.message.answer(
+            link,
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        button(
+                            tr(language, "btn_back"), f"manage:quest:{quest_id}"
+                        )
+                    ],
+                    [button(tr(language, "btn_admin_home"), "admin:home")],
+                ]
+            ),
+        )
     await callback.answer()

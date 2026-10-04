@@ -11,6 +11,7 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 
+from .. import navigation
 from ..config import Settings
 from ..database import Database, utc_now
 from ..keyboards import (
@@ -271,26 +272,23 @@ async def manage_filter_callback(callback: CallbackQuery, db: Database) -> None:
 
 @router.callback_query(F.data.startswith("quest:view:"))
 async def view_quest_callback(callback: CallbackQuery, db: Database, bot: Bot) -> None:
-    my_quests_visibility = "all"
-    my_quests_page = 0
-    try:
-        parts = callback.data.split(":")
-        if len(parts) == 6 and parts[2] == "my":
-            from_my_quests = True
-            my_quests_visibility = parts[3]
-            my_quests_page = max(0, int(parts[4]))
-            quest_id = int(parts[5])
-            if my_quests_visibility not in {"all", "public", "private"}:
-                raise ValueError("Invalid participating-quest visibility")
-        elif len(parts) == 4 and parts[2] == "my":
-            from_my_quests = True
-            quest_id = int(parts[3])
-        else:
-            from_my_quests = False
-            quest_id = int(parts[2])
-    except (ValueError, IndexError):
+    parsed = _parse_quest_card(callback.data or "")
+    if not parsed:
         await callback.answer()
         return
+    (
+        quest_id,
+        from_my_quests,
+        my_quests_visibility,
+        my_quests_page,
+        browse_status,
+        browse_page,
+    ) = parsed
+    # Joining and cancelling re-render this card, so remember where it came
+    # from until the visitor is done with it.
+    navigation.remember(
+        callback.from_user.id, card_callback=callback.data, card_quest=quest_id
+    )
     quest = await db.get_quest(quest_id)
     language = await db.get_language(callback.from_user.id)
     if not quest:
@@ -336,6 +334,8 @@ async def view_quest_callback(callback: CallbackQuery, db: Database, bot: Bot) -
             my_quests_page=my_quests_page,
             can_continue=can_continue,
             continue_started=continue_started,
+            browse_status=browse_status,
+            browse_page=browse_page,
         )
         if has_legacy_cover:
             try:
@@ -458,7 +458,12 @@ async def confirm_quest_join(callback: CallbackQuery, db: Database, bot: Bot) ->
         await safe_edit(
             callback,
             quest_preview(quest, language, await db.participant_count(quest_id)),
-            reply_markup=quest_detail(language, quest, joined=True),
+            reply_markup=quest_detail(
+                language,
+                quest,
+                joined=True,
+                **_card_origin_kwargs(callback.from_user.id, quest_id),
+            ),
         )
     if quest.get("chat_id"):
         if quest["status"] == "active":
@@ -503,6 +508,7 @@ async def cancel_quest_join(callback: CallbackQuery, db: Database) -> None:
                     language,
                     quest,
                     joined=bool(participant and participant["status"] != "blocked"),
+                    **_card_origin_kwargs(callback.from_user.id, quest_id),
                 ),
             )
     elif callback.message:
@@ -546,6 +552,51 @@ async def participant_chat_invite(
     await callback.answer()
 
 
+_BROWSE_STATUSES = {"all", "scheduled", "active", "completed", "archived"}
+_QUEST_VISIBILITIES = {"all", "public", "private"}
+
+
+def _parse_quest_card(data: str) -> tuple[int, bool, str, int, str, int] | None:
+    """Parse a quest-card callback into its id and the list it came from.
+
+    Returns ``(quest_id, from_my_quests, visibility, my_page, browse_status,
+    browse_page)`` or ``None`` when the callback is not a quest card.
+    """
+    parts = (data or "").split(":")
+    if len(parts) < 3 or parts[0] != "quest" or parts[1] != "view":
+        return None
+    try:
+        if len(parts) == 6 and parts[2] == "my":
+            visibility = parts[3] if parts[3] in _QUEST_VISIBILITIES else "all"
+            return int(parts[5]), True, visibility, max(0, int(parts[4])), "all", 0
+        if len(parts) == 4 and parts[2] == "my":
+            return int(parts[3]), True, "all", 0, "all", 0
+        if len(parts) == 6 and parts[3] == "browse":
+            status = parts[4] if parts[4] in _BROWSE_STATUSES else "all"
+            return int(parts[2]), False, "all", 0, status, max(0, int(parts[5]))
+        if len(parts) == 3:
+            return int(parts[2]), False, "all", 0, "all", 0
+    except (ValueError, IndexError):
+        return None
+    return None
+
+
+def _card_origin_kwargs(user_id: int, quest_id: int) -> dict[str, object]:
+    """Quest-card arguments that keep Back pointing at the original list."""
+    remembered = navigation.recall(user_id, "card_callback")
+    parsed = _parse_quest_card(str(remembered or ""))
+    if not parsed or parsed[0] != quest_id:
+        return {}
+    _, from_my, visibility, my_page, status, browse_page = parsed
+    return {
+        "from_my_quests": from_my,
+        "my_quests_visibility": visibility,
+        "my_quests_page": my_page,
+        "browse_status": status,
+        "browse_page": browse_page,
+    }
+
+
 def _leaderboard_origin(data: str) -> tuple[str, list[str]]:
     """Split a leaderboard callback into its origin name and extra parts."""
     parts = (data or "").split(":")
@@ -556,6 +607,15 @@ def _leaderboard_origin(data: str) -> tuple[str, list[str]]:
 
 def _quest_card_target(quest_id: int, extra: list[str]) -> str:
     """Quest-page callback that keeps the card's own Back destination."""
+    if extra and extra[0] == "browse":
+        status = extra[1] if len(extra) > 1 and extra[1] in _BROWSE_STATUSES else "all"
+        try:
+            page = max(0, int(extra[2]))
+        except (IndexError, ValueError):
+            page = 0
+        if len(extra) <= 2:
+            return f"quest:view:{quest_id}"
+        return f"quest:view:{quest_id}:browse:{status}:{page}"
     if extra and extra[0] == "my":
         visibility = (
             extra[1]
@@ -770,8 +830,11 @@ async def leaderboard_quest_list(callback: CallbackQuery, db: Database) -> None:
         )
     else:
         quests = await db.list_public_quests(None, page * size, size)
+    # The managed list is opened from the admin panel, so its Back returns
+    # there; the public list returns to the ratings screen it came from.
+    back_target = "admin:home" if scope == "managed" else "ratings:overview"
     rows = [
-        [button(tr(language, "btn_back"), "ratings:overview")],
+        [button(tr(language, "btn_back"), back_target)],
         *[
             [
                 button(
@@ -789,11 +852,9 @@ async def leaderboard_quest_list(callback: CallbackQuery, db: Database) -> None:
         nav.append(button("▶", f"ratings:list:{scope}:{page + 1}"))
     if nav:
         rows.append(nav)
-    # Managed-quest ratings are an admin screen; the public list returns to the
-    # user-facing screen and never shows the Administrator panel button.
-    if scope == "managed":
-        rows.append([button(tr(language, "btn_admin_home"), "admin:home")])
-    else:
+    # Managed-quest ratings are an admin screen whose Back already returns to
+    # the panel; the public list ends with the user-facing Main menu button.
+    if scope != "managed":
         rows.append([button(tr(language, "btn_home"), "menu:home")])
     title_key = (
         "btn_managed_ratings" if scope == "managed" else "btn_public_quest_ratings"
@@ -813,11 +874,18 @@ async def leaderboard_quest_list(callback: CallbackQuery, db: Database) -> None:
 async def manage_quest_callback(callback: CallbackQuery, db: Database) -> None:
     if not await ensure_private_callback(callback, db):
         return
+    parts = (callback.data or "").split(":", 3)
     try:
-        quest_id = int(callback.data.rsplit(":", 1)[1])
-    except ValueError:
+        quest_id = int(parts[2])
+        origin = parts[3] if len(parts) > 3 and parts[3] else None
+    except (ValueError, IndexError):
         await callback.answer()
         return
+    if origin:
+        navigation.remember(
+            callback.from_user.id, manage_quest=quest_id, manage_origin=origin
+        )
+    back_target = navigation.manage_back_target(callback.from_user.id, quest_id)
     quest = await db.get_quest(quest_id)
     language = await db.get_language(callback.from_user.id)
     role = await db.get_role(callback.from_user.id)
@@ -836,7 +904,9 @@ async def manage_quest_callback(callback: CallbackQuery, db: Database) -> None:
                         + "\n\n"
                         + tr(language, "deleted_quest_purge_hint"),
                     ),
-                    reply_markup=deleted_quest_keyboard(language, quest_id),
+                    reply_markup=deleted_quest_keyboard(
+                        language, quest_id, back_target
+                    ),
                 )
             await callback.answer()
             return
@@ -847,7 +917,7 @@ async def manage_quest_callback(callback: CallbackQuery, db: Database) -> None:
         await safe_edit(
             callback,
             quest_preview(quest, language, await db.participant_count(quest_id)),
-            reply_markup=manage_quest(language, quest, role or "admin"),
+            reply_markup=manage_quest(language, quest, role or "admin", back_target),
         )
     await callback.answer()
 
@@ -1444,7 +1514,12 @@ async def pause_quest_callback(callback: CallbackQuery, db: Database) -> None:
         await safe_edit(
             callback,
             quest_preview(updated, language, await db.participant_count(quest_id)),
-            reply_markup=manage_quest(language, updated, role or "admin"),
+            reply_markup=manage_quest(
+                language,
+                updated,
+                role or "admin",
+                navigation.manage_back_target(callback.from_user.id, quest_id),
+            ),
         )
     await callback.answer(tr(language, "pause_success"), show_alert=True)
 
@@ -1473,7 +1548,12 @@ async def resume_quest_callback(callback: CallbackQuery, db: Database) -> None:
         await safe_edit(
             callback,
             quest_preview(updated, language, await db.participant_count(quest_id)),
-            reply_markup=manage_quest(language, updated, role or "admin"),
+            reply_markup=manage_quest(
+                language,
+                updated,
+                role or "admin",
+                navigation.manage_back_target(callback.from_user.id, quest_id),
+            ),
         )
     await callback.answer(tr(language, "resume_success"), show_alert=True)
 

@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+from quest_bot import navigation
 from quest_bot.database import Database, utc_now
 from quest_bot.handlers.creation import (
     answer_mode_selected,
@@ -18,6 +19,8 @@ from quest_bot.handlers.creation import (
     common_attempts_received,
 )
 from quest_bot.handlers.quests import (
+    _leaderboard_back_target,
+    _parse_quest_card,
     _process_answer,
     aggregate_leaderboard,
     leaderboard_quest_list,
@@ -25,27 +28,34 @@ from quest_bot.handlers.quests import (
     participant_answer,
     ratings_overview,
     show_leaderboard,
+    view_quest_callback,
 )
 from quest_bot.keyboards import (
     admin_detail_keyboard,
     admin_list_keyboard,
     admin_panel,
-    admin_quests_keyboard,
+    browse_filters,
     confirm_purge_quest_keyboard,
     deleted_quest_keyboard,
     guide_keyboard,
     language_keyboard,
     main_menu,
     managed_chats_keyboard,
+    manage_chat_keyboard,
     open_quest_keyboard,
     quest_detail,
+    review_keyboard,
+    ticket_reply_keyboard,
 )
 from quest_bot.handlers.admin import (
     admin_message_received,
     confirm_quest_purge,
     purge_quest_confirmed,
+    remove_whitelist,
+    show_admin_detail,
     show_admin_quests,
     show_admins_page,
+    show_chat,
     show_logs,
     show_managed_chats_page,
 )
@@ -55,11 +65,17 @@ from quest_bot.handlers.support import (
     list_my_tickets_page,
     open_support_page,
     pending_text_as_ticket,
+    show_ticket_history,
 )
 from quest_bot.localization import LANGUAGES, TEXTS, yangi_uzbek
 from quest_bot.states import CreateQuest
 from quest_bot.services import answer_button
 from quest_bot.utils import rank_label
+
+
+def setUpModule() -> None:
+    """Navigation breadcrumbs are process-wide, so start every module clean."""
+    navigation.reset()
 
 
 class FakeState:
@@ -161,7 +177,8 @@ class MenuAndCardKeyboardTests(unittest.TestCase):
     def test_quest_card_keeps_the_start_button_below_the_rating_button(self) -> None:
         start_card = quest_detail("en", self._quest(), joined=True, can_continue=True)
         self.assertEqual(
-            start_card.inline_keyboard[0][0].callback_data, "rating:show:17:card:browse"
+            start_card.inline_keyboard[0][0].callback_data,
+            "rating:show:17:card:browse:all:0",
         )
         self.assertEqual(start_card.inline_keyboard[1][0].callback_data, "quest:continue:17")
         self.assertEqual(start_card.inline_keyboard[1][0].text, TEXTS["btn_start_quest"]["en"])
@@ -190,6 +207,7 @@ class MenuAndCardKeyboardTests(unittest.TestCase):
 
 class DatabaseFeatureTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
+        navigation.reset()
         self.temp_dir = tempfile.TemporaryDirectory()
         self.db = Database(Path(self.temp_dir.name) / "features.sqlite3")
         await self.db.initialize()
@@ -812,7 +830,12 @@ class AdminOverviewTests(unittest.IsolatedAsyncioTestCase):
         markup = message.edit_text.await_args.kwargs["reply_markup"]
         self.assertEqual(
             [button.callback_data for row in markup.inline_keyboard for button in row],
-            ["manage:quest:17", "manage:quest:18", "super:admin:5", "admin:home"],
+            [
+                "manage:quest:17:super:adminquests:5:0",
+                "manage:quest:18:super:adminquests:5:0",
+                "super:admin:5",
+                "admin:home",
+            ],
         )
 
     async def test_superadmin_message_reaches_the_admin(self) -> None:
@@ -1205,6 +1228,384 @@ class QuestDurationEditTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(db.updated, [(17, 0)])
 
 
+class BackButtonAuditTests(unittest.IsolatedAsyncioTestCase):
+    """Every Back button walks one level up instead of skipping a section."""
+
+    def setUp(self) -> None:
+        navigation.reset()
+
+    async def test_browse_list_rows_carry_their_filter_and_page(self) -> None:
+        markup = browse_filters(
+            "en", "active", 2, [{"id": 17, "title": "Night Quest"}], 10
+        )
+        self.assertEqual(
+            markup.inline_keyboard[2][0].callback_data,
+            "quest:view:17:browse:active:2",
+        )
+        card = quest_detail(
+            "en",
+            {
+                "id": 17,
+                "title": "Night Quest",
+                "visibility": "public",
+                "status": "active",
+                "progression": "immediate",
+            },
+            browse_status="active",
+            browse_page=2,
+        )
+        codes = [button.callback_data for row in card.inline_keyboard for button in row]
+        self.assertIn("rating:show:17:card:browse:active:2", codes)
+        self.assertEqual(codes[-1], "browse:filter:active:2")
+
+    async def test_a_quest_card_callback_keeps_its_browse_origin(self) -> None:
+        parsed = _parse_quest_card("quest:view:17:browse:active:2")
+        self.assertEqual(parsed, (17, False, "all", 0, "active", 2))
+        self.assertEqual(
+            _leaderboard_back_target("rating:show:17:card:browse:active:2", 17),
+            "quest:view:17:browse:active:2",
+        )
+        self.assertEqual(
+            _leaderboard_back_target("rating:show:17:card:my:private:3", 17),
+            "quest:view:my:private:3:17",
+        )
+
+    async def test_the_quest_card_back_returns_to_the_browse_page(self) -> None:
+        class Db:
+            async def get_language(self, user_id: int) -> str:
+                return "en"
+
+            async def get_role(self, user_id: int) -> str:
+                return "user"
+
+            async def get_quest(self, quest_id: int) -> dict:
+                return {
+                    "id": quest_id,
+                    "owner_id": 5,
+                    "visibility": "public",
+                    "status": "active",
+                    "progression": "immediate",
+                    "title": "Night Quest",
+                    "description": "",
+                    "start_at": "2030-01-02T00:00:00+00:00",
+                    "duration_seconds": 0,
+                    "stage_count": 2,
+                    "chat_id": None,
+                }
+
+            async def participant(self, quest_id: int, user_id: int):
+                return None
+
+            async def participant_count(self, quest_id: int) -> int:
+                return 0
+
+            async def next_deliverable_stage(self, quest_id: int, user_id: int, now: str):
+                return None
+
+        message = SimpleNamespace(
+            chat=SimpleNamespace(type="private"), edit_text=AsyncMock(), answer=AsyncMock()
+        )
+        callback = SimpleNamespace(
+            data="quest:view:17:browse:active:2",
+            from_user=SimpleNamespace(id=1),
+            message=message,
+            answer=AsyncMock(),
+        )
+
+        await view_quest_callback(callback, Db(), AsyncMock())
+
+        markup = message.edit_text.await_args.kwargs["reply_markup"]
+        codes = [button.callback_data for row in markup.inline_keyboard for button in row]
+        self.assertIn("browse:filter:active:2", codes)
+
+    async def test_the_manage_card_remembers_the_list_that_opened_it(self) -> None:
+        class Db:
+            def __init__(self) -> None:
+                self.quest = {
+                    "id": 17,
+                    "owner_id": 5,
+                    "visibility": "public",
+                    "status": "active",
+                    "progression": "immediate",
+                    "title": "Night Quest",
+                    "description": "",
+                    "start_at": "2030-01-02T00:00:00+00:00",
+                }
+
+            async def get_language(self, user_id: int) -> str:
+                return "en"
+
+            async def get_role(self, user_id: int) -> str:
+                return "superadmin"
+
+            async def get_quest(self, quest_id: int, include_deleted: bool = False):
+                return self.quest
+
+            async def participant_count(self, quest_id: int) -> int:
+                return 1
+
+        db = Db()
+
+        def callback(data: str):
+            return SimpleNamespace(
+                data=data,
+                from_user=SimpleNamespace(id=3),
+                message=SimpleNamespace(
+                    chat=SimpleNamespace(type="private"), edit_text=AsyncMock()
+                ),
+                answer=AsyncMock(),
+            )
+
+        from_list = callback("manage:quest:17:super:adminquests:5:2")
+        await manage_quest_callback(from_list, db)
+        codes = [
+            button.callback_data
+            for row in from_list.message.edit_text.await_args.kwargs[
+                "reply_markup"
+            ].inline_keyboard
+            for button in row
+        ]
+        self.assertIn("super:adminquests:5:2", codes)
+
+        # A sub-screen re-opens the card without an origin and must keep it.
+        from_sub_screen = callback("manage:quest:17")
+        await manage_quest_callback(from_sub_screen, db)
+        codes = [
+            button.callback_data
+            for row in from_sub_screen.message.edit_text.await_args.kwargs[
+                "reply_markup"
+            ].inline_keyboard
+            for button in row
+        ]
+        self.assertIn("super:adminquests:5:2", codes)
+
+    async def test_admin_detail_and_chat_detail_keep_their_list_page(self) -> None:
+        admin = {"telegram_id": 5, "role": "admin", "full_name": "Ann"}
+        self.assertEqual(
+            [
+                button.callback_data
+                for row in admin_detail_keyboard("en", admin, 3, 2).inline_keyboard
+                for button in row
+            ][-2],
+            "super:admins:2",
+        )
+        self.assertEqual(
+            [
+                button.callback_data
+                for row in manage_chat_keyboard(
+                    "en", {"chat_id": -100, "title": "Chat"}, 3
+                ).inline_keyboard
+                for button in row
+            ][-2],
+            "super:chats:3",
+        )
+
+    async def test_a_removed_whitelist_entry_stays_on_its_page(self) -> None:
+        recorded: list = []
+
+        class Db:
+            async def get_language(self, user_id: int) -> str:
+                return "en"
+
+            async def get_role(self, user_id: int) -> str:
+                return "superadmin"
+
+            async def settings_get(self, key: str, default: str) -> str:
+                return "10"
+
+            async def chat_whitelist_count(self, chat_id: int) -> int:
+                return 30
+
+            async def chat_whitelist(self, chat_id: int, page: int, page_size: int):
+                recorded.append(page)
+                return [{"user_id": 900 + page}]
+
+            async def remove_chat_whitelist(self, chat_id: int, user_id: int) -> None:
+                return None
+
+            async def log_action(self, *args, **kwargs) -> None:
+                return None
+
+        message = SimpleNamespace(
+            chat=SimpleNamespace(type="private"), edit_text=AsyncMock()
+        )
+        callback = SimpleNamespace(
+            data="super:delwhite:-100:900:2",
+            from_user=SimpleNamespace(id=3),
+            message=message,
+            answer=AsyncMock(),
+        )
+
+        await remove_whitelist(callback, Db())
+
+        self.assertEqual(recorded, [2])
+
+    async def test_ticket_history_and_ticket_list_have_back_buttons(self) -> None:
+        class Db:
+            async def get_language(self, user_id: int) -> str:
+                return "en"
+
+            async def settings_get(self, key: str, default: str) -> str:
+                return "10"
+
+            async def support_quest_count(self, user_id: int) -> int:
+                return 0
+
+            async def support_quests_for_user(self, user_id: int, page: int, size: int):
+                return []
+
+            async def user_tickets_page(self, user_id: int, page: int, size: int):
+                return [{"id": 5, "status": "open"}], 1, page
+
+            async def get_ticket(self, ticket_id: int):
+                return {"id": ticket_id, "user_id": 1, "status": "open", "language": "en"}
+
+            async def ticket_messages(self, ticket_id: int):
+                return []
+
+            async def get_role(self, user_id: int) -> str:
+                return "admin"
+
+        def callback(data: str):
+            return SimpleNamespace(
+                data=data,
+                from_user=SimpleNamespace(id=1),
+                message=SimpleNamespace(
+                    chat=SimpleNamespace(type="private"), edit_text=AsyncMock()
+                ),
+                answer=AsyncMock(),
+            )
+
+        db = Db()
+        await open_support_page(callback("support:open:1"), db)
+        tickets = callback("support:tickets:0")
+        await list_my_tickets_page(tickets, db)
+        codes = [
+            button.callback_data
+            for row in tickets.message.edit_text.await_args.kwargs[
+                "reply_markup"
+            ].inline_keyboard
+            for button in row
+        ]
+        self.assertIn("support:ticket:5:0", codes)
+        self.assertIn("support:open:1", codes)
+
+        history = callback("support:ticket:5:0")
+        await show_ticket_history(history, db)
+        codes = [
+            button.callback_data
+            for row in history.message.edit_text.await_args.kwargs[
+                "reply_markup"
+            ].inline_keyboard
+            for button in row
+        ]
+        self.assertIn("support:tickets:0", codes)
+
+    async def test_admin_and_chat_details_use_the_remembered_list_page(
+        self,
+    ) -> None:
+        class Db:
+            async def get_language(self, user_id: int) -> str:
+                return "en"
+
+            async def get_role(self, user_id: int) -> str:
+                return "superadmin"
+
+            async def settings_get(self, key: str, default: str) -> str:
+                return "10"
+
+            async def list_admins_page(self, page: int, page_size: int):
+                return (
+                    [
+                        {
+                            "telegram_id": 5,
+                            "role": "admin",
+                            "full_name": "Ann",
+                        }
+                    ],
+                    30,
+                )
+
+            async def managed_chats_page(self, page: int, page_size: int):
+                return ([{"chat_id": -100, "title": "Chat"}], 30, page)
+
+            async def list_admins(self):
+                return [{"telegram_id": 5, "role": "admin", "full_name": "Ann"}]
+
+            async def list_owner_quests(
+                self, admin_id: int, include_deleted: bool = False
+            ):
+                return []
+
+            async def get_managed_chat(self, chat_id: int):
+                return {
+                    "chat_id": chat_id,
+                    "title": "Chat",
+                    "cleanup_enabled": False,
+                }
+
+        def callback(data: str):
+            return SimpleNamespace(
+                data=data,
+                from_user=SimpleNamespace(id=3),
+                message=SimpleNamespace(
+                    chat=SimpleNamespace(type="private"), edit_text=AsyncMock()
+                ),
+                answer=AsyncMock(),
+            )
+
+        db = Db()
+        await show_admins_page(callback("super:admins:2"), db)
+        detail = callback("super:admin:5")
+        await show_admin_detail(detail, db)
+        codes = [
+            button.callback_data
+            for row in detail.message.edit_text.await_args.kwargs[
+                "reply_markup"
+            ].inline_keyboard
+            for button in row
+        ]
+        self.assertIn("super:admins:2", codes)
+
+        await show_managed_chats_page(callback("super:chats:3"), db)
+        chat = callback("super:chat:-100")
+        await show_chat(chat, db)
+        codes = [
+            button.callback_data
+            for row in chat.message.edit_text.await_args.kwargs[
+                "reply_markup"
+            ].inline_keyboard
+            for button in row
+        ]
+        self.assertIn("super:chats:3", codes)
+
+    async def test_deleted_and_review_screens_offer_the_way_back(self) -> None:
+        codes = [
+            button.callback_data
+            for row in deleted_quest_keyboard(
+                "en", 17, "super:adminquests:5:2"
+            ).inline_keyboard
+            for button in row
+        ]
+        self.assertIn("super:adminquests:5:2", codes)
+
+        codes = [
+            button.callback_data
+            for row in review_keyboard("en", 4, "manage:quest:17").inline_keyboard
+            for button in row
+        ]
+        self.assertIn("manage:quest:17", codes)
+
+        codes = [
+            button.callback_data
+            for row in ticket_reply_keyboard(
+                "en", 5, "support:tickets:1"
+            ).inline_keyboard
+            for button in row
+        ]
+        self.assertIn("support:tickets:1", codes)
+
+
 class GuideKeyboardTests(unittest.TestCase):
     def test_the_guide_ends_with_a_main_menu_button(self) -> None:
         for role in (None, "user", "admin", "superadmin"):
@@ -1498,6 +1899,9 @@ class UserFacingRatingsTests(unittest.IsolatedAsyncioTestCase):
         ]
         self.assertIn("admin:home", codes)
         self.assertNotIn("menu:home", codes)
+        # Back returns to the admin panel, not to the public ratings screen.
+        self.assertEqual(codes[0], "admin:home")
+        self.assertNotIn("ratings:overview", codes)
 
 
 class PaginatedListHandlerTests(unittest.IsolatedAsyncioTestCase):
@@ -1593,15 +1997,19 @@ class PaginatedListHandlerTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_ticket_list_pages_through_a_users_tickets(self) -> None:
         db = self.Db()
+        # The user reached the tickets from the support screen; Back must
+        # return to that screen rather than skipping to the main menu.
+        support = self._callback("support:open:0")
+        await open_support_page(support, db)
         callback = self._callback("support:tickets:1")
         await list_my_tickets_page(callback, db)
 
-        self.assertEqual(db.calls, [("tickets", 1, 1, 10)])
+        self.assertEqual(db.calls[-1], ("tickets", 1, 1, 10))
         markup = callback.message.edit_text.await_args.kwargs["reply_markup"]
         codes = [button.callback_data for row in markup.inline_keyboard for button in row]
         self.assertIn("support:tickets:0", codes)
         self.assertIn("support:tickets:2", codes)
-        self.assertIn("support:open", codes)
+        self.assertIn("support:open:0", codes)
 
     async def test_support_screen_pages_through_the_users_quests(self) -> None:
         db = self.Db()
