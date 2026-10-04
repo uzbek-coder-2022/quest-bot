@@ -108,6 +108,24 @@ class LanguageTests(unittest.TestCase):
                 for language in LANGUAGES:
                     self.assertTrue(translations[language].strip())
 
+    def test_delete_notices_hide_internal_details(self) -> None:
+        """The admin must not see the delete flag or database wording."""
+        forbidden = (
+            "delete = true",
+            "delete=true",
+            "bazadan",
+            "bazada",
+            "bazasında",
+            "database",
+            "\u0431\u0430\u0437",
+        )
+        for key in ("confirm_delete_quest", "quest_deleted", "deleted_quest_view_body"):
+            for language in LANGUAGES:
+                with self.subTest(key=key, language=language):
+                    text = TEXTS[key][language].format(title="Quest").lower()
+                    for phrase in forbidden:
+                        self.assertNotIn(phrase, text)
+
     def test_new_uzbek_changes_only_the_four_letters(self) -> None:
         self.assertEqual(
             yangi_uzbek("o‘zbek g‘alaba shahar choy"),
