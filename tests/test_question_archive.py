@@ -53,6 +53,9 @@ class FakeDatabase:
     async def activate_stage_for_participant(self, quest_id: int, user_id: int, stage: dict, now: str) -> bool:
         return True
 
+    async def mark_stage_delivered(self, quest_id: int, user_id: int, stage_id: int, now: str) -> bool:
+        return True
+
     async def claim_stage_announcement(self, quest_id: int, stage_id: int) -> bool:
         return True
 

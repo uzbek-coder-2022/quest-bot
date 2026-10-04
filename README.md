@@ -1,12 +1,17 @@
 # Quest Bot
 
-A Telegram quest bot built with aiogram 3. The interface is available in Uzbek, Russian, and English. There is no web admin panel or advertising.
+A Telegram quest bot built with aiogram 3. The interface is available in Uzbek, «Yangi o‘zbek» (the same Uzbek text written with ö, ğ, ş, and ç), Karakalpak, Russian, and English. There is no web admin panel or advertising.
 
 ## Features
 
 - Only admins and superadmins can create quests.
 - Configure quest title and description, public/private visibility, optional cover photo, start time, stages, and overall duration.
+- Choose during creation whether every stage shares a single attempt limit (asked once) or each stage has its own limit (asked per stage).
 - Set a question, attempt limit, time limit, and automatic or admin review for each stage.
+- A started quest sends a start notice instead of pushing the first question: the participant presses **Start quest** in the quest card, below the rating button, and later stages arrive through the same **Continue** button.
+- Change a scheduled quest's start time from **Edit quest details**; the scheduled stage times shift with it. A quest that has already started keeps its start time.
+- Delete a quest softly: only the delete flag is set and nothing is removed from the database. The quest's own admin or a superadmin can do it, and superadmins can list deleted quests and restore them.
+- Send a message to a participant from the participant list, where one button identifies the participant and the next one composes the message.
 - Choose immediate progression after a correct answer or scheduled stage releases.
 - Browse public quests and view all quests a user has joined, including private quests. Joining always requires a separate confirmation after a preview of the description, stage count, start time, cover photo (when present), and participant count. New cover photos appear inside the Rich Message preview with its inline buttons.
 - View aggregate public-quest leaderboards for the current Tashkent calendar week, month, and year. Correctly solved stages earn one point; completed public quests break ties.
@@ -133,6 +138,9 @@ Questions are published to the group/channel, but answers are sent privately to 
 - Create a quest by following the **Create quest** wizard.
 - An admin can manage leaderboards, participants, and pending manual reviews for their own quests. Superadmins can manage every quest. Participant lists are paginated in database-backed pages of 20, and individual quest leaderboards show each successful finisher's completion time.
 - Open **Edit questions** from a scheduled or active quest to update an unreleased stage's text/media and (for automatic-answer stages) its correct answer. Use **Add stage** to run the full setup (question/media, answer mode, correct answer for automatic checking, attempts, and time limit). Scheduled quests also ask for a delivery time later than the prior stage and no later than the quest deadline. The question is copied into the archive only after the setup is saved.
+- From **Edit quest details** a scheduled quest's start time can be moved; the scheduled stage times shift by the same difference.
+- The quest management view offers **Delete quest** with a confirmation step. Deletion only sets the delete flag: stages, questions, participations, and answers stay in the database. Superadmins find deleted quests in **Admin panel → Quests I manage → Deleted** and can restore them with one button (the owning admin can delete, but only superadmins can list and restore).
+- Participant lists show one button per participant and a second button that messages that participant; quest administrators can use it for their own quests, superadmins for any quest.
 - Use **Remove stage** to start a confirmation flow. The last remaining stage cannot be removed; later stage numbers and the total count are updated automatically. In an active quest, a stage can be removed only if it and every later stage are still unreleased. Stages that have been delivered to a participant or announced in a quest chat remain locked. An active quest can accept a new stage only while its current final stage is unreleased. The existing limit of 30 stages applies.
 - The public **Leaderboards** menu provides current-week, current-month, and current-year aggregate rankings across public quests, alongside the existing individual-quest ratings. Period boundaries use `Asia/Tashkent` (Monday week start, local month/year start).
 - Only superadmins can archive quests.
@@ -148,7 +156,7 @@ Questions are published to the group/channel, but answers are sent privately to 
 - Overall and stage time limits are entered in minutes; `0` means no limit.
 - Automatic answer checking requires an exact match after Unicode NFC normalization and trimming leading/trailing whitespace. Letter case, punctuation, and internal whitespace matter.
 - If a participant exhausts their attempts or a stage time limit expires, they are marked `failed` for that quest.
-- If a participant has open questions in multiple quests, the bot asks them to select the quest before submitting an answer.
+- If a participant has several unfinished quests, the answer is applied to the question that was delivered most recently, so a plain text message is never sent back to the chat unanswered. When the text could equally be a support message, the bot asks whether it is the quest answer or a support message (the quest's own admin can receive participant messages from the participant list).
 
 ## Commands
 
@@ -175,7 +183,7 @@ Run the test suite after installing the requirements:
 .venv/bin/python -m unittest discover -s tests -v
 ```
 
-The tests cover SQLite quest flows, PostgreSQL SQL/schema compatibility, private-quest consent and viewing, archived cover/question media references, single-Rich-Message stage delivery with legacy fallbacks, database-backed participant pagination, leaderboard completion times, pause/resume clock shifting, ratings, statistics, support attribution, answer attempts, manual review, role settings, and related rules. PostgreSQL integration should also be verified against the server configured in `.env` before launch.
+The tests cover SQLite quest flows, PostgreSQL SQL/schema compatibility, private-quest consent and viewing, archived cover/question media references, single-Rich-Message stage delivery with legacy fallbacks, database-backed participant pagination, leaderboard completion times, pause/resume clock shifting, ratings, statistics, support attribution, answer attempts, manual review, role settings, the five interface languages (including the four-letter «Yangi o‘zbek» substitution and the full Karakalpak dictionary), soft deletion with restore, start-time shifting, question delivery gating, the shared/per-stage attempt policy, and the start/continue button, plus related rules. PostgreSQL integration should also be verified against the server configured in `.env` before launch.
 
 ## Security checklist
 

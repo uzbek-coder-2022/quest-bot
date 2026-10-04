@@ -107,6 +107,9 @@ class JoinPreviewDatabase:
     async def participant(self, quest_id: int, user_id: int):
         return None
 
+    async def next_deliverable_stage(self, quest_id: int, user_id: int, now: str):
+        return None
+
     async def participant_count(self, quest_id: int) -> int:
         return 4
 
@@ -197,17 +200,17 @@ class FeatureFlowTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertTrue(payload_markup)
 
-    async def test_participant_message_button_is_exclusive_to_superadmin_keyboard(self) -> None:
+    async def test_participant_rows_offer_status_and_message_buttons(self) -> None:
         participants = [{"user_id": 42, "full_name": "Player One", "status": "blocked"}]
-        admin_markup = participants_keyboard("en", 17, participants)
-        superadmin_markup = participants_keyboard(
-            "en", 17, participants, show_message_button=True
-        )
+        manager_markup = participants_keyboard("en", 17, participants)
 
-        self.assertEqual(len(admin_markup.inline_keyboard[0]), 1)
-        self.assertEqual(len(superadmin_markup.inline_keyboard[0]), 2)
+        self.assertEqual(len(manager_markup.inline_keyboard[0]), 2)
         self.assertEqual(
-            superadmin_markup.inline_keyboard[0][1].callback_data,
+            manager_markup.inline_keyboard[0][0].callback_data,
+            "manage:participant:17:42:unban",
+        )
+        self.assertEqual(
+            manager_markup.inline_keyboard[0][1].callback_data,
             "manage:participantmsg:17:42:0",
         )
 
@@ -273,26 +276,46 @@ class FeatureFlowTests(unittest.IsolatedAsyncioTestCase):
             [button.callback_data for row in markup.inline_keyboard for button in row],
         )
 
-    async def test_participant_message_callback_rejects_non_superadmin(self) -> None:
+    async def test_participant_message_button_accepts_the_quest_admin_and_rejects_others(self) -> None:
         class Db:
+            def __init__(self, owner_id: int) -> None:
+                self.owner_id = owner_id
+
             async def get_language(self, user_id: int) -> str:
                 return "en"
 
             async def get_role(self, user_id: int) -> str:
                 return "admin"
 
-        callback = SimpleNamespace(
-            data="manage:participantmsg:17:42:0",
-            from_user=SimpleNamespace(id=9),
-            message=SimpleNamespace(chat=SimpleNamespace(type="private")),
-            answer=AsyncMock(),
-        )
-        state = FakeState()
+            async def get_quest(self, quest_id: int) -> dict:
+                return {"id": quest_id, "owner_id": self.owner_id, "title": "Night Quest"}
 
-        await begin_participant_message(callback, state, Db())
+            async def participant(self, quest_id: int, user_id: int) -> dict:
+                return {"status": "active"}
 
-        self.assertIsNone(state.current_state)
-        self.assertTrue(callback.answer.await_args.kwargs["show_alert"])
+            async def get_user(self, user_id: int) -> dict:
+                return {"full_name": "Player One", "username": "player"}
+
+        def callback_for(user_id: int):
+            return SimpleNamespace(
+                data="manage:participantmsg:17:42:0",
+                from_user=SimpleNamespace(id=user_id),
+                message=SimpleNamespace(chat=SimpleNamespace(type="private"), answer=AsyncMock()),
+                answer=AsyncMock(),
+            )
+
+        # The quest's own admin may message a participant of that quest.
+        owner_callback = callback_for(9)
+        owner_state = FakeState()
+        await begin_participant_message(owner_callback, owner_state, Db(owner_id=9))
+        self.assertEqual(owner_state.current_state, SuperadminFlow.participant_message)
+
+        # An unrelated admin is refused.
+        stranger_callback = callback_for(10)
+        stranger_state = FakeState()
+        await begin_participant_message(stranger_callback, stranger_state, Db(owner_id=9))
+        self.assertIsNone(stranger_state.current_state)
+        self.assertTrue(stranger_callback.answer.await_args.kwargs["show_alert"])
 
     async def test_private_deep_link_shows_full_preview_and_requires_explicit_confirmation(self) -> None:
         quest = self._quest()
@@ -882,6 +905,9 @@ class FeatureFlowTests(unittest.IsolatedAsyncioTestCase):
 
             async def get_language(self, user_id: int):
                 return "en"
+
+            async def open_stages_for_user(self, user_id: int):
+                return []
 
         message = SimpleNamespace(
             from_user=SimpleNamespace(id=20),

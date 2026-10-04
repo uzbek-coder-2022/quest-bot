@@ -16,6 +16,8 @@ class CreateQuest(StatesGroup):
     question = State()
     answer_mode = State()
     correct_answer = State()
+    attempts_mode = State()
+    common_attempts = State()
     max_attempts = State()
     stage_time = State()
     stage_start = State()
@@ -38,6 +40,7 @@ class AddStage(StatesGroup):
 class EditQuestDetails(StatesGroup):
     title = State()
     description = State()
+    start_at = State()
     cover_photo = State()
 
 

@@ -17,7 +17,7 @@ from ..keyboards import (
     language_keyboard,
     main_menu,
 )
-from ..localization import tr
+from ..localization import LANGUAGES, tr
 from ..presentation import (
     copy_quest_cover,
     guide_message,
@@ -249,7 +249,7 @@ async def choose_language_callback(callback: CallbackQuery, db: Database) -> Non
 @router.callback_query(F.data.startswith("lang:"))
 async def set_language_callback(callback: CallbackQuery, db: Database) -> None:
     language = callback.data.split(":", 1)[1]
-    if language not in {"uz", "ru", "en"}:
+    if language not in LANGUAGES:
         await callback.answer("Invalid language", show_alert=True)
         return
     await db.set_language(callback.from_user.id, language)

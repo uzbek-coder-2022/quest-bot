@@ -153,6 +153,26 @@ async def new_quest_admin_ticket(
     await callback.answer()
 
 
+async def _submit_support_ticket(
+    message: Message, state: FSMContext, db: Database, user_id: int, text: str
+) -> None:
+    """Create the ticket for an already validated support message."""
+    data = await state.get_data()
+    ticket_id = await db.create_ticket(
+        user_id,
+        data.get("support_quest_id"),
+        data.get("support_target_admin_id"),
+        text,
+    )
+    await db.log_action(
+        user_id, "support.ticket.created", "support_ticket", ticket_id
+    )
+    language = await db.get_language(user_id)
+    await state.clear()
+    await message.answer(tr(language, "support_created"))
+    await _notify_admins(message, db, ticket_id, text)
+
+
 @router.message(SupportFlow.new_message)
 async def create_ticket_message(
     message: Message, state: FSMContext, db: Database
@@ -162,19 +182,40 @@ async def create_ticket_message(
     if not text or len(text) > 2000:
         await message.answer(tr(language, "invalid_text"))
         return
+    # A participant may write their answer while the support form is open. Ask
+    # which one they meant instead of silently sending the answer as a ticket.
+    stages = await db.open_stages_for_user(message.from_user.id)
+    if stages:
+        await state.update_data(pending_support_text=text)
+        await message.answer(
+            information_message(
+                tr(language, "ambiguous_message_title"),
+                tr(language, "ambiguous_message_body"),
+            ),
+            reply_markup=answer_or_ticket_keyboard(language, stages),
+        )
+        return
+    await _submit_support_ticket(message, state, db, message.from_user.id, text)
+
+
+@router.callback_query(F.data == "support:pending:ticket")
+async def pending_text_as_ticket(
+    callback: CallbackQuery, state: FSMContext, db: Database
+) -> None:
+    """Treat the stored text as a support message after all."""
+    if not await _ensure_private(callback, db):
+        return
+    language = await db.get_language(callback.from_user.id)
     data = await state.get_data()
-    ticket_id = await db.create_ticket(
-        message.from_user.id,
-        data.get("support_quest_id"),
-        data.get("support_target_admin_id"),
-        text,
+    text = str(data.get("pending_support_text") or "").strip()
+    if not text:
+        await state.clear()
+        await callback.answer(tr(language, "error_generic"), show_alert=True)
+        return
+    await _submit_support_ticket(
+        callback.message, state, db, callback.from_user.id, text
     )
-    await db.log_action(
-        message.from_user.id, "support.ticket.created", "support_ticket", ticket_id
-    )
-    await state.clear()
-    await message.answer(tr(language, "support_created"))
-    await _notify_admins(message, db, ticket_id, text)
+    await callback.answer()
 
 
 @router.callback_query(F.data == "support:tickets")

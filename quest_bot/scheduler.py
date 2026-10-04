@@ -18,8 +18,10 @@ from .error_reporting import (
 )
 from .localization import tr
 from .services import (
+    announce_stage,
     cleanup_known_chat_members,
     notify_quest_end,
+    notify_quest_started,
     release_stage,
     send_chat_invites_to_current_participants,
 )
@@ -65,6 +67,12 @@ async def scheduler_tick(
             latest_quest = await db.get_quest(quest_id)
             if latest_quest and not latest_quest.get("paused_at"):
                 await send_chat_invites_to_current_participants(bot, db, latest_quest)
+                await notify_quest_started(
+                    bot,
+                    db,
+                    latest_quest,
+                    await db.all_participant_ids(quest_id),
+                )
 
     active_quests = await db.list_active_quests()
     expired_quest_ids: set[int] = set()
@@ -111,7 +119,9 @@ async def scheduler_tick(
         else:
             stage = await db.get_stage(int(quest["id"]), 1)
             if stage and stage["starts_at"] <= now:
-                await release_stage(bot, db, quest, stage, bot_username, announce=True)
+                # Immediate quests already told participants that the quest
+                # started; stage one only needs the group announcement.
+                await announce_stage(bot, db, quest, stage, bot_username)
         if await db.maybe_complete_quest(int(quest["id"])):
             user_ids = await db.all_participant_ids(
                 int(quest["id"]), ("joined", "active")

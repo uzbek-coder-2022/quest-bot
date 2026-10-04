@@ -184,6 +184,11 @@ class DatabaseFlowTests(unittest.IsolatedAsyncioTestCase):
                 quest_id, 20, stage, "2026-10-01T00:10:00+00:00"
             )
         )
+        self.assertTrue(
+            await self.db.mark_stage_delivered(
+                quest_id, 20, int(stage["id"]), "2026-10-01T00:10:00+00:00"
+            )
+        )
 
         paused_at = "2026-10-01T00:20:00+00:00"
         self.assertTrue(await self.db.pause_quest(quest_id, 1, paused_at))
@@ -229,6 +234,11 @@ class DatabaseFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(
             await self.db.activate_stage_for_participant(
                 quest_id, 20, stage, "2026-10-01T00:10:00+00:00"
+            )
+        )
+        self.assertTrue(
+            await self.db.mark_stage_delivered(
+                quest_id, 20, int(stage["id"]), "2026-10-01T00:10:00+00:00"
             )
         )
         answer = await self.db.submit_answer(
@@ -473,6 +483,8 @@ class DatabaseFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(stats["active_users_30d"], 2)
         self.assertEqual(stats["language_uz"], 2)
         self.assertEqual(stats["language_ru"], 1)
+        self.assertEqual(stats["language_uzn"], 0)
+        self.assertEqual(stats["language_kaa"], 0)
         self.assertEqual(stats["participants"], 1)
         self.assertEqual(stats["participating_users"], 1)
         self.assertEqual(stats["completed_participations"], 1)

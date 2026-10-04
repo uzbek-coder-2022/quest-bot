@@ -21,6 +21,8 @@ from ..keyboards import (
     admin_list_keyboard,
     admin_panel,
     button,
+    confirm_delete_quest_keyboard,
+    deleted_quest_keyboard,
     manage_chat_keyboard,
     managed_chats_keyboard,
     page_sizes_keyboard,
@@ -32,7 +34,11 @@ from ..keyboards import (
 from ..localization import tr
 from ..presentation import activity_message, information_message
 from ..rich_text import heading, paragraph, quote, rich_message
-from ..services import answer_deep_link, send_stage_to_user
+from ..services import (
+    answer_deep_link,
+    notify_next_stage_ready,
+    send_stage_to_user,
+)
 from ..states import ModerationFlow, SuperadminFlow
 from ..utils import can_manage_quest, display_name, ensure_private_callback, safe_edit
 
@@ -93,12 +99,11 @@ async def _require_superadmin(callback: CallbackQuery, db: Database) -> bool:
 async def _send_question_after_review(
     bot: Bot, db: Database, quest_id: int, user_id: int, stage_order: int
 ) -> None:
+    """Ask a participant to open their next stage after a review approval."""
     quest = await db.get_quest(quest_id)
-    stage = await db.get_stage(quest_id, stage_order)
-    if not quest or not stage:
+    if not quest:
         return
-    me = await bot.get_me()
-    await send_stage_to_user(bot, db, quest, stage, user_id, me.username or "")
+    await notify_next_stage_ready(bot, db, quest, user_id)
 
 
 @router.message(Command("admin"))
@@ -603,7 +608,6 @@ async def show_participants(callback: CallbackQuery, db: Database) -> None:
         return
     quest = await db.get_quest(quest_id)
     language = await db.get_language(callback.from_user.id)
-    role = await db.get_role(callback.from_user.id)
     if not quest or not await can_manage_quest(db, callback.from_user.id, quest):
         await callback.answer(tr(language, "quest_not_found"), show_alert=True)
         return
@@ -627,7 +631,7 @@ async def show_participants(callback: CallbackQuery, db: Database) -> None:
                 participants,
                 page,
                 20,
-                show_message_button=role == "superadmin",
+                show_message_button=True,
                 total_count=total,
             ),
         )
@@ -638,7 +642,7 @@ async def show_participants(callback: CallbackQuery, db: Database) -> None:
 async def begin_participant_message(
     callback: CallbackQuery, state: FSMContext, db: Database
 ) -> None:
-    if not await _require_superadmin(callback, db):
+    if not await ensure_private_callback(callback, db):
         return
     try:
         _, _, quest_text, user_text, page_text = callback.data.split(":", 4)
@@ -646,19 +650,21 @@ async def begin_participant_message(
     except ValueError:
         await callback.answer()
         return
+    language = await db.get_language(callback.from_user.id)
+    quest = await db.get_quest(quest_id)
+    participant = await db.participant(quest_id, user_id)
+    if (
+        not quest
+        or not participant
+        or not await can_manage_quest(db, callback.from_user.id, quest)
+    ):
+        await callback.answer(tr(language, "participant_message_unavailable"), show_alert=True)
+        return
     if await state.get_state() is not None:
-        language = await db.get_language(callback.from_user.id)
         await callback.answer(
             tr(language, "participant_message_finish_current_flow"), show_alert=True
         )
         return
-    quest = await db.get_quest(quest_id)
-    participant = await db.participant(quest_id, user_id)
-    if not quest or not participant:
-        language = await db.get_language(callback.from_user.id)
-        await callback.answer(tr(language, "participant_message_unavailable"), show_alert=True)
-        return
-    language = await db.get_language(callback.from_user.id)
     user = await db.get_user(user_id) or {}
     user_name = display_name(user.get("full_name"), user.get("username"), user_id)
     await state.update_data(
@@ -687,9 +693,10 @@ async def participant_message_received(
     if not message.from_user:
         return
     language = await db.get_language(message.from_user.id)
-    if await db.get_role(message.from_user.id) != "superadmin":
+    role = await db.get_role(message.from_user.id)
+    if role not in {"admin", "superadmin"}:
         await state.clear()
-        await message.answer(tr(language, "superadmin_only"))
+        await message.answer(tr(language, "admin_only"))
         return
     text = (message.text or "").strip()
     if not 1 <= len(text) <= 2000:
@@ -706,10 +713,19 @@ async def participant_message_received(
         return
     quest = await db.get_quest(quest_id)
     participant = await db.participant(quest_id, user_id) if quest else None
-    if not quest or not participant:
+    if (
+        not quest
+        or not participant
+        or not await can_manage_quest(db, message.from_user.id, quest)
+    ):
         await state.clear()
         await message.answer(tr(language, "participant_message_unavailable"))
         return
+    heading_key = (
+        "participant_message_heading"
+        if role == "superadmin"
+        else "participant_message_heading_admin"
+    )
     target_user = await db.get_user(user_id) or {}
     target_name = display_name(
         target_user.get("full_name"), target_user.get("username"), user_id
@@ -722,7 +738,7 @@ async def participant_message_received(
                 heading(
                     tr(
                         target_language,
-                        "participant_message_heading",
+                        heading_key,
                         title=quest["title"],
                     ),
                     size=2,
@@ -1155,6 +1171,109 @@ async def unarchive_quest_callback(callback: CallbackQuery, db: Database) -> Non
             callback,
             tr(language, "quest_unarchived"),
             reply_markup=admin_home_keyboard(language),
+        )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("manage:delete:"))
+async def confirm_quest_deletion(callback: CallbackQuery, db: Database) -> None:
+    """Ask before soft-deleting a quest: only the delete flag is set."""
+    if not await ensure_private_callback(callback, db):
+        return
+    try:
+        quest_id = int(callback.data.rsplit(":", 1)[1])
+    except (ValueError, AttributeError):
+        await callback.answer()
+        return
+    language = await db.get_language(callback.from_user.id)
+    quest = await db.get_quest(quest_id)
+    role = await db.get_role(callback.from_user.id)
+    if not quest or not await can_manage_quest(db, callback.from_user.id, quest):
+        await callback.answer(tr(language, "quest_not_found"), show_alert=True)
+        return
+    if quest["status"] == "archived" and role != "superadmin":
+        await callback.answer(tr(language, "quest_metadata_archived"), show_alert=True)
+        return
+    if callback.message:
+        await callback.message.answer(
+            tr(language, "confirm_delete_quest", title=quest["title"]),
+            reply_markup=confirm_delete_quest_keyboard(language, quest_id),
+        )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("manage:deleteconfirm:"))
+async def delete_quest_confirmed(callback: CallbackQuery, db: Database) -> None:
+    """Mark a quest deleted without removing its data."""
+    if not await ensure_private_callback(callback, db):
+        return
+    try:
+        quest_id = int(callback.data.rsplit(":", 1)[1])
+    except (ValueError, AttributeError):
+        await callback.answer()
+        return
+    language = await db.get_language(callback.from_user.id)
+    quest = await db.get_quest(quest_id)
+    role = await db.get_role(callback.from_user.id)
+    if not quest or not await can_manage_quest(db, callback.from_user.id, quest):
+        await callback.answer(tr(language, "quest_not_found"), show_alert=True)
+        return
+    if quest["status"] == "archived" and role != "superadmin":
+        await callback.answer(tr(language, "quest_metadata_archived"), show_alert=True)
+        return
+    if not await db.soft_delete_quest(quest_id, callback.from_user.id, utc_now()):
+        await callback.answer(tr(language, "error_generic"), show_alert=True)
+        return
+    if callback.message:
+        await safe_edit(
+            callback,
+            tr(language, "quest_deleted"),
+            reply_markup=admin_home_keyboard(language),
+        )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("manage:restore:"))
+async def restore_quest_callback(callback: CallbackQuery, db: Database) -> None:
+    """Let a superadmin clear the soft-delete flag again."""
+    if not await ensure_private_callback(callback, db):
+        return
+    language = await db.get_language(callback.from_user.id)
+    if await db.get_role(callback.from_user.id) != "superadmin":
+        await callback.answer(tr(language, "superadmin_only"), show_alert=True)
+        return
+    try:
+        quest_id = int(callback.data.rsplit(":", 1)[1])
+    except (ValueError, AttributeError):
+        await callback.answer()
+        return
+    quest = await db.get_quest(quest_id, include_deleted=True)
+    if not quest or not quest["deleted"]:
+        await callback.answer(tr(language, "quest_not_found"), show_alert=True)
+        return
+    if not await db.restore_quest(quest_id, callback.from_user.id, utc_now()):
+        await callback.answer(tr(language, "error_generic"), show_alert=True)
+        return
+    if callback.message:
+        await safe_edit(
+            callback,
+            tr(language, "quest_restored"),
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        button(
+                            tr(language, "btn_open"),
+                            f"manage:quest:{quest_id}",
+                        )
+                    ],
+                    [
+                        button(
+                            tr(language, "btn_back"), "adminq:filter:deleted:0"
+                        )
+                    ],
+                    [button(tr(language, "btn_admin_home"), "admin:home")],
+                ]
+            ),
         )
     await callback.answer()
 

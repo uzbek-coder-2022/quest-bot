@@ -2,7 +2,7 @@
 
 ## 1. Goal and scope
 
-Build a Telegram bot with aiogram 3 for creating and running quests and managing participants. The user interface supports Uzbek, Russian, and English. There will be no web admin panel and no advertising.
+Build a Telegram bot with aiogram 3 for creating and running quests and managing participants. The user interface supports Uzbek, «Yangi o‘zbek» (the same Uzbek interface with the letters ö, ğ, ş, and ç), Karakalpak, Russian, and English. There will be no web admin panel and no advertising.
 
 The first release runs entirely inside Telegram. Production deployments use PostgreSQL through `asyncpg`; SQLite remains available for local development and unit tests. Quest titles, descriptions, and questions are displayed in the language entered by the quest author; changing the interface language does not automatically translate quest content.
 
@@ -13,13 +13,15 @@ The first release runs entirely inside Telegram. Production deployments use Post
 - Browse public quests by status: scheduled, active, completed, or archived; revisit joined quests, including private quests, from a personal quest list.
 - Pagination size configurable by a superadmin: 5, 10, 20, or 50 records.
 - Join public quests in the bot and private quests through a bot deep link. Joining always requires explicit confirmation after a preview showing title, description, stage count, start time, optional cover photo, and participant count.
-- Submit answers in a private chat with the bot.
+- Submit answers in a private chat with the bot. A started quest does not push its first question: it sends a start notice, and the question arrives after the participant presses **Start quest** in the quest card, below the rating button. Later stages use the same **Continue** button, including in stage-ready notices.
+- When several unfinished quests have delivered a question, the most recently delivered question is used as the answer target instead of asking which quest the message belongs to. If the text could also be a support message, the bot asks whether it is an answer or a support message.
 - Preserve each quest's leaderboard, ordered by correctly solved stages, completion time, and then join time; show the completion time for each participant who successfully completed the quest.
 - Aggregate rankings across public quests for the current calendar week, month, and year in `Asia/Tashkent`. Each correctly solved stage earns one point; break ties by the number of public quests completed in that period. The week begins Monday; months and years begin on their first calendar day.
 
 ### B. Quest creation and participation
 - Quest fields: title, description, public/private visibility, optional cover photo, start time, overall duration, number of stages, and the chat in which questions are published. Copy cover photos into the configured private archive channel and retain archive chat/message references plus a reusable Telegram file ID for Rich Message previews; do not download media files. Embed new covers in the quest Rich Message with inline controls attached to the same message. Existing covers without a stored file ID retain the archive-message copy fallback until replaced; in user-side quest details, send this image before a fresh Rich Message preview.
-- Each stage has a text, photo, or video question, automatic or manual answer checking, an attempt limit, and an optional time limit. Text/media questions are copied into a dedicated private Telegram archive channel; the database stores the question text/caption, answer metadata, Telegram archive chat/message references, and the media type plus reusable Telegram file ID for new or re-saved questions, never media files. New/re-saved questions are delivered as one Rich Message containing the quest title, stage and attempt/time details, question content, and localized answer-submission instruction. Legacy stages with unknown media retain the archive-copy fallback until re-saved.
+- Creation asks whether one attempt limit applies to every stage (entered once) or every stage has its own limit (asked per stage). Each stage has a text, photo, or video question, automatic or manual answer checking, an attempt limit, and an optional time limit. Text/media questions are copied into a dedicated private Telegram archive channel; the database stores the question text/caption, answer metadata, Telegram archive chat/message references, and the media type plus reusable Telegram file ID for new or re-saved questions, never media files. New/re-saved questions are delivered as one Rich Message containing the quest title, stage and attempt/time details, question content, and localized answer-submission instruction. Legacy stages with unknown media retain the archive-copy fallback until re-saved.
+- A scheduled quest's start time can be changed from **Edit quest details**; every scheduled stage time shifts by the same difference. The start time of a quest that already started cannot be moved.
 - Questions and their media can be edited before the quest starts. Once active, only stages not yet delivered to participants or announced in a quest chat can be edited. Delivered or announced stages remain unchanged. Automatic-answer stages also allow the correct answer to be corrected while the stage remains unreleased.
 - From the question-editing flow, admins can append a fully configured stage (question/media, answer mode, automatic correct answer when applicable, attempts, time limit, and scheduled delivery time when applicable) or remove a stage after explicit confirmation. New questions are copied to the archive only when the stage is saved. The 30-stage limit applies. The final remaining stage cannot be removed; deleting a stage compacts later stage numbers and keeps the count synchronized. In an active quest, append only while its existing final stage is unreleased, and remove only when the selected stage and its entire later suffix are unreleased. Scheduled delivery must be strictly after the prior stage and within the quest's overall deadline. Paused schedules continue to shift with the quest when it resumes.
 - Stage progression modes:
@@ -38,6 +40,8 @@ The first release runs entirely inside Telegram. Production deployments use Post
 - An admin can manage only quests they created; superadmins can view and manage every quest.
 - Quest management includes leaderboards, database-paginated participant lists (20 per page), manually reviewed answers, pausing/resuming, question editing, stage addition/removal, and finishing a quest. Admin subflows provide navigation back to the admin panel.
 - An admin can block a participant from a specific quest, optionally provide a reason, and notify the participant. The block can also be reversed.
+- An admin can send a message to a participant of a quest they manage. In the participant list the first button identifies the participant and the second sends that message.
+- Quests are deleted softly: the owning admin or a superadmin can mark a quest deleted, which only sets the delete flag and hides the quest from listings while every row (stages, questions, participations, and answers) stays in the database. Superadmins can list deleted quests and restore them.
 - Only superadmins can archive and unarchive quests.
 - The superadmin panel includes admin management, all quests, audit logs, pagination settings, managed group/channels, and ZIP data export. Statistics include total users, new users in the last 30 days, 7-/30-day active users, language distribution, quest counts, participation counts, and completion metrics.
 
@@ -70,6 +74,9 @@ The first release runs entirely inside Telegram. Production deployments use Post
 | Manage a quest | No | Own quests only | All quests |
 | Review manual answers | No | Own quests only | All quests |
 | Block a participant from a quest | No | Own quests only | All quests |
+| Message a quest participant | No | Own quests only | All quests |
+| Delete a quest (soft delete) | No | Own quests only | All quests |
+| List and restore deleted quests | No | No | Yes |
 | Add or remove admins | No | No | Yes |
 | Archive quests, change global settings, and export data | No | No | Yes |
 
@@ -80,6 +87,7 @@ The first release runs entirely inside Telegram. Production deployments use Post
 - Overall and stage time limits are entered in minutes; `0` means no limit.
 - In scheduled mode, stage start times must be strictly increasing and, when an overall duration is set, must not extend past the quest end time.
 - When the next scheduled stage begins, any still-open previous stage is closed for that participant.
+- A soft-deleted quest keeps all of its rows; only the delete flag changes. Deleted quests are excluded from browsing, joining, answering, scheduling, ratings, and statistics until a superadmin restores them.
 
 ## 5. Technical structure
 
@@ -93,8 +101,9 @@ The first release runs entirely inside Telegram. Production deployments use Post
 - `deploy.sh` — PostgreSQL validation and systemd service installation/startup.
 - `stop.sh` — safely stop the systemd service during troubleshooting.
 - `quest_bot/services.py` — question delivery, group announcements, and chat-member removal.
-- `quest_bot/localization.py` — Uzbek, Russian, and English translations.
-- `tests/` — database and core-rule tests.
+- `quest_bot/localization.py` — Uzbek, «Yangi o‘zbek», Karakalpak, Russian, and English translations.
+- `quest_bot/localization_kaa.py` — the full Karakalpak interface dictionary merged into `localization.py`.
+- `tests/` — database, core-rule, language, soft-delete, and start-button tests.
 
 ## 6. Telegram limitations and security notes
 

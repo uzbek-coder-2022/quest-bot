@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
 from typing import Any
 
 from aiogram import Bot
@@ -11,6 +10,7 @@ from aiogram.exceptions import TelegramAPIError, TelegramForbiddenError
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, InputRichMessage
 
 from .database import Database, utc_now
+from .keyboards import continue_keyboard
 from .localization import tr
 from .rich_text import (
     bold,
@@ -194,13 +194,16 @@ async def send_stage_to_user(
     bot_username: str,
     already_activated: bool = False,
 ) -> bool:
-    """Activate a participant stage and send its private question."""
+    """Deliver a participant's open stage question and start its timer."""
+    quest_id = int(quest["id"])
     if not already_activated and not await db.activate_stage_for_participant(
-        quest["id"], user_id, stage, utc_now()
+        quest_id, user_id, stage, utc_now()
     ):
         return False
-    stage = await db.get_stage(int(quest["id"]), int(stage["stage_order"]))
+    stage = await db.get_stage(quest_id, int(stage["stage_order"]))
     if not stage:
+        return False
+    if not await db.mark_stage_delivered(quest_id, user_id, int(stage["id"]), utc_now()):
         return False
     language = await db.get_language(user_id)
     source_chat_id = stage.get("source_chat_id")
@@ -299,6 +302,106 @@ async def announce_stage(
         )
 
 
+async def notify_quest_started(
+    bot: Bot, db: Database, quest: dict[str, Any], user_ids: list[int]
+) -> None:
+    """Tell participants that a quest started without pushing the first question.
+
+    The question itself is sent only after the participant presses the
+    Start/Continue button, either in this notice or in the quest card.
+    """
+    for user_id in user_ids:
+        language = await db.get_language(user_id)
+        stage = await db.next_deliverable_stage(int(quest["id"]), user_id, utc_now())
+        started = bool(stage) and int(stage["stage_order"]) > 1
+        button_label = tr(
+            language, "btn_continue_quest" if started else "btn_start_quest"
+        )
+        blocks = [
+            heading(
+                tr(language, "quest_started_notice", title=quest["title"]), size=2
+            ),
+            paragraph(
+                tr(
+                    language,
+                    "quest_started_hint" if stage else "quest_started_waiting",
+                    button=button_label,
+                )
+            ),
+        ]
+        try:
+            await bot.send_rich_message(
+                user_id,
+                rich_message(*blocks),
+                reply_markup=(
+                    continue_keyboard(language, int(quest["id"]), started)
+                    if stage
+                    else None
+                ),
+            )
+        except TelegramAPIError:
+            logger.info(
+                "Could not send the quest start notice to user %s", user_id
+            )
+
+
+async def notify_stage_available(
+    bot: Bot,
+    db: Database,
+    quest: dict[str, Any],
+    stage: dict[str, Any],
+    user_ids: list[int],
+) -> None:
+    """Invite participants to open a stage that just became available."""
+    for user_id in user_ids:
+        language = await db.get_language(user_id)
+        blocks = [
+            heading(
+                tr(
+                    language,
+                    "stage_available_notice",
+                    title=quest["title"],
+                    number=stage["stage_order"],
+                ),
+                size=2,
+            ),
+            paragraph(
+                tr(
+                    language,
+                    "stage_continue_hint",
+                    button=tr(language, "btn_continue_quest"),
+                )
+            ),
+        ]
+        try:
+            await bot.send_rich_message(
+                user_id,
+                rich_message(*blocks),
+                reply_markup=continue_keyboard(
+                    language, int(quest["id"]), started=True
+                ),
+            )
+        except TelegramAPIError:
+            logger.info("Could not send the stage notice to user %s", user_id)
+
+
+async def notify_next_stage_ready(
+    bot: Bot, db: Database, quest: dict[str, Any], user_id: int
+) -> None:
+    """Point a participant at their next question instead of pushing it."""
+    language = await db.get_language(user_id)
+    try:
+        await bot.send_message(
+            user_id,
+            tr(language, "correct_next", button=tr(language, "btn_continue_quest")),
+            reply_markup=continue_keyboard(
+                language, int(quest["id"]), started=True
+            ),
+        )
+    except TelegramAPIError:
+        logger.info("Could not send the next-stage notice to user %s", user_id)
+
+
 async def release_stage(
     bot: Bot,
     db: Database,
@@ -307,32 +410,32 @@ async def release_stage(
     bot_username: str,
     announce: bool = True,
 ) -> None:
-    """Announce a synchronized stage and deliver it to currently joined participants."""
+    """Announce a due stage and invite participants to open it themselves.
+
+    Scheduled quests activate the stage for every current participant so the
+    previous open stage closes on time, but the question text is still delivered
+    only when a participant presses Start/Continue. Immediate quests activate
+    each participant's stage at that moment.
+    """
     if announce:
         await announce_stage(bot, db, quest, stage, bot_username)
-    participants = await db.activate_stage_for_quest(int(quest["id"]), stage, utc_now())
-    for user_id in participants:
-        await send_stage_to_user(
-            bot, db, quest, stage, user_id, bot_username, already_activated=True
-        )
-
-
-async def send_current_stage_after_join(
-    bot: Bot,
-    db: Database,
-    quest: dict[str, Any],
-    user_id: int,
-    bot_username: str,
-) -> bool:
-    """Deliver the current stage to a participant who joins an already active quest."""
-    now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    quest_id = int(quest["id"])
+    now = utc_now()
     if quest["progression"] == "scheduled":
-        stage = await db.get_latest_due_stage(int(quest["id"]), now)
+        participants = await db.activate_stage_for_quest(quest_id, stage, now)
     else:
-        stage = await db.get_stage(int(quest["id"]), 1)
-    if not stage:
-        return False
-    return await send_stage_to_user(bot, db, quest, stage, user_id, bot_username)
+        participants = await db.all_participant_ids(quest_id)
+    if not await db.claim_stage_notice(quest_id, int(stage["id"]), now):
+        return
+    await notify_stage_available(bot, db, quest, stage, participants)
+
+
+async def notify_participant_stage_ready(
+    bot: Bot, db: Database, quest: dict[str, Any], user_id: int
+) -> bool:
+    """Invite one participant who joined an already active quest to start it."""
+    await notify_quest_started(bot, db, quest, [user_id])
+    return True
 
 
 async def get_chat_invite_for_participant(
