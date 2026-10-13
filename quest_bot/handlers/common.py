@@ -201,7 +201,7 @@ async def language_command(message: Message, db: Database) -> None:
     language = await db.get_language(message.from_user.id if message.from_user else 0)
     await answer_with_buttons(
         message,
-        tr(language, "language_choose"),
+        information_message(tr(language, "language_choose"), title_size=4),
         reply_markup=language_keyboard(language),
     )
 
@@ -256,7 +256,7 @@ async def choose_language_callback(callback: CallbackQuery, db: Database) -> Non
     if callback.message:
         await safe_edit(
             callback,
-            tr(language, "language_choose"),
+            information_message(tr(language, "language_choose"), title_size=4),
             reply_markup=language_keyboard(language),
         )
     await callback.answer()

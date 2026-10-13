@@ -14,7 +14,12 @@ from quest_bot.handlers.admin import (
     participant_message_received,
     show_participants,
 )
-from quest_bot.handlers.common import _join_from_payload, cancel_command
+from quest_bot.handlers.common import (
+    _join_from_payload,
+    cancel_command,
+    choose_language_callback,
+    language_command,
+)
 from quest_bot.handlers.creation import (
     cover_photo_received,
     description_received,
@@ -1184,6 +1189,61 @@ class FeatureFlowTests(unittest.IsolatedAsyncioTestCase):
         changed = await safe_edit(callback, "same")
         self.assertFalse(changed)
         message.edit_text.assert_awaited_once_with(text="same", reply_markup=None)
+
+
+class LanguageMenuTitleTests(unittest.IsolatedAsyncioTestCase):
+    class Db:
+        async def ensure_user(self, user_id, username, full_name):
+            return None
+
+        async def get_language(self, user_id: int) -> str:
+            return "en"
+
+    @staticmethod
+    def _user():
+        return SimpleNamespace(
+            id=42, first_name="Test", last_name="User", username="test_user"
+        )
+
+    @staticmethod
+    def _assert_h4_with_language_buttons(test_case, rich_message) -> None:
+        test_case.assertEqual(rich_message.blocks[0].type.value, "heading")
+        test_case.assertEqual(rich_message.blocks[0].size, 4)
+        buttons = [
+            button.callback_data
+            for block in rich_message.blocks
+            if block.type == "buttons"
+            for button in block.buttons
+        ]
+        test_case.assertEqual(
+            buttons,
+            ["lang:uz", "lang:uzn", "lang:kaa", "lang:ru", None, "menu:home"],
+        )
+
+    async def test_language_command_uses_h4_for_the_menu_title(self) -> None:
+        message = SimpleNamespace(
+            from_user=self._user(),
+            answer=AsyncMock(),
+            answer_rich=AsyncMock(),
+        )
+
+        await language_command(message, self.Db())
+
+        message.answer.assert_not_awaited()
+        rich_message = message.answer_rich.await_args.args[0]
+        self._assert_h4_with_language_buttons(self, rich_message)
+
+    async def test_language_callback_uses_h4_for_the_menu_title(self) -> None:
+        callback = SimpleNamespace(
+            from_user=self._user(),
+            message=SimpleNamespace(edit_text=AsyncMock()),
+            answer=AsyncMock(),
+        )
+
+        await choose_language_callback(callback, self.Db())
+
+        rich_message = callback.message.edit_text.await_args.kwargs["rich_message"]
+        self._assert_h4_with_language_buttons(self, rich_message)
 
 
 if __name__ == "__main__":

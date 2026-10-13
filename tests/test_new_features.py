@@ -77,7 +77,12 @@ from quest_bot.handlers.support import (
     show_ticket_history,
 )
 from quest_bot.localization import LANGUAGES, TEXTS, yangi_uzbek
-from quest_bot.presentation import support_notification, support_reply, thread_tag
+from quest_bot.presentation import (
+    information_message,
+    support_notification,
+    support_reply,
+    thread_tag,
+)
 from quest_bot.rich_buttons import embed_inline_keyboard
 from quest_bot.states import CreateQuest
 from quest_bot.services import answer_button
@@ -118,6 +123,12 @@ class LanguageTests(unittest.TestCase):
                 self.assertEqual(set(translations), set(LANGUAGES))
                 for language in LANGUAGES:
                     self.assertTrue(translations[language].strip())
+
+    def test_compact_information_screens_use_h4_titles(self) -> None:
+        screen = information_message("Main menu")
+
+        self.assertEqual(screen.blocks[0].type.value, "heading")
+        self.assertEqual(screen.blocks[0].size, 4)
 
     def test_delete_notices_hide_internal_details(self) -> None:
         """The admin must not see the delete flag or database wording."""
