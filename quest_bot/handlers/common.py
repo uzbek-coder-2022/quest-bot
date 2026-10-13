@@ -27,7 +27,7 @@ from ..presentation import (
     quest_preview,
 )
 from ..services import delete_archived_message
-from ..utils import answer_rich_with_buttons, safe_edit
+from ..utils import answer_rich_with_buttons, answer_with_buttons, safe_edit
 
 router = Router(name="common")
 logger = logging.getLogger(__name__)
@@ -169,11 +169,12 @@ async def cancel_command(message: Message, db: Database, state: FSMContext) -> N
         )
     language = await db.get_language(message.from_user.id if message.from_user else 0)
     role = await db.get_role(message.from_user.id) if message.from_user else None
-    await message.answer(
+    await answer_with_buttons(
+        message,
         tr(language, "cancelled"),
-        reply_markup=admin_home_keyboard(language)
-        if role in {"admin", "superadmin"}
-        else None,
+        reply_markup=(
+            admin_home_keyboard(language) if role in {"admin", "superadmin"} else None
+        ),
     )
 
 
@@ -196,8 +197,10 @@ async def menu_command(message: Message, db: Database, state: FSMContext) -> Non
 async def language_command(message: Message, db: Database) -> None:
     await _register_message_user(message, db)
     language = await db.get_language(message.from_user.id if message.from_user else 0)
-    await message.answer(
-        tr(language, "language_choose"), reply_markup=language_keyboard(language)
+    await answer_with_buttons(
+        message,
+        tr(language, "language_choose"),
+        reply_markup=language_keyboard(language),
     )
 
 
@@ -249,8 +252,10 @@ async def guide_callback(callback: CallbackQuery, db: Database) -> None:
 async def choose_language_callback(callback: CallbackQuery, db: Database) -> None:
     language = await db.get_language(callback.from_user.id)
     if callback.message:
-        await callback.message.edit_text(
-            tr(language, "language_choose"), reply_markup=language_keyboard(language)
+        await safe_edit(
+            callback,
+            tr(language, "language_choose"),
+            reply_markup=language_keyboard(language),
         )
     await callback.answer()
 
@@ -264,7 +269,8 @@ async def set_language_callback(callback: CallbackQuery, db: Database) -> None:
     await db.set_language(callback.from_user.id, language)
     role = await db.get_role(callback.from_user.id)
     if callback.message:
-        await callback.message.edit_text(
+        await safe_edit(
+            callback,
             f"{tr(language, 'language_saved')}\n\n{tr(language, 'menu')}",
             reply_markup=main_menu(language, role),
         )

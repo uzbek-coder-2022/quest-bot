@@ -30,7 +30,12 @@ from ..services import (
     question_media_details,
 )
 from ..states import CreateQuest
-from ..utils import format_datetime, parse_duration_input, parse_local_datetime
+from ..utils import (
+    answer_with_buttons,
+    format_datetime,
+    parse_duration_input,
+    parse_local_datetime,
+)
 
 router = Router(name="creation")
 logger = logging.getLogger(__name__)
@@ -138,7 +143,9 @@ async def _save_stage_or_continue(message: Message, state: FSMContext, starts_at
         me = await bot.get_me()
         invite_url = answer_deep_link(me.username or "", {**quest_data, "id": created_id})
         result += f"\n\n{invite_url}"
-    await message.answer(result, reply_markup=admin_home_keyboard(language))
+    await answer_with_buttons(
+        message, result, reply_markup=admin_home_keyboard(language)
+    )
 
 
 @router.callback_query(F.data == "create:start")
@@ -178,7 +185,11 @@ async def description_received(message: Message, state: FSMContext, db: Database
         return
     await state.update_data(description=description)
     await state.set_state(CreateQuest.cover_photo)
-    await message.answer(tr(language, "ask_cover_photo"), reply_markup=creation_cover_keyboard(language))
+    await answer_with_buttons(
+        message,
+        tr(language, "ask_cover_photo"),
+        reply_markup=creation_cover_keyboard(language),
+    )
 
 
 @router.message(CreateQuest.cover_photo, F.photo)
@@ -206,13 +217,21 @@ async def cover_photo_received(
         cover_file_id=message.photo[-1].file_id,
     )
     await state.set_state(CreateQuest.visibility)
-    await message.answer(tr(language, "ask_visibility"), reply_markup=creation_visibility(language))
+    await answer_with_buttons(
+        message,
+        tr(language, "ask_visibility"),
+        reply_markup=creation_visibility(language),
+    )
 
 
 @router.message(CreateQuest.cover_photo)
 async def invalid_cover_photo(message: Message, db: Database) -> None:
     language = await db.get_language(message.from_user.id if message.from_user else 0)
-    await message.answer(tr(language, "invalid_cover_photo"), reply_markup=creation_cover_keyboard(language))
+    await answer_with_buttons(
+        message,
+        tr(language, "invalid_cover_photo"),
+        reply_markup=creation_cover_keyboard(language),
+    )
 
 
 @router.callback_query(CreateQuest.cover_photo, F.data == "create:cover:skip")
@@ -223,7 +242,11 @@ async def skip_cover_photo(callback: CallbackQuery, state: FSMContext, db: Datab
     )
     await state.set_state(CreateQuest.visibility)
     if callback.message:
-        await callback.message.answer(tr(language, "ask_visibility"), reply_markup=creation_visibility(language))
+        await answer_with_buttons(
+            callback.message,
+            tr(language, "ask_visibility"),
+            reply_markup=creation_visibility(language),
+        )
     await callback.answer()
 
 
@@ -254,7 +277,11 @@ async def stage_count_received(message: Message, state: FSMContext, db: Database
         return
     await state.update_data(stage_count=count)
     await state.set_state(CreateQuest.progression)
-    await message.answer(tr(language, "ask_progression"), reply_markup=creation_progression(language))
+    await answer_with_buttons(
+        message,
+        tr(language, "ask_progression"),
+        reply_markup=creation_progression(language),
+    )
 
 
 @router.callback_query(CreateQuest.progression, F.data.startswith("create:progression:"))
@@ -304,7 +331,9 @@ async def duration_received(message: Message, state: FSMContext, db: Database) -
     await state.update_data(duration_seconds=int(duration_seconds or 0))
     chats = await db.managed_chats()
     await state.set_state(CreateQuest.chat)
-    await message.answer(tr(language, "ask_chat"), reply_markup=creation_chat(language, chats))
+    await answer_with_buttons(
+        message, tr(language, "ask_chat"), reply_markup=creation_chat(language, chats)
+    )
 
 
 @router.callback_query(CreateQuest.chat, F.data.startswith("create:chat:"))
@@ -328,7 +357,8 @@ async def chat_selected(callback: CallbackQuery, state: FSMContext, db: Database
     )
     await state.set_state(CreateQuest.attempts_mode)
     if callback.message:
-        await callback.message.answer(
+        await answer_with_buttons(
+            callback.message,
             tr(language, "ask_attempts_mode"),
             reply_markup=creation_attempts_mode(language),
         )
@@ -403,7 +433,11 @@ async def question_received(
         }
     )
     await state.set_state(CreateQuest.answer_mode)
-    await message.answer(tr(language, "ask_answer_mode"), reply_markup=creation_answer_mode(language))
+    await answer_with_buttons(
+        message,
+        tr(language, "ask_answer_mode"),
+        reply_markup=creation_answer_mode(language),
+    )
 
 
 @router.callback_query(CreateQuest.answer_mode, F.data.startswith("create:answer:"))
@@ -515,5 +549,9 @@ async def creation_cancel(callback: CallbackQuery, state: FSMContext, db: Databa
         await delete_archived_message(
             callback.message.bot, data.get("cover_chat_id"), data.get("cover_message_id")
         )
-        await callback.message.answer(tr(language, "cancelled"), reply_markup=admin_home_keyboard(language))
+        await answer_with_buttons(
+            callback.message,
+            tr(language, "cancelled"),
+            reply_markup=admin_home_keyboard(language),
+        )
     await callback.answer()

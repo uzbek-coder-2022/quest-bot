@@ -4,6 +4,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+from button_helpers import keyboard_from_call
 from quest_bot.handlers.quests import (
     added_stage_answer_mode_selected,
     added_stage_attempts_received,
@@ -328,9 +329,9 @@ class StageStructureUITests(unittest.IsolatedAsyncioTestCase):
             "manage:removestageconfirm:17:2",
             [
                 button.callback_data
-                for row in callback.message.edit_text.await_args.kwargs[
-                    "reply_markup"
-                ].inline_keyboard
+                for row in keyboard_from_call(
+                    callback.message.edit_text.await_args
+                ).inline_keyboard
                 for button in row
             ],
         )
@@ -350,9 +351,9 @@ class StageStructureUITests(unittest.IsolatedAsyncioTestCase):
             "manage:addstage:17",
             [
                 button.callback_data
-                for row in confirmed.message.edit_text.await_args.kwargs[
-                    "reply_markup"
-                ].inline_keyboard
+                for row in keyboard_from_call(
+                    confirmed.message.edit_text.await_args
+                ).inline_keyboard
                 for button in row
             ],
         )

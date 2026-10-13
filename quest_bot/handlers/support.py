@@ -25,7 +25,13 @@ from ..presentation import (
 )
 from ..states import SupportFlow
 from ..rich_text import heading, paragraph, rich_message
-from ..utils import answer_rich_with_buttons, safe_edit, send_rich_with_buttons
+from ..utils import (
+    answer_rich_with_buttons,
+    answer_with_buttons,
+    safe_edit,
+    safe_edit_buttons,
+    send_rich_with_buttons,
+)
 
 router = Router(name="support")
 
@@ -244,7 +250,8 @@ async def create_ticket_message(
     stages = await db.open_stages_for_user(message.from_user.id)
     if stages:
         await state.update_data(pending_support_text=text)
-        await message.answer(
+        await answer_with_buttons(
+            message,
             information_message(
                 tr(language, "ambiguous_message_title"),
                 tr(language, "ambiguous_message_body"),
@@ -428,10 +435,9 @@ async def begin_ticket_reply(
         # The message that was answered no longer offers Reply, so the same
         # notification cannot be answered twice.
         try:
-            await callback.message.edit_reply_markup(
-                reply_markup=ticket_reply_keyboard(
-                    language, ticket_id, can_reply=False
-                )
+            await safe_edit_buttons(
+                callback,
+                ticket_reply_keyboard(language, ticket_id, can_reply=False),
             )
         except TelegramAPIError:
             pass
@@ -569,7 +575,8 @@ async def admin_ticket_reply(message: Message, state: FSMContext, db: Database) 
         )
     except TelegramAPIError:
         pass
-    await message.answer(
+    await answer_with_buttons(
+        message,
         _tagged(language, "support_admin_reply_sent", ticket_id),
         reply_markup=ticket_reply_keyboard(language, ticket_id, can_reply=False),
     )

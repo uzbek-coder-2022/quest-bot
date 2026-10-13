@@ -405,9 +405,10 @@ class QuestMetadataEditingTests(unittest.IsolatedAsyncioTestCase):
         await cancel_stage_edit(callback, state, db)
 
         self.assertTrue(state.cleared)
-        self.assertIsNotNone(message.answer.await_args.kwargs["reply_markup"])
+        markup = keyboard_from_call(message.answer_rich.await_args)
+        self.assertIsNotNone(markup)
         self.assertEqual(
-            message.answer.await_args.kwargs["reply_markup"].inline_keyboard[0][0].callback_data,
+            markup.inline_keyboard[0][0].callback_data,
             "manage:edit:title:42",
         )
 

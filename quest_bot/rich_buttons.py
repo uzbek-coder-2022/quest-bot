@@ -9,6 +9,7 @@ from aiogram.types import (
     CopyTextButton,
     DisabledButton,
     InputRichBlockButtons,
+    InputRichBlockParagraph,
     InputRichMessage,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
@@ -183,17 +184,31 @@ def inline_keyboard_to_rich_blocks(
 
 
 def embed_inline_keyboard(
-    content: InputRichMessage,
+    content: str | InputRichMessage,
     markup: InlineKeyboardMarkup | None,
     *,
     align: ButtonAlignment = "center",
-) -> tuple[InputRichMessage, InlineKeyboardMarkup | None]:
-    """Move a supported inline keyboard into rich content as aligned button rows.
+) -> tuple[str | InputRichMessage, InlineKeyboardMarkup | None]:
+    """Embed supported controls in rich content as aligned button rows.
 
-    Non-block rich content and unsupported keyboard button types are returned
-    unchanged with their original ``reply_markup`` as a safe compatibility
-    fallback.
+    Plain text is wrapped in a literal paragraph when its keyboard can be
+    represented as rich buttons. Rich content keeps its existing blocks.
+    Unsupported keyboard button types and non-block rich content retain their
+    original ``reply_markup`` as a compatibility fallback.
     """
+    if isinstance(content, str):
+        if markup is None or not content:
+            return content, markup
+        paragraph_content = InputRichMessage(
+            blocks=[InputRichBlockParagraph(text=content)]
+        )
+        enriched, remaining_markup = embed_inline_keyboard(
+            paragraph_content, markup, align=align
+        )
+        if remaining_markup is None and isinstance(enriched, InputRichMessage):
+            return enriched, None
+        return content, markup
+
     if (
         markup is None
         or content.blocks is None

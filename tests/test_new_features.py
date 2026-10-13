@@ -10,6 +10,8 @@ from zoneinfo import ZoneInfo
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+from aiogram.types import RichMessage
+
 from button_helpers import keyboard_from_call, keyboard_from_rich
 from quest_bot import navigation
 from quest_bot.database import Database, utc_now
@@ -75,6 +77,7 @@ from quest_bot.handlers.support import (
 )
 from quest_bot.localization import LANGUAGES, TEXTS, yangi_uzbek
 from quest_bot.presentation import support_notification, support_reply, thread_tag
+from quest_bot.rich_buttons import embed_inline_keyboard
 from quest_bot.states import CreateQuest
 from quest_bot.services import answer_button
 from quest_bot.utils import rank_label
@@ -1147,7 +1150,7 @@ class PurgeQuestHandlerTests(unittest.IsolatedAsyncioTestCase):
             {"chat_id": 555, "message_id": 777},
         )
         self.assertEqual(
-            message.edit_text.await_args.kwargs["text"],
+            message.edit_text.await_args.kwargs["rich_message"].blocks[0].text,
             TEXTS["quest_purged"]["en"].format(title="Gone quest"),
         )
 
@@ -1255,8 +1258,9 @@ class QuestDurationEditTests(unittest.IsolatedAsyncioTestCase):
 
         # 06:00 UTC start, local Tashkent 08:00 is 03:00 UTC -> too early.
         self.assertEqual(db.updated, [])
+        sent = message.answer_rich.await_args.args[0]
         self.assertEqual(
-            message.answer.await_args.args[0],
+            sent.blocks[0].text,
             f"⚠️ {TEXTS['invalid_quest_end']['en']}",
         )
 
@@ -1466,15 +1470,15 @@ class ManualReviewFlowTests(unittest.IsolatedAsyncioTestCase):
             message, db, await db.get_quest(17), 31, "The bridge at dawn"
         )
 
-        self.assertEqual({chat for chat, _, _ in bot.messages}, {5, 1})
-        text = bot.messages[0][1]
+        self.assertEqual({chat for chat, _, _ in bot.rich}, {5, 1})
+        text = json.dumps(bot.rich[0][1].model_dump(mode="json"), ensure_ascii=False)
         self.assertIn("Player One", text)
         self.assertIn("Night Quest", text)
         self.assertIn("stage 2", text)
         self.assertIn("The bridge at dawn", text)
         codes = [
             item.callback_data
-            for row in bot.messages[0][2].inline_keyboard
+            for row in keyboard_from_rich(bot.rich[0][1]).inline_keyboard
             for item in row
         ]
         self.assertEqual(codes, ["review:31:yes", "review:31:no", "admin:home"])
@@ -1542,11 +1546,41 @@ class ManualReviewFlowTests(unittest.IsolatedAsyncioTestCase):
                 result=TEXTS["correct_result"]["en"]
             ),
         )
-        self.assertEqual(texts[1], TEXTS["correct_done"]["en"])
+        done_notices = [rich for chat, rich, _ in bot.rich if chat == 20]
+        self.assertEqual(done_notices[0].blocks[0].text, TEXTS["correct_done"]["en"])
+        self.assertEqual(
+            [
+                block.buttons[0].callback_data
+                for block in done_notices[0].blocks
+                if block.type == "buttons"
+            ],
+            ["quest:view:my:all:0:17"],
+        )
         callback.message.edit_reply_markup.assert_awaited()
         self.assertIn(
             TEXTS["review_approved"]["en"], callback.answer.await_args.args[0]
         )
+
+    async def test_reviewing_removes_rich_controls_without_using_legacy_markup_edit(self) -> None:
+        bot = self.Bot()
+        callback = self._callback("review:31:yes")
+        pending_content, remaining = embed_inline_keyboard(
+            "A pending answer",
+            review_keyboard("en", 31),
+        )
+        self.assertIsNone(remaining)
+        callback.message.rich_message = RichMessage.model_validate(
+            pending_content.model_dump(mode="json", exclude_none=True)
+        )
+        callback.message.edit_text = AsyncMock()
+        db = self.Db(pending=self._pending(), result={"final": False})
+
+        await review_answer(callback, db, bot)
+
+        callback.message.edit_reply_markup.assert_not_awaited()
+        edited = callback.message.edit_text.await_args.kwargs["rich_message"]
+        self.assertEqual(edited.blocks[0].text, "A pending answer")
+        self.assertFalse(any(block.type == "buttons" for block in edited.blocks))
 
     async def test_rejecting_spends_an_attempt_and_warns_about_exhaustion(self) -> None:
         bot = self.Bot()
@@ -1565,8 +1599,21 @@ class ManualReviewFlowTests(unittest.IsolatedAsyncioTestCase):
             pending=self._pending(), result={"exhausted": True, "remaining": 0}
         )
         await review_answer(self._callback("review:31:no"), exhausted, exhausted_bot)
-        texts = [text for chat, text, _ in exhausted_bot.messages if chat == 20]
-        self.assertEqual(texts[1], TEXTS["attempts_exhausted"]["en"])
+        exhausted_notices = [
+            rich for chat, rich, _ in exhausted_bot.rich if chat == 20
+        ]
+        self.assertEqual(
+            exhausted_notices[0].blocks[0].text,
+            TEXTS["attempts_exhausted"]["en"],
+        )
+        self.assertEqual(
+            [
+                block.buttons[0].callback_data
+                for block in exhausted_notices[0].blocks
+                if block.type == "buttons"
+            ],
+            ["quest:view:my:all:0:17"],
+        )
 
     async def test_a_paused_quest_refuses_the_review_and_keeps_it_pending(self) -> None:
         bot = self.Bot()
@@ -2082,6 +2129,28 @@ class NumberedThreadTests(unittest.IsolatedAsyncioTestCase):
 
         markup = callback.message.edit_reply_markup.await_args.kwargs["reply_markup"]
         codes = [item.callback_data for row in markup.inline_keyboard for item in row]
+        self.assertEqual(codes, ["support:close:31"])
+
+    async def test_answering_replaces_rich_reply_controls_without_losing_content(self) -> None:
+        db = self.Db()
+        callback = self._callback("support:reply:31")
+        rich, remaining = embed_inline_keyboard(
+            support_notification(31, "Superadmin", "Player", "Hello"),
+            ticket_reply_keyboard("en", 31),
+        )
+        self.assertIsNone(remaining)
+        callback.message.rich_message = RichMessage.model_validate(
+            rich.model_dump(mode="json", exclude_none=True)
+        )
+
+        await begin_ticket_reply(callback, FakeState({"ticket_id": 31}), db)
+
+        callback.message.edit_reply_markup.assert_not_awaited()
+        edited = callback.message.edit_text.await_args.kwargs["rich_message"]
+        body = json.dumps(edited.model_dump(mode="json"), ensure_ascii=False)
+        self.assertIn("#31", body)
+        rows = keyboard_from_rich(edited).inline_keyboard
+        codes = [item.callback_data for row in rows for item in row]
         self.assertEqual(codes, ["support:close:31"])
 
     async def test_a_closed_thread_refuses_new_replies(self) -> None:

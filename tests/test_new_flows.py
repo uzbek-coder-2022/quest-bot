@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock
 
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.methods import EditMessageText
+from aiogram.types import RichMessage
 
 from button_helpers import keyboard_from_call, keyboard_from_rich
 from quest_bot.handlers.admin import (
@@ -44,8 +45,10 @@ from quest_bot.keyboards import (
     participating_quests_keyboard,
 )
 from quest_bot.presentation import guide_message, quest_preview, support_history
+from quest_bot.rich_buttons import embed_inline_keyboard
+from quest_bot.rich_text import heading, quote, rich_message
 from quest_bot.states import CreateQuest, SuperadminFlow
-from quest_bot.utils import safe_edit
+from quest_bot.utils import safe_edit, safe_edit_buttons
 
 
 class FakeBot:
@@ -1102,6 +1105,60 @@ class FeatureFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             [button.callback_data for button in button_blocks[0].buttons],
             ["quest:joinconfirm:17", "quest:joincancel:17"],
+        )
+
+    async def test_safe_edit_buttons_updates_rich_content_instead_of_markup(self) -> None:
+        original, retained_markup = embed_inline_keyboard(
+            rich_message(heading("Review"), quote("The answer")),
+            join_confirmation_keyboard("en", 17),
+        )
+        self.assertIsNone(retained_markup)
+        response = RichMessage.model_validate(
+            original.model_dump(mode="json", exclude_none=True)
+        )
+        message = SimpleNamespace(
+            rich_message=response,
+            edit_text=AsyncMock(),
+            edit_reply_markup=AsyncMock(),
+        )
+        callback = SimpleNamespace(message=message)
+        replacement = admin_home_keyboard("en")
+
+        self.assertTrue(await safe_edit_buttons(callback, replacement))
+
+        message.edit_reply_markup.assert_not_awaited()
+        edited = message.edit_text.await_args.kwargs["rich_message"]
+        self.assertEqual(edited.blocks[0].text, original.blocks[0].text)
+        button_rows = [block for block in edited.blocks if block.type == "buttons"]
+        self.assertEqual(len(button_rows), 1)
+        self.assertEqual(
+            [button.callback_data for button in button_rows[0].buttons],
+            ["admin:home"],
+        )
+
+    async def test_safe_edit_embeds_buttons_for_plain_text_screens(self) -> None:
+        message = SimpleNamespace(edit_text=AsyncMock())
+        callback = SimpleNamespace(message=message)
+
+        self.assertTrue(
+            await safe_edit(
+                callback,
+                "Choose a language",
+                admin_home_keyboard("en"),
+            )
+        )
+
+        edited = message.edit_text.await_args.kwargs
+        self.assertIsNone(edited["reply_markup"])
+        self.assertEqual(edited["rich_message"].blocks[0].text, "Choose a language")
+        self.assertEqual(
+            [
+                button.callback_data
+                for block in edited["rich_message"].blocks
+                if block.type == "buttons"
+                for button in block.buttons
+            ],
+            ["admin:home"],
         )
 
     async def test_safe_edit_reports_successful_message_updates(self) -> None:

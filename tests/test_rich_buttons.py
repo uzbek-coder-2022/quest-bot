@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import ast
 import unittest
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 from aiogram.types import (
     CallbackGame,
@@ -21,6 +25,7 @@ from quest_bot.rich_buttons import (
     rich_button,
     rich_button_row,
 )
+from quest_bot.utils import answer_with_buttons, send_with_buttons
 
 
 class RichMessageButtonTests(unittest.TestCase):
@@ -61,6 +66,27 @@ class RichMessageButtonTests(unittest.TestCase):
             ["quest:join:7", "quest:cancel:7"],
         )
         self.assertEqual(rows[1].buttons[0].copy_text.text, "invite-link")
+
+    def test_plain_text_becomes_a_rich_paragraph_when_buttons_are_supported(self) -> None:
+        markup = InlineKeyboardMarkup(
+            inline_keyboard=[[InlineKeyboardButton(text="Choose", callback_data="choose")]]
+        )
+
+        enriched, remaining = embed_inline_keyboard("Choose an option", markup)
+
+        self.assertIsNone(remaining)
+        self.assertIsInstance(enriched, InputRichMessage)
+        self.assertEqual(enriched.blocks[0].type, "paragraph")
+        self.assertEqual(enriched.blocks[0].text, "Choose an option")
+        self.assertEqual(enriched.blocks[1].type, "buttons")
+        self.assertEqual(enriched.blocks[1].buttons[0].callback_data, "choose")
+
+        unsupported = InlineKeyboardMarkup(
+            inline_keyboard=[[InlineKeyboardButton(text="Pay", pay=True)]]
+        )
+        plain, remaining = embed_inline_keyboard("Checkout", unsupported)
+        self.assertEqual(plain, "Checkout")
+        self.assertIs(remaining, unsupported)
 
     def test_unrepresentable_keyboard_and_non_block_content_keep_the_old_keyboard(
         self,
@@ -192,6 +218,82 @@ class RichMessageButtonTests(unittest.TestCase):
             ]
         )
         self.assertIsNone(inline_keyboard_to_rich_blocks(game))
+
+
+class RichButtonDeliveryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_plain_text_send_helpers_embed_buttons_in_rich_messages(self) -> None:
+        markup = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="Continue", callback_data="continue")]
+            ]
+        )
+        message = SimpleNamespace(answer=AsyncMock(), answer_rich=AsyncMock())
+        bot = SimpleNamespace(
+            send_message=AsyncMock(), send_rich_message=AsyncMock()
+        )
+
+        await answer_with_buttons(message, "Ready?", markup)
+        await send_with_buttons(bot, 42, "Ready?", markup)
+
+        message.answer.assert_not_awaited()
+        message.answer_rich.assert_awaited_once()
+        answer_call = message.answer_rich.await_args
+        self.assertIsNone(answer_call.kwargs["reply_markup"])
+        self.assertEqual(answer_call.args[0].blocks[0].text, "Ready?")
+        self.assertEqual(
+            answer_call.args[0].blocks[1].buttons[0].callback_data, "continue"
+        )
+
+        bot.send_message.assert_not_awaited()
+        bot.send_rich_message.assert_awaited_once()
+        sent_call = bot.send_rich_message.await_args
+        self.assertEqual(sent_call.args[0], 42)
+        self.assertIsNone(sent_call.kwargs["reply_markup"])
+        self.assertEqual(sent_call.args[1].blocks[0].text, "Ready?")
+        self.assertEqual(
+            sent_call.args[1].blocks[1].buttons[0].callback_data, "continue"
+        )
+
+    async def test_unsupported_button_actions_keep_the_legacy_keyboard_intact(self) -> None:
+        markup = InlineKeyboardMarkup(
+            inline_keyboard=[[InlineKeyboardButton(text="Pay", pay=True)]]
+        )
+        message = SimpleNamespace(answer=AsyncMock(), answer_rich=AsyncMock())
+        bot = SimpleNamespace(
+            send_message=AsyncMock(), send_rich_message=AsyncMock()
+        )
+
+        await answer_with_buttons(message, "Checkout", markup)
+        await send_with_buttons(bot, 42, "Checkout", markup)
+
+        message.answer_rich.assert_not_awaited()
+        message.answer.assert_awaited_once_with("Checkout", reply_markup=markup)
+        bot.send_rich_message.assert_not_awaited()
+        bot.send_message.assert_awaited_once_with(
+            42, "Checkout", reply_markup=markup
+        )
+
+    async def test_source_has_no_keyboard_bearing_legacy_message_calls(self) -> None:
+        source_root = Path(__file__).parents[1] / "quest_bot"
+        for path in source_root.rglob("*.py"):
+            if path.name == "utils.py":
+                continue
+            tree = ast.parse(path.read_text())
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call) or not isinstance(
+                    node.func, ast.Attribute
+                ):
+                    continue
+                method = node.func.attr
+                if method not in {"answer", "copy_message"} and not method.startswith(
+                    ("send_", "edit_")
+                ):
+                    continue
+                if any(keyword.arg == "reply_markup" for keyword in node.keywords):
+                    self.fail(
+                        f"Legacy keyboard send/edit left at "
+                        f"{path.relative_to(source_root.parent)}:{node.lineno}"
+                    )
 
 
 if __name__ == "__main__":

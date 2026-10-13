@@ -117,9 +117,18 @@ class QuestionArchiveTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(bot.copies[1]["chat_id"], -10088)
         self.assertEqual(bot.copies[1]["from_chat_id"], -10077)
         self.assertEqual(bot.copies[1]["message_id"], 501)
-        self.assertIsNotNone(bot.copies[1]["reply_markup"])
+        self.assertNotIn("reply_markup", bot.copies[1])
         self.assertEqual(bot.messages[0][1].blocks[0].text, "Archive test")
         self.assertEqual(bot.messages[2][1].blocks[0].text, "Archive test")
+        action_message = bot.messages[3][1]
+        action_rows = [
+            block for block in action_message.blocks if block.type == "buttons"
+        ]
+        self.assertEqual(
+            action_rows[0].buttons[0].url,
+            "https://t.me/quest_test?start=play_7",
+        )
+        self.assertIsNone(bot.rich_options[-1]["reply_markup"])
 
     async def test_group_question_buttons_are_embedded_with_rich_message_alignment(self) -> None:
         bot = FakeBot()

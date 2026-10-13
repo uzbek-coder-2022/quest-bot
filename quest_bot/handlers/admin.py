@@ -47,11 +47,14 @@ from ..services import (
 from ..states import ModerationFlow, SuperadminFlow
 from ..utils import (
     answer_rich_with_buttons,
+    answer_with_buttons,
     can_manage_quest,
     display_name,
     ensure_private_callback,
     safe_edit,
+    safe_edit_buttons,
     send_rich_with_buttons,
+    send_with_buttons,
 )
 
 router = Router(name="admin")
@@ -245,8 +248,10 @@ async def add_admin_start(
     language = await db.get_language(callback.from_user.id)
     await state.set_state(SuperadminFlow.add_admin_id)
     if callback.message:
-        await callback.message.answer(
-            tr(language, "ask_admin_id"), reply_markup=admin_home_keyboard(language)
+        await answer_with_buttons(
+            callback.message,
+            tr(language, "ask_admin_id"),
+            reply_markup=admin_home_keyboard(language),
         )
     await callback.answer()
 
@@ -269,12 +274,15 @@ async def add_admin_id_received(
     if added:
         await set_app_admin_commands(message.bot, admin_id)
         await db.log_action(message.from_user.id, "admin.added", "admin", admin_id)
-        await message.answer(
-            tr(language, "admin_added"), reply_markup=admin_home_keyboard(language)
+        await answer_with_buttons(
+            message,
+            tr(language, "admin_added"),
+            reply_markup=admin_home_keyboard(language),
         )
         try:
             target_language = await db.get_language(admin_id)
-            await message.bot.send_message(
+            await send_with_buttons(
+                message.bot,
                 admin_id,
                 tr(target_language, "admin_panel"),
                 reply_markup=admin_panel(target_language, "admin"),
@@ -282,8 +290,10 @@ async def add_admin_id_received(
         except TelegramAPIError:
             pass
     else:
-        await message.answer(
-            tr(language, "admin_only"), reply_markup=admin_home_keyboard(language)
+        await answer_with_buttons(
+            message,
+            tr(language, "admin_only"),
+            reply_markup=admin_home_keyboard(language),
         )
 
 
@@ -425,7 +435,8 @@ async def begin_admin_message(
     await state.set_state(SuperadminFlow.admin_message)
     await state.update_data(admin_message_to=admin_id)
     if callback.message:
-        await callback.message.answer(
+        await answer_with_buttons(
+            callback.message,
             tr(language, "ask_admin_message", name=_admin_name(admin)),
             reply_markup=admin_home_keyboard(language),
         )
@@ -481,7 +492,8 @@ async def admin_message_received(
         admin_id,
         {"ticket_id": ticket_id},
     )
-    await message.answer(
+    await answer_with_buttons(
+        message,
         _numbered_ack(
             language,
             "admin_message_sent" if sent else "participant_message_delivery_failed",
@@ -520,7 +532,8 @@ async def confirm_quest_purge(callback: CallbackQuery, db: Database) -> None:
         await callback.answer(tr(language, "quest_not_found"), show_alert=True)
         return
     if callback.message:
-        await callback.message.answer(
+        await answer_with_buttons(
+            callback.message,
             tr(language, "confirm_purge_quest", title=quest["title"]),
             reply_markup=confirm_purge_quest_keyboard(language, quest_id),
         )
@@ -747,8 +760,10 @@ async def add_chat_start(
     language = await db.get_language(callback.from_user.id)
     await state.set_state(SuperadminFlow.add_chat_id)
     if callback.message:
-        await callback.message.answer(
-            tr(language, "ask_chat_id"), reply_markup=admin_home_keyboard(language)
+        await answer_with_buttons(
+            callback.message,
+            tr(language, "ask_chat_id"),
+            reply_markup=admin_home_keyboard(language),
         )
     await callback.answer()
 
@@ -785,7 +800,8 @@ async def add_chat_id_received(
         message.from_user.id, "managed_chat.added", "chat", chat_id, {"title": title}
     )
     await state.clear()
-    await message.answer(
+    await answer_with_buttons(
+        message,
         tr(language, "chat_added", title=title),
         reply_markup=admin_home_keyboard(language),
     )
@@ -953,7 +969,8 @@ async def whitelist_id_received(
     await state.clear()
     page_size = int(await db.settings_get("page_size", "10"))
     users = await db.chat_whitelist(chat_id, 0, page_size)
-    await message.answer(
+    await answer_with_buttons(
+        message,
         tr(language, "whitelist_added"),
         reply_markup=whitelist_keyboard(language, chat_id, users, 0, page_size),
     )
@@ -1064,7 +1081,8 @@ async def begin_participant_message(
     )
     await state.set_state(SuperadminFlow.participant_message)
     if callback.message:
-        await callback.message.answer(
+        await answer_with_buttons(
+            callback.message,
             tr(
                 language,
                 "ask_participant_message",
@@ -1161,8 +1179,11 @@ async def participant_message_received(
         {"ticket_id": ticket_id},
     )
     await state.clear()
-    await message.answer(
-        _numbered_ack(language, "participant_message_sent", ticket_id, user=target_name),
+    await answer_with_buttons(
+        message,
+        _numbered_ack(
+            language, "participant_message_sent", ticket_id, user=target_name
+        ),
         reply_markup=InlineKeyboardMarkup(
             inline_keyboard=[
                 [
@@ -1232,7 +1253,11 @@ async def participant_moderation(
                 [button(tr(language, "btn_admin_home"), "admin:home")],
             ]
         )
-        await callback.message.answer(tr(language, "ask_ban_reason"), reply_markup=kb)
+        await answer_with_buttons(
+            callback.message,
+            tr(language, "ask_ban_reason"),
+            reply_markup=kb,
+        )
     await callback.answer()
 
 
@@ -1274,7 +1299,8 @@ async def _apply_participant_ban(
         except TelegramAPIError:
             pass
     await state.clear()
-    await message.answer(
+    await answer_with_buttons(
+        message,
         tr(language, "blocked_success" if success else "error_generic"),
         reply_markup=admin_home_keyboard(language),
     )
@@ -1330,8 +1356,10 @@ async def skip_ban_reason(
         pass
     await state.clear()
     if callback.message:
-        await callback.message.answer(
-            tr(language, "blocked_success"), reply_markup=admin_home_keyboard(language)
+        await answer_with_buttons(
+            callback.message,
+            tr(language, "blocked_success"),
+            reply_markup=admin_home_keyboard(language),
         )
     await callback.answer()
 
@@ -1427,12 +1455,11 @@ async def review_answer(callback: CallbackQuery, db: Database, bot: Bot) -> None
         ),
     )
     if accepted and result.get("final"):
-        await bot.send_message(
+        await send_with_buttons(
+            bot,
             int(item["user_id"]),
             tr(target_language, "correct_done"),
-            reply_markup=open_quest_keyboard(
-                target_language, int(item["quest_id"])
-            ),
+            reply_markup=open_quest_keyboard(target_language, int(item["quest_id"])),
         )
     elif accepted and result.get("next_stage_order"):
         # The next-stage notice already carries a Continue button.
@@ -1444,12 +1471,11 @@ async def review_answer(callback: CallbackQuery, db: Database, bot: Bot) -> None
             int(result["next_stage_order"]),
         )
     elif not accepted and result.get("exhausted"):
-        await bot.send_message(
+        await send_with_buttons(
+            bot,
             int(item["user_id"]),
             tr(target_language, "attempts_exhausted"),
-            reply_markup=open_quest_keyboard(
-                target_language, int(item["quest_id"])
-            ),
+            reply_markup=open_quest_keyboard(target_language, int(item["quest_id"])),
         )
     elif not accepted and not result.get("obsolete"):
         await bot.send_message(
@@ -1460,7 +1486,7 @@ async def review_answer(callback: CallbackQuery, db: Database, bot: Bot) -> None
         await db.maybe_complete_quest(int(item["quest_id"]))
     if callback.message:
         try:
-            await callback.message.edit_reply_markup(reply_markup=None)
+            await safe_edit_buttons(callback, None)
         except TelegramAPIError:
             pass
     await callback.answer(
@@ -1484,8 +1510,10 @@ async def ask_finish_confirmation(callback: CallbackQuery, db: Database) -> None
         await callback.answer(tr(language, "quest_not_found"), show_alert=True)
         return
     if callback.message:
-        await callback.message.answer(
-            tr(language, "confirm_finish"), reply_markup=_role_kb(language, quest_id)
+        await answer_with_buttons(
+            callback.message,
+            tr(language, "confirm_finish"),
+            reply_markup=_role_kb(language, quest_id),
         )
     await callback.answer()
 
@@ -1625,7 +1653,8 @@ async def confirm_quest_deletion(callback: CallbackQuery, db: Database) -> None:
         await callback.answer(tr(language, "quest_metadata_archived"), show_alert=True)
         return
     if callback.message:
-        await callback.message.answer(
+        await answer_with_buttons(
+            callback.message,
             tr(language, "confirm_delete_quest", title=quest["title"]),
             reply_markup=confirm_delete_quest_keyboard(language, quest_id),
         )
@@ -1734,15 +1763,12 @@ async def private_invite_link(callback: CallbackQuery, db: Database, bot: Bot) -
     me = await bot.get_me()
     link = answer_deep_link(me.username or "", quest)
     if callback.message:
-        await callback.message.answer(
+        await answer_with_buttons(
+            callback.message,
             link,
             reply_markup=InlineKeyboardMarkup(
                 inline_keyboard=[
-                    [
-                        button(
-                            tr(language, "btn_back"), f"manage:quest:{quest_id}"
-                        )
-                    ],
+                    [button(tr(language, "btn_back"), f"manage:quest:{quest_id}")],
                     [button(tr(language, "btn_admin_home"), "admin:home")],
                 ]
             ),

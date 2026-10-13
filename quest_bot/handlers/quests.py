@@ -63,6 +63,7 @@ from ..services import (
 from ..states import AddStage, AnswerFlow, EditQuestDetails, EditStage
 from ..utils import (
     answer_rich_with_buttons,
+    answer_with_buttons,
     can_manage_quest,
     display_name,
     ensure_private_callback,
@@ -73,6 +74,7 @@ from ..utils import (
     quest_end_at,
     rank_label,
     safe_edit,
+    send_with_buttons,
 )
 
 router = Router(name="quests")
@@ -476,14 +478,17 @@ async def confirm_quest_join(callback: CallbackQuery, db: Database, bot: Bot) ->
             invite_link = await get_chat_invite_for_participant(
                 bot, db, quest, callback.from_user.id
             )
-            await bot.send_message(
+            await send_with_buttons(
+                bot,
                 callback.from_user.id,
-                tr(language, "invite_link_ready", link=invite_link)
-                if invite_link
-                else tr(language, "invite_unavailable"),
-                reply_markup=copy_link_keyboard(language, invite_link)
-                if invite_link
-                else None,
+                (
+                    tr(language, "invite_link_ready", link=invite_link)
+                    if invite_link
+                    else tr(language, "invite_unavailable")
+                ),
+                reply_markup=(
+                    copy_link_keyboard(language, invite_link) if invite_link else None
+                ),
             )
         else:
             await bot.send_message(
@@ -557,7 +562,8 @@ async def participant_chat_invite(
         await callback.answer(tr(language, "invite_unavailable"), show_alert=True)
         return
     if callback.message:
-        await callback.message.answer(
+        await answer_with_buttons(
+            callback.message,
             tr(language, "invite_link_ready", link=link),
             reply_markup=copy_link_keyboard(language, link),
         )
@@ -1292,7 +1298,8 @@ async def quest_title_received(
         return
     title = (message.text or "").strip()
     if not 1 <= len(title) <= 100:
-        await message.answer(
+        await answer_with_buttons(
+            message,
             f"⚠️ {tr(language, 'invalid_quest_title')}",
             reply_markup=edit_prompt_keyboard(language),
         )
@@ -1329,7 +1336,8 @@ async def quest_start_received(
         return
     start_at = parse_local_datetime(message.text or "")
     if not start_at or datetime.fromisoformat(start_at) <= datetime.now(timezone.utc):
-        await message.answer(
+        await answer_with_buttons(
+            message,
             f"⚠️ {tr(language, 'invalid_quest_start')}",
             reply_markup=edit_prompt_keyboard(language),
         )
@@ -1370,8 +1378,10 @@ async def quest_duration_received(
         message.text or "", quest.get("start_at")
     )
     if error:
-        await message.answer(
-            f"⚠️ {tr(language, error)}", reply_markup=edit_prompt_keyboard(language)
+        await answer_with_buttons(
+            message,
+            f"⚠️ {tr(language, error)}",
+            reply_markup=edit_prompt_keyboard(language),
         )
         return
     previous = await db.update_quest_duration(
@@ -1412,7 +1422,8 @@ async def quest_description_received(
         return
     description = (message.text or "").strip()
     if not 1 <= len(description) <= 1000:
-        await message.answer(
+        await answer_with_buttons(
+            message,
             f"⚠️ {tr(language, 'invalid_quest_description')}",
             reply_markup=edit_prompt_keyboard(language),
         )
@@ -1457,7 +1468,8 @@ async def quest_cover_photo_received(
             "Could not archive an edited quest cover from admin %s",
             message.from_user.id,
         )
-        await message.answer(
+        await answer_with_buttons(
+            message,
             f"⚠️ {tr(language, 'question_archive_failed')}",
             reply_markup=edit_prompt_keyboard(language),
         )
@@ -1505,7 +1517,8 @@ async def invalid_quest_cover_received(
     language = await db.get_language(message.from_user.id)
     if not await _metadata_message_quest(message, state, db):
         return
-    await message.answer(
+    await answer_with_buttons(
+        message,
         f"⚠️ {tr(language, 'invalid_quest_cover')}",
         reply_markup=edit_prompt_keyboard(language),
     )
@@ -1643,7 +1656,8 @@ async def begin_stage_addition(
     )
     await state.set_state(AddStage.question)
     if callback.message:
-        await callback.message.answer(
+        await answer_with_buttons(
+            callback.message,
             tr(language, "ask_question", number=len(stages) + 1),
             reply_markup=edit_prompt_keyboard(language),
         )
@@ -1790,8 +1804,8 @@ async def _begin_stage_edit(
         await state.set_state(EditStage.answer)
         prompt = tr(language, "ask_replacement_answer")
     if callback.message:
-        await callback.message.answer(
-            prompt, reply_markup=edit_prompt_keyboard(language)
+        await answer_with_buttons(
+            callback.message, prompt, reply_markup=edit_prompt_keyboard(language)
         )
     await callback.answer()
 
@@ -1830,8 +1844,10 @@ async def cancel_stage_edit(
             )
         else:
             markup = edit_done_keyboard(language, int(quest_id)) if quest_id else None
-        await callback.message.answer(
-            f"↩️ {tr(language, 'edit_cancelled')}", reply_markup=markup
+        await answer_with_buttons(
+            callback.message,
+            f"↩️ {tr(language, 'edit_cancelled')}",
+            reply_markup=markup,
         )
     await callback.answer()
 
@@ -2001,7 +2017,8 @@ async def _finish_stage_addition(
 
     await state.clear()
     total = len(await db.list_quest_stages(quest_id))
-    await message.answer(
+    await answer_with_buttons(
+        message,
         tr(language, "stage_added", number=new_order, count=total),
         reply_markup=edit_done_keyboard(language, quest_id),
     )
@@ -2033,7 +2050,8 @@ async def added_stage_question_received(
     }
     await state.update_data(stage_draft=draft)
     await state.set_state(AddStage.answer_mode)
-    await message.answer(
+    await answer_with_buttons(
+        message,
         tr(language, "ask_answer_mode"),
         reply_markup=add_stage_answer_mode_keyboard(language),
     )
@@ -2065,7 +2083,8 @@ async def added_stage_answer_mode_selected(
         await state.update_data(stage_draft=draft)
         await state.set_state(AddStage.max_attempts)
         if callback.message:
-            await callback.message.answer(
+            await answer_with_buttons(
+                callback.message,
                 tr(language, "ask_attempts"),
                 reply_markup=edit_prompt_keyboard(language),
             )
@@ -2073,7 +2092,8 @@ async def added_stage_answer_mode_selected(
         await state.update_data(stage_draft=draft)
         await state.set_state(AddStage.correct_answer)
         if callback.message:
-            await callback.message.answer(
+            await answer_with_buttons(
+                callback.message,
                 tr(language, "ask_correct_answer"),
                 reply_markup=edit_prompt_keyboard(language),
             )
@@ -2100,7 +2120,8 @@ async def added_stage_correct_answer_received(
     draft["correct_answer"] = answer
     await state.update_data(stage_draft=draft)
     await state.set_state(AddStage.max_attempts)
-    await message.answer(
+    await answer_with_buttons(
+        message,
         tr(language, "ask_attempts"),
         reply_markup=edit_prompt_keyboard(language),
     )
@@ -2130,7 +2151,8 @@ async def added_stage_attempts_received(
     draft["max_attempts"] = attempts
     await state.update_data(stage_draft=draft)
     await state.set_state(AddStage.time_limit)
-    await message.answer(
+    await answer_with_buttons(
+        message,
         tr(language, "ask_stage_time"),
         reply_markup=edit_prompt_keyboard(language),
     )
@@ -2165,7 +2187,8 @@ async def added_stage_time_limit_received(
     await state.update_data(stage_draft=draft)
     if quest["progression"] == "scheduled":
         await state.set_state(AddStage.start_at)
-        await message.answer(
+        await answer_with_buttons(
+            message,
             tr(language, "ask_stage_start", number=len(stages) + 1),
             reply_markup=edit_prompt_keyboard(language),
         )
@@ -2253,7 +2276,8 @@ async def replacement_question_received(
         previous.get("source_message_id"),
     )
     await state.clear()
-    await message.answer(
+    await answer_with_buttons(
+        message,
         tr(language, "stage_question_updated"),
         reply_markup=edit_done_keyboard(language, quest_id),
     )
@@ -2282,7 +2306,8 @@ async def replacement_answer_received(
         await message.answer(tr(language, "stage_not_editable"))
         return
     await state.clear()
-    await message.answer(
+    await answer_with_buttons(
+        message,
         tr(language, "stage_answer_updated"),
         reply_markup=edit_done_keyboard(language, quest_id),
     )
@@ -2316,8 +2341,11 @@ async def _notify_answer_reviewers(
             answer=answer_text,
         )
         try:
-            await message.bot.send_message(
-                admin_id, text, reply_markup=review_keyboard(language, answer_id)
+            await send_with_buttons(
+                message.bot,
+                admin_id,
+                text,
+                reply_markup=review_keyboard(language, answer_id),
             )
         except TelegramAPIError:
             continue
@@ -2365,13 +2393,15 @@ async def _process_answer(
         await message.answer(tr(language, "no_active_question"))
         return
     if code == "overall_timeout":
-        await message.answer(
+        await answer_with_buttons(
+            message,
             tr(language, "quest_ended"),
             reply_markup=open_quest_keyboard(language, quest_id),
         )
         return
     if code == "timeout":
-        await message.answer(
+        await answer_with_buttons(
+            message,
             tr(language, "stage_timeout"),
             reply_markup=open_quest_keyboard(language, quest_id),
         )
@@ -2387,7 +2417,8 @@ async def _process_answer(
         return
     if code == "wrong":
         if result.get("exhausted"):
-            await message.answer(
+            await answer_with_buttons(
+                message,
                 tr(language, "attempts_exhausted"),
                 reply_markup=open_quest_keyboard(language, quest_id),
             )
@@ -2401,7 +2432,8 @@ async def _process_answer(
         await message.answer(tr(language, "error_generic"))
         return
     if result.get("final"):
-        await message.answer(
+        await answer_with_buttons(
+            message,
             tr(language, "correct_done"),
             reply_markup=open_quest_keyboard(language, quest_id),
         )
@@ -2565,7 +2597,8 @@ async def participant_answer(
         button_label = tr(
             language, "btn_continue_quest" if started else "btn_start_quest"
         )
-        await message.answer(
+        await answer_with_buttons(
+            message,
             (
                 tr(language, "stage_continue_hint", button=button_label)
                 if started
