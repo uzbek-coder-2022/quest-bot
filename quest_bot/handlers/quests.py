@@ -22,6 +22,7 @@ from ..keyboards import (
     button,
     confirm_cover_removal_keyboard,
     continue_keyboard,
+    copy_link_keyboard,
     deleted_quest_keyboard,
     edit_done_keyboard,
     edit_prompt_keyboard,
@@ -61,6 +62,7 @@ from ..services import (
 )
 from ..states import AddStage, AnswerFlow, EditQuestDetails, EditStage
 from ..utils import (
+    answer_rich_with_buttons,
     can_manage_quest,
     display_name,
     ensure_private_callback,
@@ -160,7 +162,8 @@ async def quests_command(message: Message, db: Database) -> None:
     page_size = int(await db.settings_get("page_size", "10"))
     items = await db.list_public_quests(None, 0, page_size)
     title = tr(language, "quests_title")
-    await message.answer_rich(
+    await answer_rich_with_buttons(
+        message,
         information_message(title, None if items else tr(language, "empty_quests")),
         reply_markup=browse_filters(language, "all", 0, items, page_size),
     )
@@ -180,7 +183,8 @@ async def my_quests_command(message: Message, db: Database) -> None:
         tr(language, "my_participating_quests_title"),
         None if items else tr(language, "empty_quests"),
     )
-    await message.answer_rich(
+    await answer_rich_with_buttons(
+        message,
         text,
         reply_markup=participating_quests_keyboard(
             language, items, 0, page_size, "all"
@@ -347,7 +351,9 @@ async def view_quest_callback(callback: CallbackQuery, db: Database, bot: Bot) -
                     exc,
                 )
             await copy_quest_cover(bot, quest, callback.message.chat.id)
-            await callback.message.answer_rich(preview, reply_markup=markup)
+            await answer_rich_with_buttons(
+                callback.message, preview, reply_markup=markup
+            )
         else:
             await safe_edit(callback, preview, reply_markup=markup)
     await callback.answer()
@@ -475,6 +481,9 @@ async def confirm_quest_join(callback: CallbackQuery, db: Database, bot: Bot) ->
                 tr(language, "invite_link_ready", link=invite_link)
                 if invite_link
                 else tr(language, "invite_unavailable"),
+                reply_markup=copy_link_keyboard(language, invite_link)
+                if invite_link
+                else None,
             )
         else:
             await bot.send_message(
@@ -548,7 +557,10 @@ async def participant_chat_invite(
         await callback.answer(tr(language, "invite_unavailable"), show_alert=True)
         return
     if callback.message:
-        await callback.message.answer(tr(language, "invite_link_ready", link=link))
+        await callback.message.answer(
+            tr(language, "invite_link_ready", link=link),
+            reply_markup=copy_link_keyboard(language, link),
+        )
     await callback.answer()
 
 
@@ -1047,7 +1059,8 @@ async def _begin_metadata_edit(
             quote(str(quest.get("description") or "—")),
         )
     if callback.message:
-        await callback.message.answer_rich(
+        await answer_rich_with_buttons(
+            callback.message,
             prompt, reply_markup=edit_prompt_keyboard(language)
         )
     await callback.answer()
@@ -1150,7 +1163,8 @@ async def begin_quest_cover_photo_edit(
     await state.update_data(edit_quest_id=quest_id, edit_context="quest_metadata")
     await state.set_state(EditQuestDetails.cover_photo)
     if callback.message:
-        await callback.message.answer_rich(
+        await answer_rich_with_buttons(
+            callback.message,
             rich_message(
                 heading(f"📷 {tr(language, 'ask_quest_cover')}", size=1),
                 paragraph(bold(f"🧭 {quest['title']}")),
@@ -1292,7 +1306,8 @@ async def quest_title_received(
         await message.answer(tr(language, "quest_metadata_archived"))
         return
     await state.clear()
-    await message.answer_rich(
+    await answer_rich_with_buttons(
+        message,
         rich_message(
             heading(f"✅ {tr(language, 'quest_title_updated')}", size=1),
             paragraph(bold(f"📌 {tr(language, 'quest_label_title')}")),
@@ -1328,7 +1343,8 @@ async def quest_start_received(
         await message.answer(tr(language, "quest_start_edit_closed"))
         return
     await state.clear()
-    await message.answer_rich(
+    await answer_rich_with_buttons(
+        message,
         rich_message(
             heading(f"✅ {tr(language, 'quest_start_updated')}", size=1),
             paragraph(bold(f"🕒 {tr(language, 'btn_edit_start')}")),
@@ -1373,7 +1389,8 @@ async def quest_duration_received(
             f" · {tr(language, 'quest_label_end')} "
             f"{format_datetime(quest_end_at(dict(quest, duration_seconds=saved)), language)}"
         )
-    await message.answer_rich(
+    await answer_rich_with_buttons(
+        message,
         rich_message(
             heading(f"✅ {tr(language, 'quest_duration_updated')}", size=1),
             paragraph(bold(f"⏳ {tr(language, 'btn_edit_duration')}")),
@@ -1409,7 +1426,8 @@ async def quest_description_received(
         await message.answer(tr(language, "quest_metadata_archived"))
         return
     await state.clear()
-    await message.answer_rich(
+    await answer_rich_with_buttons(
+        message,
         rich_message(
             heading(f"✅ {tr(language, 'quest_description_updated')}", size=1),
             paragraph(bold(f"📄 {tr(language, 'quest_label_description')}")),
@@ -1468,7 +1486,8 @@ async def quest_cover_photo_received(
     )
     await state.clear()
     updated = await db.get_quest(quest_id)
-    await message.answer_rich(
+    await answer_rich_with_buttons(
+        message,
         rich_message(
             heading(f"✅ {tr(language, 'quest_cover_updated')}", size=1),
             paragraph(bold(f"🧭 {(updated or previous)['title']}")),

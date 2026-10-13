@@ -10,7 +10,7 @@ from aiogram.exceptions import TelegramAPIError, TelegramForbiddenError
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, InputRichMessage
 
 from .database import Database, utc_now
-from .keyboards import continue_keyboard, open_quest_keyboard
+from .keyboards import continue_keyboard, copy_link_keyboard, open_quest_keyboard
 from .localization import tr
 from .rich_text import (
     bold,
@@ -23,6 +23,7 @@ from .rich_text import (
     rich_message,
     video_block,
 )
+from .utils import send_rich_with_buttons
 
 logger = logging.getLogger(__name__)
 
@@ -294,7 +295,8 @@ async def announce_stage(
         )
         has_archive_reference = source_chat_id is not None and source_message_id is not None
         if embeddable or not has_archive_reference:
-            await bot.send_rich_message(
+            await send_rich_with_buttons(
+                bot,
                 int(chat_id),
                 stage_message(language, quest, stage),
                 reply_markup=reply_markup,
@@ -347,7 +349,8 @@ async def notify_quest_started(
             ),
         ]
         try:
-            await bot.send_rich_message(
+            await send_rich_with_buttons(
+                bot,
                 user_id,
                 rich_message(*blocks),
                 reply_markup=(
@@ -391,7 +394,8 @@ async def notify_stage_available(
             ),
         ]
         try:
-            await bot.send_rich_message(
+            await send_rich_with_buttons(
+                bot,
                 user_id,
                 rich_message(*blocks),
                 reply_markup=continue_keyboard(
@@ -498,7 +502,11 @@ async def send_chat_invites_to_current_participants(
             else tr(language, "invite_unavailable")
         )
         try:
-            await bot.send_message(user_id, text)
+            await bot.send_message(
+                user_id,
+                text,
+                reply_markup=copy_link_keyboard(language, link) if link else None,
+            )
         except TelegramAPIError:
             logger.info("Could not send chat invite to user %s", user_id)
 

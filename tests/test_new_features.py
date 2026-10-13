@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+from button_helpers import keyboard_from_call, keyboard_from_rich
 from quest_bot import navigation
 from quest_bot.database import Database, utc_now
 from quest_bot.handlers.creation import (
@@ -601,7 +602,7 @@ class LeaderboardBackButtonTests(unittest.IsolatedAsyncioTestCase):
         # A rating opened from a quest card returns to that card, not to the
         # participating-quest list, and offers a way back to the quest as well.
         def markup(message):
-            return message.edit_text.await_args.kwargs["reply_markup"]
+            return keyboard_from_call(message.edit_text.await_args)
 
         def text(message):
             return json.dumps(
@@ -734,7 +735,7 @@ class AnswerRoutingTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(
             TEXTS["btn_continue_quest"]["en"], active.answer.await_args.args[0]
         )
-        markup = active.answer.await_args.kwargs["reply_markup"]
+        markup = keyboard_from_call(active.answer.await_args)
         self.assertEqual(markup.inline_keyboard[0][0].callback_data, "quest:continue:17")
 
         waiting = await send(Db(18, "scheduled"))
@@ -860,7 +861,7 @@ class AdminOverviewTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Live quest", payload)
         self.assertIn("Gone quest", payload)
         self.assertIn("🗑", payload)
-        markup = message.edit_text.await_args.kwargs["reply_markup"]
+        markup = keyboard_from_call(message.edit_text.await_args)
         self.assertEqual(
             [button.callback_data for row in markup.inline_keyboard for button in row],
             [
@@ -914,9 +915,7 @@ class AdminOverviewTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("#T77", str(payload.model_dump(mode="json")))
         codes = [
             item.callback_data
-            for row in bot.send_rich_message.await_args.kwargs[
-                "reply_markup"
-            ].inline_keyboard
+            for row in keyboard_from_call(bot.send_rich_message.await_args).inline_keyboard
             for item in row
         ]
         self.assertEqual(codes, ["support:reply:77", "support:close:77"])
@@ -977,7 +976,7 @@ class TerminalLogTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("@1", lines[0])
         self.assertIn("@system", lines[1])
         self.assertEqual(lines[0].index("quest.purged"), lines[1].index("participant.joined"))
-        markup = message.edit_text.await_args.kwargs["reply_markup"]
+        markup = keyboard_from_call(message.edit_text.await_args)
         self.assertEqual(
             [button.callback_data for row in markup.inline_keyboard for button in row],
             ["super:logs", "admin:home"],
@@ -1071,7 +1070,7 @@ class SoftDeleteVisibilityTests(unittest.IsolatedAsyncioTestCase):
         callback = self._callback()
         await manage_quest_callback(callback, self.Db("superadmin"))
 
-        markup = callback.message.edit_text.await_args.kwargs["reply_markup"]
+        markup = keyboard_from_call(callback.message.edit_text.await_args)
         codes = [button.callback_data for row in markup.inline_keyboard for button in row]
         self.assertIn("manage:restore:17", codes)
         self.assertIn("manage:purge:17", codes)
@@ -1494,7 +1493,7 @@ class ManualReviewFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Player One, stage 2", body)
         self.assertIn("The bridge at dawn", body)
         codes = [
-            item.callback_data for row in bot.rich[0][2].inline_keyboard for item in row
+            item.callback_data for row in keyboard_from_rich(bot.rich[0][1]).inline_keyboard for item in row
         ]
         self.assertEqual(
             codes,
@@ -1683,7 +1682,7 @@ class BackButtonAuditTests(unittest.IsolatedAsyncioTestCase):
 
         await view_quest_callback(callback, Db(), AsyncMock())
 
-        markup = message.edit_text.await_args.kwargs["reply_markup"]
+        markup = keyboard_from_call(message.edit_text.await_args)
         codes = [button.callback_data for row in markup.inline_keyboard for button in row]
         self.assertIn("browse:filter:active:2", codes)
 
@@ -1729,9 +1728,7 @@ class BackButtonAuditTests(unittest.IsolatedAsyncioTestCase):
         await manage_quest_callback(from_list, db)
         codes = [
             button.callback_data
-            for row in from_list.message.edit_text.await_args.kwargs[
-                "reply_markup"
-            ].inline_keyboard
+            for row in keyboard_from_call(from_list.message.edit_text.await_args).inline_keyboard
             for button in row
         ]
         self.assertIn("super:adminquests:5:2", codes)
@@ -1741,9 +1738,7 @@ class BackButtonAuditTests(unittest.IsolatedAsyncioTestCase):
         await manage_quest_callback(from_sub_screen, db)
         codes = [
             button.callback_data
-            for row in from_sub_screen.message.edit_text.await_args.kwargs[
-                "reply_markup"
-            ].inline_keyboard
+            for row in keyboard_from_call(from_sub_screen.message.edit_text.await_args).inline_keyboard
             for button in row
         ]
         self.assertIn("super:adminquests:5:2", codes)
@@ -1851,9 +1846,7 @@ class BackButtonAuditTests(unittest.IsolatedAsyncioTestCase):
         await list_my_tickets_page(tickets, db)
         codes = [
             button.callback_data
-            for row in tickets.message.edit_text.await_args.kwargs[
-                "reply_markup"
-            ].inline_keyboard
+            for row in keyboard_from_call(tickets.message.edit_text.await_args).inline_keyboard
             for button in row
         ]
         self.assertIn("support:ticket:5:0", codes)
@@ -1863,9 +1856,7 @@ class BackButtonAuditTests(unittest.IsolatedAsyncioTestCase):
         await show_ticket_history(history, db)
         codes = [
             button.callback_data
-            for row in history.message.edit_text.await_args.kwargs[
-                "reply_markup"
-            ].inline_keyboard
+            for row in keyboard_from_call(history.message.edit_text.await_args).inline_keyboard
             for button in row
         ]
         self.assertIn("support:tickets:0", codes)
@@ -1929,9 +1920,7 @@ class BackButtonAuditTests(unittest.IsolatedAsyncioTestCase):
         await show_admin_detail(detail, db)
         codes = [
             button.callback_data
-            for row in detail.message.edit_text.await_args.kwargs[
-                "reply_markup"
-            ].inline_keyboard
+            for row in keyboard_from_call(detail.message.edit_text.await_args).inline_keyboard
             for button in row
         ]
         self.assertIn("super:admins:2", codes)
@@ -1941,9 +1930,7 @@ class BackButtonAuditTests(unittest.IsolatedAsyncioTestCase):
         await show_chat(chat, db)
         codes = [
             button.callback_data
-            for row in chat.message.edit_text.await_args.kwargs[
-                "reply_markup"
-            ].inline_keyboard
+            for row in keyboard_from_call(chat.message.edit_text.await_args).inline_keyboard
             for button in row
         ]
         self.assertIn("super:chats:3", codes)
@@ -2120,9 +2107,7 @@ class NumberedThreadTests(unittest.IsolatedAsyncioTestCase):
             await show_ticket_history(callback, db)
             codes = [
                 item.callback_data
-                for row in callback.message.edit_text.await_args.kwargs[
-                    "reply_markup"
-                ].inline_keyboard
+                for row in keyboard_from_call(callback.message.edit_text.await_args).inline_keyboard
                 for item in row
             ]
             with self.subTest(status=status):
@@ -2348,9 +2333,7 @@ class UserFacingRatingsTests(unittest.IsolatedAsyncioTestCase):
 
         codes = [
             button.callback_data
-            for row in callback.message.edit_text.await_args.kwargs[
-                "reply_markup"
-            ].inline_keyboard
+            for row in keyboard_from_call(callback.message.edit_text.await_args).inline_keyboard
             for button in row
         ]
         self.assertIn("menu:home", codes)
@@ -2363,9 +2346,7 @@ class UserFacingRatingsTests(unittest.IsolatedAsyncioTestCase):
 
         codes = [
             button.callback_data
-            for row in callback.message.edit_text.await_args.kwargs[
-                "reply_markup"
-            ].inline_keyboard
+            for row in keyboard_from_call(callback.message.edit_text.await_args).inline_keyboard
             for button in row
         ]
         self.assertEqual(codes, ["ratings:overview", "menu:home"])
@@ -2376,9 +2357,7 @@ class UserFacingRatingsTests(unittest.IsolatedAsyncioTestCase):
 
         codes = [
             button.callback_data
-            for row in callback.message.edit_text.await_args.kwargs[
-                "reply_markup"
-            ].inline_keyboard
+            for row in keyboard_from_call(callback.message.edit_text.await_args).inline_keyboard
             for button in row
         ]
         self.assertEqual(codes, ["quest:view:17", "menu:home"])
@@ -2391,9 +2370,7 @@ class UserFacingRatingsTests(unittest.IsolatedAsyncioTestCase):
 
         codes = [
             button.callback_data
-            for row in callback.message.edit_text.await_args.kwargs[
-                "reply_markup"
-            ].inline_keyboard
+            for row in keyboard_from_call(callback.message.edit_text.await_args).inline_keyboard
             for button in row
         ]
         self.assertEqual(codes, ["manage:quest:17", "admin:home"])
@@ -2404,9 +2381,7 @@ class UserFacingRatingsTests(unittest.IsolatedAsyncioTestCase):
 
         codes = [
             button.callback_data
-            for row in callback.message.edit_text.await_args.kwargs[
-                "reply_markup"
-            ].inline_keyboard
+            for row in keyboard_from_call(callback.message.edit_text.await_args).inline_keyboard
             for button in row
         ]
         self.assertIn("menu:home", codes)
@@ -2416,9 +2391,7 @@ class UserFacingRatingsTests(unittest.IsolatedAsyncioTestCase):
         await leaderboard_quest_list(managed, self.Db())
         codes = [
             button.callback_data
-            for row in managed.message.edit_text.await_args.kwargs[
-                "reply_markup"
-            ].inline_keyboard
+            for row in keyboard_from_call(managed.message.edit_text.await_args).inline_keyboard
             for button in row
         ]
         self.assertIn("admin:home", codes)
@@ -2502,7 +2475,7 @@ class PaginatedListHandlerTests(unittest.IsolatedAsyncioTestCase):
         await show_admins_page(callback, db)
 
         self.assertEqual(db.calls, [("admins", 1, 10)])
-        markup = callback.message.edit_text.await_args.kwargs["reply_markup"]
+        markup = keyboard_from_call(callback.message.edit_text.await_args)
         codes = [button.callback_data for row in markup.inline_keyboard for button in row]
         self.assertIn("super:admins:0", codes)
         self.assertIn("super:admins:2", codes)
@@ -2514,7 +2487,7 @@ class PaginatedListHandlerTests(unittest.IsolatedAsyncioTestCase):
         await show_managed_chats_page(callback, db)
 
         self.assertEqual(db.calls, [("chats", 1, 10)])
-        markup = callback.message.edit_text.await_args.kwargs["reply_markup"]
+        markup = keyboard_from_call(callback.message.edit_text.await_args)
         codes = [button.callback_data for row in markup.inline_keyboard for button in row]
         self.assertIn("super:chats:0", codes)
         self.assertIn("super:chats:2", codes)
@@ -2529,7 +2502,7 @@ class PaginatedListHandlerTests(unittest.IsolatedAsyncioTestCase):
         await list_my_tickets_page(callback, db)
 
         self.assertEqual(db.calls[-1], ("tickets", 1, 1, 10))
-        markup = callback.message.edit_text.await_args.kwargs["reply_markup"]
+        markup = keyboard_from_call(callback.message.edit_text.await_args)
         codes = [button.callback_data for row in markup.inline_keyboard for button in row]
         self.assertIn("support:tickets:0", codes)
         self.assertIn("support:tickets:2", codes)
@@ -2541,7 +2514,7 @@ class PaginatedListHandlerTests(unittest.IsolatedAsyncioTestCase):
         await open_support_page(callback, db)
 
         self.assertEqual(db.calls, [("support", 1, 1, 10)])
-        markup = callback.message.edit_text.await_args.kwargs["reply_markup"]
+        markup = keyboard_from_call(callback.message.edit_text.await_args)
         codes = [button.callback_data for row in markup.inline_keyboard for button in row]
         self.assertIn("support:open:0", codes)
         self.assertIn("support:open:2", codes)

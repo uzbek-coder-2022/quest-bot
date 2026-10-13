@@ -5,11 +5,18 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
+from aiogram import Bot
 from aiogram.exceptions import TelegramBadRequest
-from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InputRichMessage
+from aiogram.types import (
+    CallbackQuery,
+    InlineKeyboardMarkup,
+    InputRichMessage,
+    Message,
+)
 
 from .database import Database
 from .localization import tr
+from .rich_buttons import ButtonAlignment, embed_inline_keyboard
 
 LOCAL_TZ = ZoneInfo("Asia/Tashkent")
 
@@ -133,14 +140,55 @@ async def can_manage_quest(db: Database, user_id: int, quest: dict) -> bool:
     )
 
 
+async def answer_rich_with_buttons(
+    message: Message,
+    content: InputRichMessage,
+    reply_markup: InlineKeyboardMarkup | None = None,
+    *,
+    button_alignment: ButtonAlignment = "center",
+    **kwargs,
+) -> Message:
+    """Send rich content, embedding supported keyboards as aligned rich buttons."""
+    content, reply_markup = embed_inline_keyboard(
+        content, reply_markup, align=button_alignment
+    )
+    return await message.answer_rich(
+        content, reply_markup=reply_markup, **kwargs
+    )
+
+
+async def send_rich_with_buttons(
+    bot: Bot,
+    chat_id: int | str,
+    content: InputRichMessage,
+    reply_markup: InlineKeyboardMarkup | None = None,
+    *,
+    button_alignment: ButtonAlignment = "center",
+    **kwargs,
+) -> Message:
+    """Send rich content to a chat, keeping compatible buttons in the same message."""
+    content, reply_markup = embed_inline_keyboard(
+        content, reply_markup, align=button_alignment
+    )
+    return await bot.send_rich_message(
+        chat_id, content, reply_markup=reply_markup, **kwargs
+    )
+
+
 async def safe_edit(
     callback: CallbackQuery,
     text: str | InputRichMessage,
     reply_markup: InlineKeyboardMarkup | None = None,
+    *,
+    button_alignment: ButtonAlignment = "center",
 ) -> bool:
-    """Edit a callback message with plain text or structured Telegram rich content."""
+    """Edit a message, embedding supported keyboards into rich-message content."""
     if not callback.message:
         return False
+    if isinstance(text, InputRichMessage):
+        text, reply_markup = embed_inline_keyboard(
+            text, reply_markup, align=button_alignment
+        )
     kwargs = (
         {"rich_message": text} if isinstance(text, InputRichMessage) else {"text": text}
     )

@@ -39,6 +39,7 @@ TEXTS: dict[str, dict[str, str]] = {
     "btn_language": {"uz": "🌐 Tilni tanlash", "ru": "🌐 Выбрать язык", "en": "🌐 Choose language"},
     "btn_back": {"uz": "⬅️ Orqaga", "ru": "⬅️ Назад", "en": "⬅️ Back"},
     "btn_home": {"uz": "🏠 Bosh menyu", "ru": "🏠 Главное меню", "en": "🏠 Main menu"},
+    "btn_copy_link": {"uz": "📋 Havolani nusxalash", "ru": "📋 Копировать ссылку", "en": "📋 Copy link"},
     "btn_admin_home": {"uz": "🛠 Administrator paneli", "ru": "🛠 Панель администратора", "en": "🛠 Admin panel"},
     "btn_cancel": {"uz": "❌ Bekor qilish", "ru": "❌ Отмена", "en": "❌ Cancel"},
     "btn_confirm": {"uz": "✅ Tasdiqlash", "ru": "✅ Подтвердить", "en": "✅ Confirm"},

@@ -24,6 +24,7 @@ KARAKALPAK_TEXTS: dict[str, str] = {
     "btn_language": "🌐 Tildi tańlaw",
     "btn_back": "⬅️ Artqa",
     "btn_home": "🏠 Bas menyu",
+    "btn_copy_link": "📋 Siltemeni nusqalaw",
     "btn_admin_home": "🛠 Administrator paneli",
     "btn_cancel": "❌ Biykar etiw",
     "btn_confirm": "✅ Tastıyıqlaw",

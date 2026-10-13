@@ -25,7 +25,7 @@ from ..presentation import (
 )
 from ..states import SupportFlow
 from ..rich_text import heading, paragraph, rich_message
-from ..utils import safe_edit
+from ..utils import answer_rich_with_buttons, safe_edit, send_rich_with_buttons
 
 router = Router(name="support")
 
@@ -90,7 +90,8 @@ async def _notify_admins(
             source = tr(language, "support_source_superadmin")
         notice = support_notification(ticket_id, source, sender_name, text)
         try:
-            await message.bot.send_rich_message(
+            await send_rich_with_buttons(
+                message.bot,
                 admin_id,
                 notice,
                 reply_markup=ticket_reply_keyboard(language, ticket_id),
@@ -109,7 +110,8 @@ async def support_command(message: Message, db: Database) -> None:
         return
     page_size = int(await db.settings_get("page_size", "10"))
     quests = await db.support_quests_for_user(message.from_user.id, 0, page_size)
-    await message.answer_rich(
+    await answer_rich_with_buttons(
+        message,
         information_message(
             tr(language, "support_choose"),
             None if quests else tr(language, "support_no_quests"),
@@ -559,7 +561,8 @@ async def admin_ticket_reply(message: Message, state: FSMContext, db: Database) 
     else:
         source = tr(user_language, "support_source_superadmin")
     try:
-        await message.bot.send_rich_message(
+        await send_rich_with_buttons(
+            message.bot,
             int(ticket["user_id"]),
             support_reply(source, text, ticket_id),
             reply_markup=ticket_reply_keyboard(user_language, ticket_id),

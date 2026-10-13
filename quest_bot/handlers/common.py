@@ -27,7 +27,7 @@ from ..presentation import (
     quest_preview,
 )
 from ..services import delete_archived_message
-from ..utils import safe_edit
+from ..utils import answer_rich_with_buttons, safe_edit
 
 router = Router(name="common")
 logger = logging.getLogger(__name__)
@@ -105,7 +105,8 @@ async def _join_from_payload(
     participant_count = await db.participant_count(quest_id)
     if not quest.get("cover_file_id"):
         await copy_quest_cover(bot, quest, user.id)
-    await message.answer_rich(
+    await answer_rich_with_buttons(
+        message,
         quest_preview(quest, language, participant_count),
         reply_markup=join_confirmation_keyboard(language, quest_id, token),
     )
@@ -144,7 +145,8 @@ async def start_command(
         if handled:
             return
     role = await db.get_role(user.id)
-    await message.answer_rich(
+    await answer_rich_with_buttons(
+        message,
         information_message(
             f"👋 {tr(language, 'welcome')}",
             f"✨ {tr(language, 'welcome_hint')}\n\n📋 {tr(language, 'menu')}",
@@ -183,7 +185,8 @@ async def menu_command(message: Message, db: Database, state: FSMContext) -> Non
         return
     language = await db.get_language(message.from_user.id)
     role = await db.get_role(message.from_user.id)
-    await message.answer_rich(
+    await answer_rich_with_buttons(
+        message,
         information_message(f"📋 {tr(language, 'menu')}"),
         reply_markup=main_menu(language, role),
     )
@@ -203,7 +206,8 @@ async def help_command(message: Message, db: Database) -> None:
     await _register_message_user(message, db)
     language = await db.get_language(message.from_user.id if message.from_user else 0)
     role = await db.get_role(message.from_user.id) if message.from_user else None
-    await message.answer_rich(
+    await answer_rich_with_buttons(
+        message,
         guide_message(language), reply_markup=guide_keyboard(language, role)
     )
 

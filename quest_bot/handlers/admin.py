@@ -45,7 +45,14 @@ from ..services import (
     notify_next_stage_ready,
 )
 from ..states import ModerationFlow, SuperadminFlow
-from ..utils import can_manage_quest, display_name, ensure_private_callback, safe_edit
+from ..utils import (
+    answer_rich_with_buttons,
+    can_manage_quest,
+    display_name,
+    ensure_private_callback,
+    safe_edit,
+    send_rich_with_buttons,
+)
 
 router = Router(name="admin")
 
@@ -143,7 +150,8 @@ async def admin_command(message: Message, db: Database) -> None:
     if role not in {"admin", "superadmin"}:
         await message.answer(tr(language, "admin_only"))
         return
-    await message.answer_rich(
+    await answer_rich_with_buttons(
+        message,
         information_message(tr(language, "admin_panel")),
         reply_markup=admin_panel(language, role),
     )
@@ -452,7 +460,8 @@ async def admin_message_received(
         admin_id, None, None, text, sender_id=message.from_user.id
     )
     try:
-        await message.bot.send_rich_message(
+        await send_rich_with_buttons(
+            message.bot,
             admin_id,
             rich_message(
                 heading(tr(target_language, "admin_message_heading"), size=2),
@@ -1122,7 +1131,8 @@ async def participant_message_received(
         sender_id=message.from_user.id,
     )
     try:
-        await bot.send_rich_message(
+        await send_rich_with_buttons(
+            bot,
             user_id,
             rich_message(
                 heading(
@@ -1356,7 +1366,8 @@ async def show_pending_answers(callback: CallbackQuery, db: Database, bot: Bot) 
                 stage=item["stage_order"],
                 answer="",
             ).rstrip(":\n")
-            await bot.send_rich_message(
+            await send_rich_with_buttons(
+                bot,
                 callback.from_user.id,
                 rich_message(heading(title, size=2), quote(item["answer_text"])),
                 reply_markup=review_keyboard(
