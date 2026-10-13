@@ -3,8 +3,6 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
-from types import SimpleNamespace
-
 from quest_bot.database import Database
 from quest_bot.scheduler import scheduler_tick
 
@@ -43,8 +41,9 @@ class FakeBot:
             button.callback_data
             for action, payload in self.actions
             if action == "send_rich_message"
-            for row in (payload.get("reply_markup") or SimpleNamespace(inline_keyboard=[])).inline_keyboard
-            for button in row
+            for block in payload["rich_message"].blocks or []
+            if getattr(block, "type", None) == "buttons"
+            for button in block.buttons
         ]
 
 

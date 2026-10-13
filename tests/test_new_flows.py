@@ -6,13 +6,20 @@ from unittest.mock import AsyncMock
 
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.methods import EditMessageText
+from aiogram.types import RichMessage
 
+from button_helpers import keyboard_from_call, keyboard_from_rich
 from quest_bot.handlers.admin import (
     begin_participant_message,
     participant_message_received,
     show_participants,
 )
-from quest_bot.handlers.common import _join_from_payload, cancel_command
+from quest_bot.handlers.common import (
+    _join_from_payload,
+    cancel_command,
+    choose_language_callback,
+    language_command,
+)
 from quest_bot.handlers.creation import (
     cover_photo_received,
     description_received,
@@ -35,6 +42,7 @@ from quest_bot.handlers.support import (
     create_ticket_message,
     user_ticket_reply,
 )
+from quest_bot.feedback import feedback_text
 from quest_bot.keyboards import (
     admin_home_keyboard,
     join_confirmation_keyboard,
@@ -43,8 +51,10 @@ from quest_bot.keyboards import (
     participating_quests_keyboard,
 )
 from quest_bot.presentation import guide_message, quest_preview, support_history
+from quest_bot.rich_buttons import embed_inline_keyboard
+from quest_bot.rich_text import heading, quote, rich_message
 from quest_bot.states import CreateQuest, SuperadminFlow
-from quest_bot.utils import safe_edit
+from quest_bot.utils import safe_edit, safe_edit_buttons
 
 
 class FakeBot:
@@ -205,7 +215,7 @@ class FeatureFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["rich_message"].blocks[2].text, "#T12")
         reply_codes = [
             item.callback_data
-            for row in payload["reply_markup"].inline_keyboard
+            for row in keyboard_from_rich(payload["rich_message"]).inline_keyboard
             for item in row
         ]
         self.assertEqual(reply_codes, ["support:reply:12", "support:close:12"])
@@ -214,7 +224,7 @@ class FeatureFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(state.cleared)
         self.assertIn("Player One", message.answer.await_args.args[0])
         self.assertIn("#T12", message.answer.await_args.args[0])
-        ack_rows = message.answer.await_args.kwargs["reply_markup"].inline_keyboard
+        ack_rows = keyboard_from_call(message.answer.await_args).inline_keyboard
         self.assertEqual(
             [item.callback_data for item in ack_rows[0]], ["support:close:12"]
         )
@@ -286,7 +296,7 @@ class FeatureFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(db.calls, [(17, 999, 20)])
         rich_message = message.edit_text.await_args.kwargs["rich_message"]
         self.assertEqual(rich_message.blocks[1].text, "41–45/45")
-        markup = message.edit_text.await_args.kwargs["reply_markup"]
+        markup = keyboard_from_call(message.edit_text.await_args)
         self.assertEqual(len(markup.inline_keyboard), 8)
         self.assertEqual(
             markup.inline_keyboard[-3][0].callback_data,
@@ -375,7 +385,7 @@ class FeatureFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("3", serialized)
         self.assertIn("4", serialized)
         self.assertEqual(preview.blocks[2].blocks[0].text, "A safe <b>literal</b> description")
-        buttons = answer.kwargs["reply_markup"].inline_keyboard[0]
+        buttons = keyboard_from_call(answer).inline_keyboard[0]
         self.assertEqual(buttons[0].callback_data, "quest:joinconfirm:17:private-token")
         self.assertEqual(buttons[1].callback_data, "quest:joincancel:17")
         # The start-link handler only renders a preview; the confirmation callback performs the join.
@@ -437,7 +447,7 @@ class FeatureFlowTests(unittest.IsolatedAsyncioTestCase):
         await my_quests_callback(callback, db)
 
         self.assertEqual(db.query, (42, 2, 2, "private"))
-        markup = message.edit_text.await_args.kwargs["reply_markup"]
+        markup = keyboard_from_call(message.edit_text.await_args)
         self.assertEqual(
             [button.callback_data for button in markup.inline_keyboard[0]],
             [
@@ -479,12 +489,12 @@ class FeatureFlowTests(unittest.IsolatedAsyncioTestCase):
 
         await request_quest_join(callback, db)
 
-        preview = message.edit_text.await_args.kwargs
-        content = str(preview["rich_message"].model_dump(mode="json", exclude_none=True))
+        preview = message.edit_text.await_args
+        content = str(preview.kwargs["rich_message"].model_dump(mode="json", exclude_none=True))
         self.assertIn("Night Quest", content)
         self.assertIn("A safe <b>literal</b> description", content)
         self.assertIn("6", content)
-        buttons = preview["reply_markup"].inline_keyboard[0]
+        buttons = keyboard_from_call(preview).inline_keyboard[0]
         self.assertEqual(buttons[0].callback_data, "quest:joinconfirm:17")
         self.assertEqual(buttons[1].callback_data, "quest:joincancel:17")
         self.assertFalse(hasattr(db, "join_quest"))
@@ -509,7 +519,9 @@ class FeatureFlowTests(unittest.IsolatedAsyncioTestCase):
 
         await cancel_quest_join(callback, Db(quest))
 
-        self.assertEqual(callback.answer.await_args.args[0], "Joining the quest was cancelled.")
+        self.assertEqual(
+            callback.answer.await_args.args[0], feedback_text("en", "join_cancelled")
+        )
         content = message.edit_text.await_args.kwargs["rich_message"]
         self.assertIn("Night Quest", str(content.model_dump(mode="json", exclude_none=True)))
         self.assertFalse(hasattr(Db, "join_quest"))
@@ -546,7 +558,7 @@ class FeatureFlowTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(db.join_args[:3], (17, 42, None))
         self.assertIn("You joined the quest", message.answer.await_args.args[0])
-        self.assertIsNotNone(message.edit_text.await_args.kwargs["reply_markup"])
+        self.assertIsNotNone(keyboard_from_call(message.edit_text.await_args))
         self.assertEqual(callback.answer.await_count, 1)
 
     async def test_answer_quest_selection_shows_paused_notice_without_entering_answer_state(self) -> None:
@@ -601,9 +613,9 @@ class FeatureFlowTests(unittest.IsolatedAsyncioTestCase):
         rich = edited["rich_message"]
         self.assertEqual(rich.blocks[1].type, "photo")
         self.assertEqual(rich.blocks[1].photo.media, "telegram-cover-file-id")
-        self.assertIsNotNone(edited["reply_markup"])
+        self.assertIsNotNone(keyboard_from_call(message.edit_text.await_args))
         self.assertEqual(
-            edited["reply_markup"].inline_keyboard[0][0].callback_data,
+            keyboard_from_call(message.edit_text.await_args).inline_keyboard[0][0].callback_data,
             "quest:join:17",
         )
 
@@ -623,7 +635,7 @@ class FeatureFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(answer.args[0].blocks[1].type, "photo")
         self.assertEqual(answer.args[0].blocks[1].photo.media, "telegram-cover-file-id")
         self.assertEqual(
-            answer.kwargs["reply_markup"].inline_keyboard[0][0].callback_data,
+            keyboard_from_call(answer).inline_keyboard[0][0].callback_data,
             "quest:joinconfirm:17:private-token",
         )
 
@@ -642,7 +654,7 @@ class FeatureFlowTests(unittest.IsolatedAsyncioTestCase):
         await description_received(message, state, Db())
 
         self.assertEqual(state.current_state, CreateQuest.cover_photo)
-        markup = message.answer.await_args.kwargs["reply_markup"]
+        markup = keyboard_from_call(message.answer.await_args)
         self.assertEqual(markup.inline_keyboard[0][0].callback_data, "create:cover:skip")
 
     async def test_browse_edit_ignores_telegram_message_not_modified_regression(self) -> None:
@@ -740,7 +752,7 @@ class FeatureFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Night Quest", content)
         self.assertIn("4", content)
         self.assertEqual(
-            preview.kwargs["reply_markup"].inline_keyboard[-1][0].callback_data,
+            keyboard_from_call(preview).inline_keyboard[-1][0].callback_data,
             "quest:mylist:private:1",
         )
 
@@ -885,7 +897,7 @@ class FeatureFlowTests(unittest.IsolatedAsyncioTestCase):
             {call.kwargs["message_id"] for call in delete_message.await_args_list},
             {41, 42, 43},
         )
-        markup = message.answer.await_args.kwargs["reply_markup"]
+        markup = keyboard_from_call(message.answer.await_args)
         self.assertEqual(markup.inline_keyboard[0][0].callback_data, "admin:home")
 
     async def test_optional_cover_can_be_skipped(self) -> None:
@@ -953,9 +965,9 @@ class FeatureFlowTests(unittest.IsolatedAsyncioTestCase):
             "Silver Quest",
             str(notice["rich_message"].model_dump(mode="json", exclude_none=True)),
         )
-        self.assertIsNotNone(notice["reply_markup"])
+        self.assertIsNotNone(keyboard_from_rich(notice["rich_message"]))
         self.assertEqual(
-            notice["reply_markup"].inline_keyboard[0][0].callback_data,
+            keyboard_from_rich(notice["rich_message"]).inline_keyboard[0][0].callback_data,
             "support:reply:31",
         )
 
@@ -999,7 +1011,7 @@ class FeatureFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("#31", notice_text)
         self.assertIn("Superadmin", notice_text)
         self.assertEqual(
-            notice["reply_markup"].inline_keyboard[0][0].callback_data,
+            keyboard_from_rich(notice["rich_message"]).inline_keyboard[0][0].callback_data,
             "support:reply:31",
         )
 
@@ -1042,10 +1054,10 @@ class FeatureFlowTests(unittest.IsolatedAsyncioTestCase):
             reply_text = str(reply["rich_message"].model_dump(mode="json", exclude_none=True))
             self.assertIn(expected_source, reply_text)
             self.assertIn("#31", reply_text)
-            self.assertIsNotNone(reply["reply_markup"])
+            self.assertIsNotNone(keyboard_from_rich(reply["rich_message"]))
             # The acknowledgement offers no unnecessary Reply button, but it
             # does offer the Close button for the numbered conversation.
-            markup = message.answer.await_args.kwargs["reply_markup"]
+            markup = keyboard_from_call(message.answer.await_args)
             codes = [
                 item.callback_data for row in markup.inline_keyboard for item in row
             ]
@@ -1090,8 +1102,71 @@ class FeatureFlowTests(unittest.IsolatedAsyncioTestCase):
         markup = join_confirmation_keyboard("en", 17)
 
         self.assertTrue(await safe_edit(callback, rich_message, markup))
-        message.edit_text.assert_awaited_once_with(
-            rich_message=rich_message, reply_markup=markup
+        message.edit_text.assert_awaited_once()
+        sent = message.edit_text.await_args.kwargs
+        self.assertIsNone(sent["reply_markup"])
+        button_blocks = [
+            block for block in sent["rich_message"].blocks if block.type == "buttons"
+        ]
+        self.assertEqual(len(button_blocks), 1)
+        self.assertEqual(button_blocks[0].align, "center")
+        self.assertEqual(
+            [button.callback_data for button in button_blocks[0].buttons],
+            ["quest:joinconfirm:17", "quest:joincancel:17"],
+        )
+
+    async def test_safe_edit_buttons_updates_rich_content_instead_of_markup(self) -> None:
+        original, retained_markup = embed_inline_keyboard(
+            rich_message(heading("Review"), quote("The answer")),
+            join_confirmation_keyboard("en", 17),
+        )
+        self.assertIsNone(retained_markup)
+        response = RichMessage.model_validate(
+            original.model_dump(mode="json", exclude_none=True)
+        )
+        message = SimpleNamespace(
+            rich_message=response,
+            edit_text=AsyncMock(),
+            edit_reply_markup=AsyncMock(),
+        )
+        callback = SimpleNamespace(message=message)
+        replacement = admin_home_keyboard("en")
+
+        self.assertTrue(await safe_edit_buttons(callback, replacement))
+
+        message.edit_reply_markup.assert_not_awaited()
+        edited = message.edit_text.await_args.kwargs["rich_message"]
+        self.assertEqual(edited.blocks[0].text, original.blocks[0].text)
+        button_rows = [block for block in edited.blocks if block.type == "buttons"]
+        self.assertEqual(len(button_rows), 1)
+        self.assertEqual(
+            [button.callback_data for button in button_rows[0].buttons],
+            ["admin:home"],
+        )
+
+    async def test_safe_edit_embeds_buttons_for_plain_text_screens(self) -> None:
+        message = SimpleNamespace(edit_text=AsyncMock())
+        callback = SimpleNamespace(message=message)
+
+        self.assertTrue(
+            await safe_edit(
+                callback,
+                "Choose a language",
+                admin_home_keyboard("en"),
+            )
+        )
+
+        edited = message.edit_text.await_args.kwargs
+        self.assertIsNone(edited["reply_markup"])
+        self.assertEqual(edited["rich_message"].blocks[0].text, "Choose a language")
+        self.assertEqual(
+            [
+                button.callback_data
+                for block in edited["rich_message"].blocks
+                if block.type == "buttons"
+                for button in block.buttons
+            ],
+            ["admin:home"],
         )
 
     async def test_safe_edit_reports_successful_message_updates(self) -> None:
@@ -1114,6 +1189,61 @@ class FeatureFlowTests(unittest.IsolatedAsyncioTestCase):
         changed = await safe_edit(callback, "same")
         self.assertFalse(changed)
         message.edit_text.assert_awaited_once_with(text="same", reply_markup=None)
+
+
+class LanguageMenuTitleTests(unittest.IsolatedAsyncioTestCase):
+    class Db:
+        async def ensure_user(self, user_id, username, full_name):
+            return None
+
+        async def get_language(self, user_id: int) -> str:
+            return "en"
+
+    @staticmethod
+    def _user():
+        return SimpleNamespace(
+            id=42, first_name="Test", last_name="User", username="test_user"
+        )
+
+    @staticmethod
+    def _assert_h4_with_language_buttons(test_case, rich_message) -> None:
+        test_case.assertEqual(rich_message.blocks[0].type.value, "heading")
+        test_case.assertEqual(rich_message.blocks[0].size, 4)
+        buttons = [
+            button.callback_data
+            for block in rich_message.blocks
+            if block.type == "buttons"
+            for button in block.buttons
+        ]
+        test_case.assertEqual(
+            buttons,
+            ["lang:uz", "lang:uzn", "lang:kaa", "lang:ru", None, "menu:home"],
+        )
+
+    async def test_language_command_uses_h4_for_the_menu_title(self) -> None:
+        message = SimpleNamespace(
+            from_user=self._user(),
+            answer=AsyncMock(),
+            answer_rich=AsyncMock(),
+        )
+
+        await language_command(message, self.Db())
+
+        message.answer.assert_not_awaited()
+        rich_message = message.answer_rich.await_args.args[0]
+        self._assert_h4_with_language_buttons(self, rich_message)
+
+    async def test_language_callback_uses_h4_for_the_menu_title(self) -> None:
+        callback = SimpleNamespace(
+            from_user=self._user(),
+            message=SimpleNamespace(edit_text=AsyncMock()),
+            answer=AsyncMock(),
+        )
+
+        await choose_language_callback(callback, self.Db())
+
+        rich_message = callback.message.edit_text.await_args.kwargs["rich_message"]
+        self._assert_h4_with_language_buttons(self, rich_message)
 
 
 if __name__ == "__main__":

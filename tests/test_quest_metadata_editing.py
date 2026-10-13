@@ -5,6 +5,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+from button_helpers import keyboard_from_call
 from quest_bot.handlers.quests import (
     begin_quest_cover_photo_edit,
     begin_quest_title_edit,
@@ -146,7 +147,7 @@ class QuestMetadataEditingTests(unittest.IsolatedAsyncioTestCase):
         await edit_quest_details_menu(callback, db)
 
         edited = message.edit_text.await_args.kwargs
-        self.assertIsNotNone(edited["reply_markup"])
+        self.assertIsNotNone(keyboard_from_call(message.edit_text.await_args))
         self.assertIn(
             "Finished quest",
             str(edited["rich_message"].model_dump(mode="json", exclude_none=True)),
@@ -223,7 +224,7 @@ class QuestMetadataEditingTests(unittest.IsolatedAsyncioTestCase):
         rich_message = rendered.args[0]
         self.assertEqual(rich_message.blocks[2].blocks[0].text, user_title)
         self.assertEqual(rich_message.blocks[2].type, "blockquote")
-        self.assertIsNotNone(rendered.kwargs["reply_markup"])
+        self.assertIsNotNone(keyboard_from_call(rendered))
 
     async def test_description_edit_has_separate_validation_and_saves_completed_quest(self) -> None:
         db = FakeMetadataDatabase()
@@ -264,14 +265,14 @@ class QuestMetadataEditingTests(unittest.IsolatedAsyncioTestCase):
             bot.copies,
             [{"chat_id": 7, "from_chat_id": -100200, "message_id": 17, "caption": ""}],
         )
-        markup = message.edit_text.await_args.kwargs["reply_markup"]
+        markup = keyboard_from_call(message.edit_text.await_args)
         self.assertEqual(markup.inline_keyboard[0][0].callback_data, "manage:edit:cover:photo:42")
         self.assertEqual(markup.inline_keyboard[1][0].style, "danger")
 
         db.quest.update(cover_chat_id=None, cover_message_id=None)
         callback, message, _ = make_callback("manage:edit:cover:42")
         await quest_cover_editor(callback, db, bot)
-        markup = message.edit_text.await_args.kwargs["reply_markup"]
+        markup = keyboard_from_call(message.edit_text.await_args)
         self.assertEqual(markup.inline_keyboard[0][0].callback_data, "manage:edit:cover:photo:42")
         self.assertFalse(any("remove:" in button.callback_data for row in markup.inline_keyboard for button in row))
 
@@ -290,7 +291,7 @@ class QuestMetadataEditingTests(unittest.IsolatedAsyncioTestCase):
         rich = message.edit_text.await_args.kwargs["rich_message"]
         self.assertEqual(rich.blocks[2].type, "photo")
         self.assertEqual(rich.blocks[2].photo.media, "telegram-cover-file-id")
-        self.assertIsNotNone(message.edit_text.await_args.kwargs["reply_markup"])
+        self.assertIsNotNone(keyboard_from_call(message.edit_text.await_args))
 
     async def test_cover_photo_add_or_replace_archives_telegram_reference_then_removes_old_copy(self) -> None:
         db = FakeMetadataDatabase()
@@ -313,7 +314,7 @@ class QuestMetadataEditingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(db.updates[-1]["cover_file_id"], "telegram-file-id")
         self.assertEqual(bot.deletions, [{"chat_id": -100111, "message_id": 12}])
         self.assertTrue(state.cleared)
-        self.assertIsNotNone(message.answer_rich.await_args.kwargs["reply_markup"])
+        self.assertIsNotNone(keyboard_from_call(message.answer_rich.await_args))
 
     async def test_cover_add_without_previous_photo_does_not_download_or_delete_media(self) -> None:
         db = FakeMetadataDatabase()
@@ -361,7 +362,7 @@ class QuestMetadataEditingTests(unittest.IsolatedAsyncioTestCase):
 
         await confirm_quest_cover_removal_prompt(callback, db)
 
-        confirm_markup = message.edit_text.await_args.kwargs["reply_markup"]
+        confirm_markup = keyboard_from_call(message.edit_text.await_args)
         self.assertEqual(confirm_markup.inline_keyboard[0][0].style, "danger")
         self.assertTrue(any("remove-confirm:42" in button.callback_data for row in confirm_markup.inline_keyboard for button in row))
         self.assertEqual(db.quest["cover_message_id"], 81)
@@ -404,9 +405,10 @@ class QuestMetadataEditingTests(unittest.IsolatedAsyncioTestCase):
         await cancel_stage_edit(callback, state, db)
 
         self.assertTrue(state.cleared)
-        self.assertIsNotNone(message.answer.await_args.kwargs["reply_markup"])
+        markup = keyboard_from_call(message.answer_rich.await_args)
+        self.assertIsNotNone(markup)
         self.assertEqual(
-            message.answer.await_args.kwargs["reply_markup"].inline_keyboard[0][0].callback_data,
+            markup.inline_keyboard[0][0].callback_data,
             "manage:edit:title:42",
         )
 

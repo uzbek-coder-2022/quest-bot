@@ -5,11 +5,20 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
+from aiogram import Bot
 from aiogram.exceptions import TelegramBadRequest
-from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InputRichMessage
+from aiogram.types import (
+    CallbackQuery,
+    InlineKeyboardMarkup,
+    InputRichMessage,
+    Message,
+)
+from pydantic import ValidationError
 
 from .database import Database
+from .feedback import FeedbackLevel, feedback_message, feedback_text
 from .localization import tr
+from .rich_buttons import ButtonAlignment, embed_inline_keyboard
 
 LOCAL_TZ = ZoneInfo("Asia/Tashkent")
 
@@ -122,7 +131,7 @@ async def ensure_private_callback(callback: CallbackQuery, db: Database) -> bool
     if callback.message and callback.message.chat.type == "private":
         return True
     language = await db.get_language(callback.from_user.id)
-    await callback.answer(tr(language, "open_private_chat"), show_alert=True)
+    await callback.answer(feedback_text(language, "open_private_chat"), show_alert=True)
     return False
 
 
@@ -133,19 +142,199 @@ async def can_manage_quest(db: Database, user_id: int, quest: dict) -> bool:
     )
 
 
+async def answer_with_buttons(
+    message: Message,
+    content: str | InputRichMessage,
+    reply_markup: InlineKeyboardMarkup | None = None,
+    *,
+    button_alignment: ButtonAlignment = "center",
+    **kwargs,
+) -> Message:
+    """Answer with rich buttons where possible, retaining safe fallbacks."""
+    original_content, original_markup = content, reply_markup
+    content, reply_markup = embed_inline_keyboard(
+        content, reply_markup, align=button_alignment
+    )
+    if isinstance(content, InputRichMessage):
+        answer_rich = getattr(message, "answer_rich", None)
+        if answer_rich is not None:
+            return await answer_rich(content, reply_markup=reply_markup, **kwargs)
+        # Lightweight Message test doubles may expose only the legacy method.
+        if isinstance(original_content, str):
+            return await message.answer(
+                original_content, reply_markup=original_markup, **kwargs
+            )
+        return await message.answer_rich(
+            content, reply_markup=reply_markup, **kwargs
+        )
+    return await message.answer(content, reply_markup=reply_markup, **kwargs)
+
+
+async def answer_rich_with_buttons(
+    message: Message,
+    content: InputRichMessage,
+    reply_markup: InlineKeyboardMarkup | None = None,
+    *,
+    button_alignment: ButtonAlignment = "center",
+    **kwargs,
+) -> Message:
+    """Send rich content, embedding supported keyboards as aligned rich buttons."""
+    return await answer_with_buttons(
+        message,
+        content,
+        reply_markup,
+        button_alignment=button_alignment,
+        **kwargs,
+    )
+
+
+async def answer_feedback(
+    message: Message,
+    language: str,
+    key: str,
+    reply_markup: InlineKeyboardMarkup | None = None,
+    *,
+    level: FeedbackLevel | None = None,
+    button_alignment: ButtonAlignment = "center",
+    **values: object,
+) -> Message:
+    """Send a localized status card, retaining a legacy text fallback."""
+    if getattr(message, "answer_rich", None) is not None:
+        return await answer_rich_with_buttons(
+            message,
+            feedback_message(language, key, level=level, **values),
+            reply_markup,
+            button_alignment=button_alignment,
+        )
+    return await answer_with_buttons(
+        message,
+        feedback_text(language, key, level=level, **values),
+        reply_markup,
+        button_alignment=button_alignment,
+    )
+
+
+async def send_with_buttons(
+    bot: Bot,
+    chat_id: int | str,
+    content: str | InputRichMessage,
+    reply_markup: InlineKeyboardMarkup | None = None,
+    *,
+    button_alignment: ButtonAlignment = "center",
+    **kwargs,
+) -> Message:
+    """Send a chat message with rich buttons where supported."""
+    original_content, original_markup = content, reply_markup
+    content, reply_markup = embed_inline_keyboard(
+        content, reply_markup, align=button_alignment
+    )
+    if isinstance(content, InputRichMessage):
+        send_rich_message = getattr(bot, "send_rich_message", None)
+        if send_rich_message is not None:
+            return await send_rich_message(
+                chat_id, content, reply_markup=reply_markup, **kwargs
+            )
+        # Lightweight bot test doubles may expose only the legacy method.
+        if isinstance(original_content, str):
+            return await bot.send_message(
+                chat_id,
+                original_content,
+                reply_markup=original_markup,
+                **kwargs,
+            )
+        return await bot.send_rich_message(
+            chat_id, content, reply_markup=reply_markup, **kwargs
+        )
+    return await bot.send_message(
+        chat_id, content, reply_markup=reply_markup, **kwargs
+    )
+
+
+async def send_rich_with_buttons(
+    bot: Bot,
+    chat_id: int | str,
+    content: InputRichMessage,
+    reply_markup: InlineKeyboardMarkup | None = None,
+    *,
+    button_alignment: ButtonAlignment = "center",
+    **kwargs,
+) -> Message:
+    """Send rich content to a chat, keeping compatible buttons in the same message."""
+    return await send_with_buttons(
+        bot,
+        chat_id,
+        content,
+        reply_markup,
+        button_alignment=button_alignment,
+        **kwargs,
+    )
+
+
+def rich_content_without_buttons(message: Message) -> InputRichMessage | None:
+    """Convert received rich content back to input form without button rows."""
+    rich_message = getattr(message, "rich_message", None)
+    if not rich_message:
+        return None
+    payload = rich_message.model_dump(mode="json", exclude_none=True)
+    blocks = payload.get("blocks")
+    if not isinstance(blocks, list):
+        return None
+    payload["blocks"] = [
+        block
+        for block in blocks
+        if not isinstance(block, dict) or block.get("type") != "buttons"
+    ]
+    if not payload["blocks"]:
+        return None
+    try:
+        return InputRichMessage.model_validate(payload)
+    except ValidationError:
+        # Output-only media blocks cannot always be resubmitted as input. The
+        # caller may still use the legacy editReplyMarkup fallback for old
+        # non-rich messages; never discard content that cannot be reconstructed.
+        return None
+
+
 async def safe_edit(
     callback: CallbackQuery,
     text: str | InputRichMessage,
     reply_markup: InlineKeyboardMarkup | None = None,
+    *,
+    button_alignment: ButtonAlignment = "center",
 ) -> bool:
-    """Edit a callback message with plain text or structured Telegram rich content."""
+    """Edit a message, embedding supported keyboards into rich-message content."""
     if not callback.message:
         return False
+    text, reply_markup = embed_inline_keyboard(
+        text, reply_markup, align=button_alignment
+    )
     kwargs = (
         {"rich_message": text} if isinstance(text, InputRichMessage) else {"text": text}
     )
     try:
         await callback.message.edit_text(**kwargs, reply_markup=reply_markup)
+        return True
+    except TelegramBadRequest as exc:
+        if "message is not modified" not in str(exc).lower():
+            raise
+        return False
+
+
+async def safe_edit_buttons(
+    callback: CallbackQuery,
+    reply_markup: InlineKeyboardMarkup | None,
+) -> bool:
+    """Replace rich-message button blocks, or update a legacy inline keyboard."""
+    message = callback.message
+    if not message:
+        return False
+    if getattr(message, "rich_message", None):
+        content = rich_content_without_buttons(message)
+        if content is None:
+            return False
+        return await safe_edit(callback, content, reply_markup=reply_markup)
+    try:
+        await message.edit_reply_markup(reply_markup=reply_markup)
         return True
     except TelegramBadRequest as exc:
         if "message is not modified" not in str(exc).lower():

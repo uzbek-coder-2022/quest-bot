@@ -16,6 +16,7 @@ class FakeBot:
     def __init__(self) -> None:
         self.copies: list[dict] = []
         self.messages: list[tuple[int, object]] = []
+        self.rich_options: list[dict] = []
 
     async def copy_message(self, **kwargs):
         self.copies.append(kwargs)
@@ -26,6 +27,7 @@ class FakeBot:
 
     async def send_rich_message(self, chat_id: int, rich_message, **kwargs) -> None:
         self.messages.append((chat_id, rich_message))
+        self.rich_options.append(kwargs)
 
     async def delete_message(self, **kwargs) -> None:
         return None
@@ -115,9 +117,59 @@ class QuestionArchiveTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(bot.copies[1]["chat_id"], -10088)
         self.assertEqual(bot.copies[1]["from_chat_id"], -10077)
         self.assertEqual(bot.copies[1]["message_id"], 501)
-        self.assertIsNotNone(bot.copies[1]["reply_markup"])
+        self.assertNotIn("reply_markup", bot.copies[1])
         self.assertEqual(bot.messages[0][1].blocks[0].text, "Archive test")
         self.assertEqual(bot.messages[2][1].blocks[0].text, "Archive test")
+        action_message = bot.messages[3][1]
+        action_rows = [
+            block for block in action_message.blocks if block.type == "buttons"
+        ]
+        self.assertEqual(
+            action_rows[0].buttons[0].url,
+            "https://t.me/quest_test?start=play_7",
+        )
+        self.assertIsNone(bot.rich_options[-1]["reply_markup"])
+
+    async def test_group_question_buttons_are_embedded_with_rich_message_alignment(self) -> None:
+        bot = FakeBot()
+        db = FakeDatabase()
+        quest = {
+            "id": 8,
+            "title": "Public challenge",
+            "owner_id": 1,
+            "visibility": "public",
+            "invite_token": "public-token",
+            "progression": "scheduled",
+            "chat_id": -10088,
+        }
+        stage = {
+            "id": 18,
+            "stage_order": 1,
+            "question": "Who built the bridge?",
+            "question_media_type": "text",
+            "question_file_id": None,
+            "source_chat_id": -10077,
+            "source_message_id": 504,
+            "max_attempts": 2,
+            "time_limit_seconds": 0,
+        }
+        db.stage = stage
+
+        await announce_stage(bot, db, quest, stage, "quest_test")
+
+        self.assertEqual([chat_id for chat_id, _ in bot.messages], [-10088])
+        self.assertEqual(bot.copies, [])
+        self.assertIsNone(bot.rich_options[0]["reply_markup"])
+        rich = bot.messages[0][1]
+        button_rows = [block for block in rich.blocks if block.type == "buttons"]
+        self.assertEqual(len(button_rows), 2)
+        self.assertEqual([row.align for row in button_rows], ["center", "center"])
+        self.assertEqual(
+            button_rows[0].buttons[0].url,
+            "https://t.me/quest_test?start=play_8",
+        )
+        self.assertEqual(button_rows[1].buttons[0].url, "https://t.me/quest_test")
+        self.assertIn("Who built the bridge?", str(rich.model_dump(mode="json")))
 
     async def test_text_stage_is_one_structured_message_with_answer_instruction(self) -> None:
         message = stage_message(

@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.types import DisabledButton, InlineKeyboardButton, InlineKeyboardMarkup
 
 from .localization import LANGUAGE_NAMES, LANGUAGES, tr
+from .rich_buttons import copy_button
 
 
 def _button_style(data: str) -> str:
@@ -45,18 +46,54 @@ def _button_style(data: str) -> str:
     return "primary"
 
 
-def button(text: str, data: str, style: str | None = None) -> InlineKeyboardButton:
-    """Create an inline button with Telegram's native blue/green/red style."""
-    selected_style = style or _button_style(data)
+def button(
+    text: str,
+    data: str | None = None,
+    style: str | None = None,
+    *,
+    disabled: bool = False,
+) -> InlineKeyboardButton:
+    """Create a native-styled inline button, optionally in Telegram's disabled state."""
+    if disabled and data is not None:
+        raise ValueError("A disabled button cannot also have an action")
+    if not disabled and not data:
+        raise ValueError("An enabled callback button requires callback data")
+    selected_style = (
+        style
+        if style is not None
+        else (_button_style(data or "") if data else "primary")
+    )
     if selected_style not in {"primary", "success", "danger"}:
         raise ValueError("Button style must be primary, success, or danger")
+    if disabled:
+        return InlineKeyboardButton(
+            text=text, style=selected_style, disabled=DisabledButton()
+        )
     return InlineKeyboardButton(text=text, callback_data=data, style=selected_style)
 
 
+def copy_link_keyboard(language: str, link: str) -> InlineKeyboardMarkup:
+    """Give users a native one-tap copy action for a generated invite link."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[[copy_button(tr(language, "btn_copy_link"), link)]]
+    )
+
+
 def language_keyboard(language: str | None = None) -> InlineKeyboardMarkup:
-    rows = [
-        [button(LANGUAGE_NAMES[code], f"lang:{code}")] for code in LANGUAGES
-    ]
+    rows = []
+    for code in LANGUAGES:
+        selected = code == language
+        label = LANGUAGE_NAMES[code]
+        rows.append(
+            [
+                button(
+                    f"✓ {label}" if selected else label,
+                    None if selected else f"lang:{code}",
+                    style="success" if selected else None,
+                    disabled=selected,
+                )
+            ]
+        )
     if language:
         # The language screen is opened from the main menu, so Back goes there.
         rows.append([button(tr(language, "btn_back"), "menu:home")])

@@ -25,7 +25,15 @@ from ..presentation import (
 )
 from ..states import SupportFlow
 from ..rich_text import heading, paragraph, rich_message
-from ..utils import safe_edit
+from ..utils import (
+    answer_feedback,
+    feedback_text,
+    answer_rich_with_buttons,
+    answer_with_buttons,
+    safe_edit,
+    safe_edit_buttons,
+    send_rich_with_buttons,
+)
 
 router = Router(name="support")
 
@@ -34,7 +42,7 @@ async def _ensure_private(callback: CallbackQuery, db: Database) -> bool:
     if callback.message and callback.message.chat.type == "private":
         return True
     language = await db.get_language(callback.from_user.id)
-    await callback.answer(tr(language, "open_private_chat"), show_alert=True)
+    await callback.answer(feedback_text(language, "open_private_chat"), show_alert=True)
     return False
 
 
@@ -90,7 +98,8 @@ async def _notify_admins(
             source = tr(language, "support_source_superadmin")
         notice = support_notification(ticket_id, source, sender_name, text)
         try:
-            await message.bot.send_rich_message(
+            await send_rich_with_buttons(
+                message.bot,
                 admin_id,
                 notice,
                 reply_markup=ticket_reply_keyboard(language, ticket_id),
@@ -103,13 +112,14 @@ async def _notify_admins(
 async def support_command(message: Message, db: Database) -> None:
     language = await db.get_language(message.from_user.id if message.from_user else 0)
     if message.chat.type != "private":
-        await message.answer(tr(language, "open_private_chat"))
+        await answer_feedback(message, language, "open_private_chat")
         return
     if not message.from_user:
         return
     page_size = int(await db.settings_get("page_size", "10"))
     quests = await db.support_quests_for_user(message.from_user.id, 0, page_size)
-    await message.answer_rich(
+    await answer_rich_with_buttons(
+        message,
         information_message(
             tr(language, "support_choose"),
             None if quests else tr(language, "support_no_quests"),
@@ -193,7 +203,7 @@ async def new_quest_admin_ticket(
     quest = await db.support_quest_for_user(quest_id, callback.from_user.id)
     language = await db.get_language(callback.from_user.id)
     if not quest:
-        await callback.answer(tr(language, "quest_not_found"), show_alert=True)
+        await callback.answer(feedback_text(language, "quest_not_found"), show_alert=True)
         return
     await state.update_data(
         support_quest_id=quest_id, support_target_admin_id=int(quest["owner_id"])
@@ -235,14 +245,15 @@ async def create_ticket_message(
     language = await db.get_language(message.from_user.id)
     text = (message.text or "").strip()
     if not text or len(text) > 2000:
-        await message.answer(tr(language, "invalid_text"))
+        await answer_feedback(message, language, "invalid_text")
         return
     # A participant may write their answer while the support form is open. Ask
     # which one they meant instead of silently sending the answer as a ticket.
     stages = await db.open_stages_for_user(message.from_user.id)
     if stages:
         await state.update_data(pending_support_text=text)
-        await message.answer(
+        await answer_with_buttons(
+            message,
             information_message(
                 tr(language, "ambiguous_message_title"),
                 tr(language, "ambiguous_message_body"),
@@ -265,7 +276,7 @@ async def pending_text_as_ticket(
     text = str(data.get("pending_support_text") or "").strip()
     if not text:
         await state.clear()
-        await callback.answer(tr(language, "error_generic"), show_alert=True)
+        await callback.answer(feedback_text(language, "error_generic"), show_alert=True)
         return
     await _submit_support_ticket(
         callback.message, state, db, callback.from_user.id, text
@@ -342,7 +353,7 @@ async def show_ticket_history(callback: CallbackQuery, db: Database) -> None:
     ticket = await db.get_ticket(ticket_id)
     language = await db.get_language(callback.from_user.id)
     if not ticket or int(ticket["user_id"]) != callback.from_user.id:
-        await callback.answer(tr(language, "quest_not_found"), show_alert=True)
+        await callback.answer(feedback_text(language, "quest_not_found"), show_alert=True)
         return
     messages = await db.ticket_messages(ticket_id)
     labelled_messages: list[tuple[str, str]] = []
@@ -406,11 +417,11 @@ async def begin_ticket_reply(
     ticket = await db.get_ticket(ticket_id)
     language = await db.get_language(callback.from_user.id)
     if not ticket:
-        await callback.answer(tr(language, "error_generic"), show_alert=True)
+        await callback.answer(feedback_text(language, "error_generic"), show_alert=True)
         return
     if ticket["status"] != "open":
         await callback.answer(
-            tr(language, "support_ticket_closed", ticket=ticket_id), show_alert=True
+            feedback_text(language, "support_ticket_closed", ticket=ticket_id), show_alert=True
         )
         return
     if int(ticket["user_id"]) == callback.from_user.id:
@@ -420,16 +431,15 @@ async def begin_ticket_reply(
         await state.update_data(ticket_id=ticket_id)
         await state.set_state(SupportFlow.admin_reply)
     else:
-        await callback.answer(tr(language, "admin_only"), show_alert=True)
+        await callback.answer(feedback_text(language, "admin_only"), show_alert=True)
         return
     if callback.message:
         # The message that was answered no longer offers Reply, so the same
         # notification cannot be answered twice.
         try:
-            await callback.message.edit_reply_markup(
-                reply_markup=ticket_reply_keyboard(
-                    language, ticket_id, can_reply=False
-                )
+            await safe_edit_buttons(
+                callback,
+                ticket_reply_keyboard(language, ticket_id, can_reply=False),
             )
         except TelegramAPIError:
             pass
@@ -454,16 +464,16 @@ async def close_ticket_callback(
     ticket = await db.get_ticket(ticket_id)
     language = await db.get_language(callback.from_user.id)
     if not ticket:
-        await callback.answer(tr(language, "error_generic"), show_alert=True)
+        await callback.answer(feedback_text(language, "error_generic"), show_alert=True)
         return
     recipients = await db.support_admin_recipients(ticket_id)
     is_user = int(ticket["user_id"]) == callback.from_user.id
     if not is_user and callback.from_user.id not in recipients:
-        await callback.answer(tr(language, "admin_only"), show_alert=True)
+        await callback.answer(feedback_text(language, "admin_only"), show_alert=True)
         return
     if not await db.close_ticket(ticket_id, callback.from_user.id):
         await callback.answer(
-            tr(language, "support_ticket_closed", ticket=ticket_id), show_alert=True
+            feedback_text(language, "support_ticket_closed", ticket=ticket_id), show_alert=True
         )
         return
     if callback.message:
@@ -504,15 +514,13 @@ async def user_ticket_reply(message: Message, state: FSMContext, db: Database) -
     text = (message.text or "").strip()
     language = await db.get_language(message.from_user.id)
     if not text or len(text) > 2000:
-        await message.answer(tr(language, "invalid_text"))
+        await answer_feedback(message, language, "invalid_text")
         return
     data = await state.get_data()
     ticket_id = int(data["ticket_id"])
     if not await db.add_ticket_message(ticket_id, message.from_user.id, text):
         await state.clear()
-        await message.answer(
-            tr(language, "support_ticket_closed", ticket=ticket_id)
-        )
+        await answer_feedback(message, language, "support_ticket_closed", ticket=ticket_id)
         return
     await state.clear()
     await message.answer(
@@ -528,22 +536,20 @@ async def admin_ticket_reply(message: Message, state: FSMContext, db: Database) 
     text = (message.text or "").strip()
     language = await db.get_language(message.from_user.id)
     if not text or len(text) > 2000:
-        await message.answer(tr(language, "invalid_text"))
+        await answer_feedback(message, language, "invalid_text")
         return
     data = await state.get_data()
     ticket_id = int(data["ticket_id"])
     if message.from_user.id not in await db.support_admin_recipients(ticket_id):
         await state.clear()
-        await message.answer(tr(language, "admin_only"))
+        await answer_feedback(message, language, "admin_only")
         return
     ticket = await db.get_ticket(ticket_id)
     if not ticket or not await db.add_ticket_message(
         ticket_id, message.from_user.id, text
     ):
         await state.clear()
-        await message.answer(
-            tr(language, "support_ticket_closed", ticket=ticket_id)
-        )
+        await answer_feedback(message, language, "support_ticket_closed", ticket=ticket_id)
         return
     await state.clear()
     user_language = ticket["language"]
@@ -559,14 +565,16 @@ async def admin_ticket_reply(message: Message, state: FSMContext, db: Database) 
     else:
         source = tr(user_language, "support_source_superadmin")
     try:
-        await message.bot.send_rich_message(
+        await send_rich_with_buttons(
+            message.bot,
             int(ticket["user_id"]),
             support_reply(source, text, ticket_id),
             reply_markup=ticket_reply_keyboard(user_language, ticket_id),
         )
     except TelegramAPIError:
         pass
-    await message.answer(
+    await answer_with_buttons(
+        message,
         _tagged(language, "support_admin_reply_sent", ticket_id),
         reply_markup=ticket_reply_keyboard(language, ticket_id, can_reply=False),
     )

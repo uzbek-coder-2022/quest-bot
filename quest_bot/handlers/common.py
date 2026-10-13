@@ -27,7 +27,12 @@ from ..presentation import (
     quest_preview,
 )
 from ..services import delete_archived_message
-from ..utils import safe_edit
+from ..utils import (
+    answer_feedback,
+    answer_rich_with_buttons,
+    answer_with_buttons,
+    safe_edit,
+)
 
 router = Router(name="common")
 logger = logging.getLogger(__name__)
@@ -66,27 +71,23 @@ async def _join_from_payload(
         else await db.get_quest(quest_id)
     )
     if not quest:
-        await message.answer(
-            tr(
-                language,
-                "private_link_invalid" if token is not None else "quest_not_found",
-            )
-        )
+        key = "private_link_invalid" if token is not None else "quest_not_found"
+        await answer_feedback(message, language, key)
         return True
     if quest["visibility"] == "private" and token is None:
-        await message.answer(tr(language, "private_link_invalid"))
+        await answer_feedback(message, language, "private_link_invalid")
         return True
 
     banned, reason = await db.is_globally_banned(user.id)
     if banned:
         suffix = tr(language, "reason_line", reason=reason) if reason else ""
-        await message.answer(tr(language, "global_blocked", reason=suffix))
+        await answer_feedback(message, language, "global_blocked", reason=suffix)
         return True
     if quest.get("paused_at"):
-        await message.answer(tr(language, "quest_paused_notice"))
+        await answer_feedback(message, language, "quest_paused_notice")
         return True
     if quest["status"] not in {"scheduled", "active"}:
-        await message.answer(tr(language, "join_closed"))
+        await answer_feedback(message, language, "join_closed")
         return True
 
     participant = await db.participant(quest_id, user.id)
@@ -97,15 +98,16 @@ async def _join_from_payload(
                 if participant.get("ban_reason")
                 else ""
             )
-            await message.answer(tr(language, "blocked_notice", reason=suffix))
+            await answer_feedback(message, language, "blocked_notice", reason=suffix)
         else:
-            await message.answer(tr(language, "already_joined"))
+            await answer_feedback(message, language, "already_joined")
         return True
 
     participant_count = await db.participant_count(quest_id)
     if not quest.get("cover_file_id"):
         await copy_quest_cover(bot, quest, user.id)
-    await message.answer_rich(
+    await answer_rich_with_buttons(
+        message,
         quest_preview(quest, language, participant_count),
         reply_markup=join_confirmation_keyboard(language, quest_id, token),
     )
@@ -126,7 +128,7 @@ async def start_command(
         language = await db.get_language(
             message.from_user.id if message.from_user else 0
         )
-        await message.answer(tr(language, "open_private_chat"))
+        await answer_feedback(message, language, "open_private_chat")
         return
     await state.clear()
     await _register_message_user(message, db)
@@ -137,14 +139,15 @@ async def start_command(
     banned, reason = await db.is_globally_banned(user.id)
     if banned:
         suffix = tr(language, "reason_line", reason=reason) if reason else ""
-        await message.answer(tr(language, "global_blocked", reason=suffix))
+        await answer_feedback(message, language, "global_blocked", reason=suffix)
         return
     if command.args:
         handled = await _join_from_payload(message, command.args.strip(), db, bot)
         if handled:
             return
     role = await db.get_role(user.id)
-    await message.answer_rich(
+    await answer_rich_with_buttons(
+        message,
         information_message(
             f"👋 {tr(language, 'welcome')}",
             f"✨ {tr(language, 'welcome_hint')}\n\n📋 {tr(language, 'menu')}",
@@ -167,11 +170,13 @@ async def cancel_command(message: Message, db: Database, state: FSMContext) -> N
         )
     language = await db.get_language(message.from_user.id if message.from_user else 0)
     role = await db.get_role(message.from_user.id) if message.from_user else None
-    await message.answer(
-        tr(language, "cancelled"),
-        reply_markup=admin_home_keyboard(language)
-        if role in {"admin", "superadmin"}
-        else None,
+    await answer_feedback(
+        message,
+        language,
+        "cancelled",
+        reply_markup=(
+            admin_home_keyboard(language) if role in {"admin", "superadmin"} else None
+        ),
     )
 
 
@@ -183,7 +188,8 @@ async def menu_command(message: Message, db: Database, state: FSMContext) -> Non
         return
     language = await db.get_language(message.from_user.id)
     role = await db.get_role(message.from_user.id)
-    await message.answer_rich(
+    await answer_rich_with_buttons(
+        message,
         information_message(f"📋 {tr(language, 'menu')}"),
         reply_markup=main_menu(language, role),
     )
@@ -193,8 +199,10 @@ async def menu_command(message: Message, db: Database, state: FSMContext) -> Non
 async def language_command(message: Message, db: Database) -> None:
     await _register_message_user(message, db)
     language = await db.get_language(message.from_user.id if message.from_user else 0)
-    await message.answer(
-        tr(language, "language_choose"), reply_markup=language_keyboard(language)
+    await answer_with_buttons(
+        message,
+        information_message(tr(language, "language_choose"), title_size=4),
+        reply_markup=language_keyboard(language),
     )
 
 
@@ -203,7 +211,8 @@ async def help_command(message: Message, db: Database) -> None:
     await _register_message_user(message, db)
     language = await db.get_language(message.from_user.id if message.from_user else 0)
     role = await db.get_role(message.from_user.id) if message.from_user else None
-    await message.answer_rich(
+    await answer_rich_with_buttons(
+        message,
         guide_message(language), reply_markup=guide_keyboard(language, role)
     )
 
@@ -245,8 +254,10 @@ async def guide_callback(callback: CallbackQuery, db: Database) -> None:
 async def choose_language_callback(callback: CallbackQuery, db: Database) -> None:
     language = await db.get_language(callback.from_user.id)
     if callback.message:
-        await callback.message.edit_text(
-            tr(language, "language_choose"), reply_markup=language_keyboard(language)
+        await safe_edit(
+            callback,
+            information_message(tr(language, "language_choose"), title_size=4),
+            reply_markup=language_keyboard(language),
         )
     await callback.answer()
 
@@ -260,7 +271,8 @@ async def set_language_callback(callback: CallbackQuery, db: Database) -> None:
     await db.set_language(callback.from_user.id, language)
     role = await db.get_role(callback.from_user.id)
     if callback.message:
-        await callback.message.edit_text(
+        await safe_edit(
+            callback,
             f"{tr(language, 'language_saved')}\n\n{tr(language, 'menu')}",
             reply_markup=main_menu(language, role),
         )

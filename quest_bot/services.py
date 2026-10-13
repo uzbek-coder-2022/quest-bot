@@ -10,7 +10,7 @@ from aiogram.exceptions import TelegramAPIError, TelegramForbiddenError
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, InputRichMessage
 
 from .database import Database, utc_now
-from .keyboards import continue_keyboard, open_quest_keyboard
+from .keyboards import continue_keyboard, copy_link_keyboard, open_quest_keyboard
 from .localization import tr
 from .rich_text import (
     bold,
@@ -23,6 +23,7 @@ from .rich_text import (
     rich_message,
     video_block,
 )
+from .utils import send_rich_with_buttons, send_with_buttons
 
 logger = logging.getLogger(__name__)
 
@@ -132,7 +133,8 @@ async def notify_quest_end(
     for user_id in user_ids:
         try:
             language = await db.get_language(user_id)
-            await bot.send_message(
+            await send_with_buttons(
+                bot,
                 user_id,
                 tr(language, "quest_ended"),
                 reply_markup=open_quest_keyboard(language, quest_id),
@@ -294,7 +296,8 @@ async def announce_stage(
         )
         has_archive_reference = source_chat_id is not None and source_message_id is not None
         if embeddable or not has_archive_reference:
-            await bot.send_rich_message(
+            await send_rich_with_buttons(
+                bot,
                 int(chat_id),
                 stage_message(language, quest, stage),
                 reply_markup=reply_markup,
@@ -310,6 +313,15 @@ async def announce_stage(
                 chat_id=int(chat_id),
                 from_chat_id=int(source_chat_id),
                 message_id=int(source_message_id),
+                disable_notification=False,
+            )
+            # Bot API copyMessage accepts inline keyboards but has no parameter
+            # for rich-message content, so put the equivalent rich button on a
+            # small follow-up message instead of leaving a legacy keyboard.
+            await send_rich_with_buttons(
+                bot,
+                int(chat_id),
+                rich_message(paragraph(tr(language, "btn_answer_privately"))),
                 reply_markup=reply_markup,
                 disable_notification=False,
             )
@@ -347,7 +359,8 @@ async def notify_quest_started(
             ),
         ]
         try:
-            await bot.send_rich_message(
+            await send_rich_with_buttons(
+                bot,
                 user_id,
                 rich_message(*blocks),
                 reply_markup=(
@@ -391,7 +404,8 @@ async def notify_stage_available(
             ),
         ]
         try:
-            await bot.send_rich_message(
+            await send_rich_with_buttons(
+                bot,
                 user_id,
                 rich_message(*blocks),
                 reply_markup=continue_keyboard(
@@ -408,12 +422,11 @@ async def notify_next_stage_ready(
     """Point a participant at their next question instead of pushing it."""
     language = await db.get_language(user_id)
     try:
-        await bot.send_message(
+        await send_with_buttons(
+            bot,
             user_id,
             tr(language, "correct_next", button=tr(language, "btn_continue_quest")),
-            reply_markup=continue_keyboard(
-                language, int(quest["id"]), started=True
-            ),
+            reply_markup=continue_keyboard(language, int(quest["id"]), started=True),
         )
     except TelegramAPIError:
         logger.info("Could not send the next-stage notice to user %s", user_id)
@@ -498,7 +511,12 @@ async def send_chat_invites_to_current_participants(
             else tr(language, "invite_unavailable")
         )
         try:
-            await bot.send_message(user_id, text)
+            await send_with_buttons(
+                bot,
+                user_id,
+                text,
+                reply_markup=copy_link_keyboard(language, link) if link else None,
+            )
         except TelegramAPIError:
             logger.info("Could not send chat invite to user %s", user_id)
 

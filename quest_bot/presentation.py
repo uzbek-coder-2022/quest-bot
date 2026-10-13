@@ -127,10 +127,14 @@ def guide_message(language: str) -> InputRichMessage:
 
 
 def information_message(
-    title: str, body: str | None = None, footer: str | None = None
+    title: str,
+    body: str | None = None,
+    footer: str | None = None,
+    *,
+    title_size: int = 4,
 ) -> InputRichMessage:
-    """Render a short screen title with an optional paragraph and footer."""
-    blocks = [heading(title, size=1)]
+    """Render a compact title balanced with standard keyboard-button text."""
+    blocks = [heading(title, size=title_size)]
     if body:
         blocks.append(paragraph(body))
     if footer:
