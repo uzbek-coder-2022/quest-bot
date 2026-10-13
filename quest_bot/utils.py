@@ -16,6 +16,7 @@ from aiogram.types import (
 from pydantic import ValidationError
 
 from .database import Database
+from .feedback import FeedbackLevel, feedback_message, feedback_text
 from .localization import tr
 from .rich_buttons import ButtonAlignment, embed_inline_keyboard
 
@@ -130,7 +131,7 @@ async def ensure_private_callback(callback: CallbackQuery, db: Database) -> bool
     if callback.message and callback.message.chat.type == "private":
         return True
     language = await db.get_language(callback.from_user.id)
-    await callback.answer(tr(language, "open_private_chat"), show_alert=True)
+    await callback.answer(feedback_text(language, "open_private_chat"), show_alert=True)
     return False
 
 
@@ -184,6 +185,32 @@ async def answer_rich_with_buttons(
         reply_markup,
         button_alignment=button_alignment,
         **kwargs,
+    )
+
+
+async def answer_feedback(
+    message: Message,
+    language: str,
+    key: str,
+    reply_markup: InlineKeyboardMarkup | None = None,
+    *,
+    level: FeedbackLevel | None = None,
+    button_alignment: ButtonAlignment = "center",
+    **values: object,
+) -> Message:
+    """Send a localized status card, retaining a legacy text fallback."""
+    if getattr(message, "answer_rich", None) is not None:
+        return await answer_rich_with_buttons(
+            message,
+            feedback_message(language, key, level=level, **values),
+            reply_markup,
+            button_alignment=button_alignment,
+        )
+    return await answer_with_buttons(
+        message,
+        feedback_text(language, key, level=level, **values),
+        reply_markup,
+        button_alignment=button_alignment,
     )
 
 

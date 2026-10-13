@@ -31,6 +31,8 @@ from ..services import (
 )
 from ..states import CreateQuest
 from ..utils import (
+    answer_feedback,
+    feedback_text,
     answer_with_buttons,
     format_datetime,
     parse_duration_input,
@@ -114,7 +116,7 @@ async def _save_stage_or_continue(message: Message, state: FSMContext, starts_at
 
     if await db.get_role(message.from_user.id) not in {"admin", "superadmin"}:
         await state.clear()
-        await message.answer(tr(language, "admin_only"))
+        await answer_feedback(message, language, "admin_only")
         return
 
     quest_data = {
@@ -152,10 +154,10 @@ async def _save_stage_or_continue(message: Message, state: FSMContext, starts_at
 async def creation_start(callback: CallbackQuery, state: FSMContext, db: Database) -> None:
     language = await db.get_language(callback.from_user.id)
     if not callback.message or callback.message.chat.type != "private":
-        await callback.answer(tr(language, "open_private_chat"), show_alert=True)
+        await callback.answer(feedback_text(language, "open_private_chat"), show_alert=True)
         return
     if not await _authorized(callback, db):
-        await callback.answer(tr(language, "admin_only"), show_alert=True)
+        await callback.answer(feedback_text(language, "admin_only"), show_alert=True)
         return
     await state.clear()
     await state.set_state(CreateQuest.title)
@@ -169,7 +171,7 @@ async def title_received(message: Message, state: FSMContext, db: Database) -> N
     language = await db.get_language(message.from_user.id)
     title = message.text.strip() if message.text else ""
     if not _valid_text(title, 100):
-        await message.answer(tr(language, "invalid_text"))
+        await answer_feedback(message, language, "invalid_text")
         return
     await state.update_data(title=title)
     await state.set_state(CreateQuest.description)
@@ -181,7 +183,7 @@ async def description_received(message: Message, state: FSMContext, db: Database
     language = await db.get_language(message.from_user.id)
     description = message.text.strip() if message.text else ""
     if not _valid_text(description, 1000):
-        await message.answer(tr(language, "invalid_text"))
+        await answer_feedback(message, language, "invalid_text")
         return
     await state.update_data(description=description)
     await state.set_state(CreateQuest.cover_photo)
@@ -201,7 +203,7 @@ async def cover_photo_received(
     language = await db.get_language(message.from_user.id)
     if not await _authorized(message, db):
         await state.clear()
-        await message.answer(tr(language, "admin_only"))
+        await answer_feedback(message, language, "admin_only")
         return
     try:
         cover_chat_id, cover_message_id = await archive_question_message(
@@ -209,7 +211,7 @@ async def cover_photo_received(
         )
     except TelegramAPIError:
         logger.exception("Could not archive a quest cover from admin %s", message.from_user.id)
-        await message.answer(tr(language, "question_archive_failed"))
+        await answer_feedback(message, language, "question_archive_failed")
         return
     await state.update_data(
         cover_chat_id=cover_chat_id,
@@ -227,9 +229,10 @@ async def cover_photo_received(
 @router.message(CreateQuest.cover_photo)
 async def invalid_cover_photo(message: Message, db: Database) -> None:
     language = await db.get_language(message.from_user.id if message.from_user else 0)
-    await answer_with_buttons(
+    await answer_feedback(
         message,
-        tr(language, "invalid_cover_photo"),
+        language,
+        "invalid_cover_photo",
         reply_markup=creation_cover_keyboard(language),
     )
 
@@ -270,10 +273,10 @@ async def stage_count_received(message: Message, state: FSMContext, db: Database
     try:
         count = int((message.text or "").strip())
     except ValueError:
-        await message.answer(tr(language, "invalid_number"))
+        await answer_feedback(message, language, "invalid_number")
         return
     if not 1 <= count <= 30:
-        await message.answer(tr(language, "invalid_number"))
+        await answer_feedback(message, language, "invalid_number")
         return
     await state.update_data(stage_count=count)
     await state.set_state(CreateQuest.progression)
@@ -303,14 +306,14 @@ async def start_time_received(message: Message, state: FSMContext, db: Database)
     language = await db.get_language(message.from_user.id)
     start_at = parse_local_datetime(message.text or "")
     if not start_at:
-        await message.answer(tr(language, "invalid_datetime"))
+        await answer_feedback(message, language, "invalid_datetime")
         return
     # A quest needs a short lead time so participants can see it before the
     # first stage starts.
     if datetime.fromisoformat(start_at) < datetime.now(timezone.utc) + timedelta(
         minutes=10
     ):
-        await message.answer(tr(language, "invalid_quest_start_min"))
+        await answer_feedback(message, language, "invalid_quest_start_min")
         return
     await state.update_data(start_at=start_at)
     await state.set_state(CreateQuest.duration)
@@ -326,7 +329,7 @@ async def duration_received(message: Message, state: FSMContext, db: Database) -
         message.text or "", data.get("start_at")
     )
     if error:
-        await message.answer(tr(language, error))
+        await answer_feedback(message, language, error)
         return
     await state.update_data(duration_seconds=int(duration_seconds or 0))
     chats = await db.managed_chats()
@@ -344,7 +347,10 @@ async def chat_selected(callback: CallbackQuery, state: FSMContext, db: Database
         await callback.answer()
         return
     if chat_id and not await db.get_managed_chat(chat_id):
-        await callback.answer(tr(await db.get_language(callback.from_user.id), "chat_not_found"), show_alert=True)
+        await callback.answer(
+            feedback_text(await db.get_language(callback.from_user.id), "chat_not_found"),
+            show_alert=True,
+        )
         return
     language = await db.get_language(callback.from_user.id)
     await state.update_data(
@@ -390,10 +396,10 @@ async def common_attempts_received(message: Message, state: FSMContext, db: Data
     try:
         attempts = int((message.text or "").strip())
     except ValueError:
-        await message.answer(tr(language, "invalid_number"))
+        await answer_feedback(message, language, "invalid_number")
         return
     if not 1 <= attempts <= 100:
-        await message.answer(tr(language, "invalid_number"))
+        await answer_feedback(message, language, "invalid_number")
         return
     await state.update_data(common_max_attempts=attempts)
     await _ask_first_question(message, state, language)
@@ -408,12 +414,12 @@ async def question_received(
     language = await db.get_language(message.from_user.id)
     question = _extract_question_text(message)
     if question is None:
-        await message.answer(tr(language, "invalid_question"))
+        await answer_feedback(message, language, "invalid_question")
         return
     question_media_type, question_file_id = question_media_details(message)
     if not await _authorized(message, db):
         await state.clear()
-        await message.answer(tr(language, "admin_only"))
+        await answer_feedback(message, language, "admin_only")
         return
     try:
         archive_chat_id, archive_message_id = await archive_question_message(
@@ -421,7 +427,7 @@ async def question_received(
         )
     except TelegramAPIError:
         logger.exception("Could not archive a quest question from admin %s", message.from_user.id)
-        await message.answer(tr(language, "question_archive_failed"))
+        await answer_feedback(message, language, "question_archive_failed")
         return
     await state.update_data(
         stage_draft={
@@ -468,7 +474,7 @@ async def correct_answer_received(message: Message, state: FSMContext, db: Datab
     language = await db.get_language(message.from_user.id)
     answer = message.text if message.text is not None else ""
     if not answer.strip() or len(answer) > 300:
-        await message.answer(tr(language, "invalid_text"))
+        await answer_feedback(message, language, "invalid_text")
         return
     data = await state.get_data()
     draft = dict(data.get("stage_draft", {}))
@@ -483,10 +489,10 @@ async def attempts_received(message: Message, state: FSMContext, db: Database) -
     try:
         attempts = int((message.text or "").strip())
     except ValueError:
-        await message.answer(tr(language, "invalid_number"))
+        await answer_feedback(message, language, "invalid_number")
         return
     if not 1 <= attempts <= 100:
-        await message.answer(tr(language, "invalid_number"))
+        await answer_feedback(message, language, "invalid_number")
         return
     data = await state.get_data()
     draft = dict(data.get("stage_draft", {}))
@@ -502,10 +508,10 @@ async def stage_time_received(message: Message, state: FSMContext, db: Database)
     try:
         minutes = int((message.text or "").strip())
     except ValueError:
-        await message.answer(tr(language, "invalid_number"))
+        await answer_feedback(message, language, "invalid_number")
         return
     if not 0 <= minutes <= 525600:
-        await message.answer(tr(language, "invalid_number"))
+        await answer_feedback(message, language, "invalid_number")
         return
     data = await state.get_data()
     draft = dict(data.get("stage_draft", {}))
@@ -526,7 +532,7 @@ async def stage_start_received(message: Message, state: FSMContext, db: Database
         total_end = datetime.fromisoformat(data["start_at"]) + timedelta(seconds=duration_seconds)
         valid = datetime.fromisoformat(starts_at) <= total_end
     if not valid:
-        await message.answer(tr(language, "invalid_datetime"))
+        await answer_feedback(message, language, "invalid_datetime")
         return
     await _save_stage_or_continue(message, state, starts_at, language, db)
 
@@ -549,9 +555,7 @@ async def creation_cancel(callback: CallbackQuery, state: FSMContext, db: Databa
         await delete_archived_message(
             callback.message.bot, data.get("cover_chat_id"), data.get("cover_message_id")
         )
-        await answer_with_buttons(
-            callback.message,
-            tr(language, "cancelled"),
-            reply_markup=admin_home_keyboard(language),
+        await answer_feedback(
+            callback.message, language, "cancelled", reply_markup=admin_home_keyboard(language)
         )
     await callback.answer()

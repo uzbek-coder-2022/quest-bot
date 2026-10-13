@@ -37,6 +37,7 @@ from quest_bot.handlers.support import (
     create_ticket_message,
     user_ticket_reply,
 )
+from quest_bot.feedback import feedback_text
 from quest_bot.keyboards import (
     admin_home_keyboard,
     join_confirmation_keyboard,
@@ -513,7 +514,9 @@ class FeatureFlowTests(unittest.IsolatedAsyncioTestCase):
 
         await cancel_quest_join(callback, Db(quest))
 
-        self.assertEqual(callback.answer.await_args.args[0], "Joining the quest was cancelled.")
+        self.assertEqual(
+            callback.answer.await_args.args[0], feedback_text("en", "join_cancelled")
+        )
         content = message.edit_text.await_args.kwargs["rich_message"]
         self.assertIn("Night Quest", str(content.model_dump(mode="json", exclude_none=True)))
         self.assertFalse(hasattr(Db, "join_quest"))

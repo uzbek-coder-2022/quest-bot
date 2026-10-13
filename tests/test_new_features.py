@@ -15,6 +15,7 @@ from aiogram.types import RichMessage
 from button_helpers import keyboard_from_call, keyboard_from_rich
 from quest_bot import navigation
 from quest_bot.database import Database, utc_now
+from quest_bot.feedback import feedback_message, feedback_text
 from quest_bot.handlers.creation import (
     answer_mode_selected,
     attempts_mode_different,
@@ -1176,7 +1177,7 @@ class LeadershipNoticeTests(unittest.IsolatedAsyncioTestCase):
         await _process_answer(message, 17, Db(), SimpleNamespace())
 
         self.assertEqual(
-            message.answer.await_args.args[0], TEXTS["attempts_exhausted"]["en"]
+            message.answer.await_args.args[0], feedback_text("en", "attempts_exhausted")
         )
         markup = message.answer.await_args.kwargs["reply_markup"]
         self.assertEqual(markup.inline_keyboard[0][0].callback_data, "quest:view:my:all:0:17")
@@ -1197,7 +1198,9 @@ class LeadershipNoticeTests(unittest.IsolatedAsyncioTestCase):
         )
         await _process_answer(message, 17, Db(), SimpleNamespace())
 
-        self.assertEqual(message.answer.await_args.args[0], TEXTS["correct_done"]["en"])
+        self.assertEqual(
+            message.answer.await_args.args[0], feedback_text("en", "correct_done")
+        )
         markup = message.answer.await_args.kwargs["reply_markup"]
         self.assertEqual(markup.inline_keyboard[0][0].callback_data, "quest:view:my:all:0:17")
 
@@ -1259,10 +1262,10 @@ class QuestDurationEditTests(unittest.IsolatedAsyncioTestCase):
         # 06:00 UTC start, local Tashkent 08:00 is 03:00 UTC -> too early.
         self.assertEqual(db.updated, [])
         sent = message.answer_rich.await_args.args[0]
-        self.assertEqual(
-            sent.blocks[0].text,
-            f"⚠️ {TEXTS['invalid_quest_end']['en']}",
-        )
+        expected = feedback_message("en", "invalid_quest_end")
+        self.assertEqual(sent.blocks[0].text, expected.blocks[0].text)
+        self.assertEqual(sent.blocks[1].text, expected.blocks[1].text)
+        self.assertTrue(any(block.type == "buttons" for block in sent.blocks))
 
     async def test_a_later_end_time_is_accepted(self) -> None:
         db = self.Db()
@@ -1513,7 +1516,7 @@ class ManualReviewFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(bot.messages, [])
         self.assertEqual(
             callback.message.answer.await_args.args[0],
-            TEXTS["no_pending"]["en"],
+            feedback_text("en", "no_pending"),
         )
 
     async def test_an_outsider_cannot_review_an_answer(self) -> None:
@@ -1625,7 +1628,7 @@ class ManualReviewFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(db.pending)
         self.assertEqual(bot.messages, [])
         self.assertEqual(
-            callback.answer.await_args.args[0], TEXTS["quest_paused_notice"]["en"]
+            callback.answer.await_args.args[0], feedback_text("en", "quest_paused_notice")
         )
 
     async def test_a_second_decision_is_refused(self) -> None:
@@ -1639,7 +1642,7 @@ class ManualReviewFlowTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(db.reviews, [(31, 5, True)])
         self.assertEqual(
-            second.answer.await_args.args[0], TEXTS["no_pending"]["en"]
+            second.answer.await_args.args[0], feedback_text("en", "no_pending")
         )
 
 

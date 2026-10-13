@@ -27,7 +27,12 @@ from ..presentation import (
     quest_preview,
 )
 from ..services import delete_archived_message
-from ..utils import answer_rich_with_buttons, answer_with_buttons, safe_edit
+from ..utils import (
+    answer_feedback,
+    answer_rich_with_buttons,
+    answer_with_buttons,
+    safe_edit,
+)
 
 router = Router(name="common")
 logger = logging.getLogger(__name__)
@@ -66,27 +71,23 @@ async def _join_from_payload(
         else await db.get_quest(quest_id)
     )
     if not quest:
-        await message.answer(
-            tr(
-                language,
-                "private_link_invalid" if token is not None else "quest_not_found",
-            )
-        )
+        key = "private_link_invalid" if token is not None else "quest_not_found"
+        await answer_feedback(message, language, key)
         return True
     if quest["visibility"] == "private" and token is None:
-        await message.answer(tr(language, "private_link_invalid"))
+        await answer_feedback(message, language, "private_link_invalid")
         return True
 
     banned, reason = await db.is_globally_banned(user.id)
     if banned:
         suffix = tr(language, "reason_line", reason=reason) if reason else ""
-        await message.answer(tr(language, "global_blocked", reason=suffix))
+        await answer_feedback(message, language, "global_blocked", reason=suffix)
         return True
     if quest.get("paused_at"):
-        await message.answer(tr(language, "quest_paused_notice"))
+        await answer_feedback(message, language, "quest_paused_notice")
         return True
     if quest["status"] not in {"scheduled", "active"}:
-        await message.answer(tr(language, "join_closed"))
+        await answer_feedback(message, language, "join_closed")
         return True
 
     participant = await db.participant(quest_id, user.id)
@@ -97,9 +98,9 @@ async def _join_from_payload(
                 if participant.get("ban_reason")
                 else ""
             )
-            await message.answer(tr(language, "blocked_notice", reason=suffix))
+            await answer_feedback(message, language, "blocked_notice", reason=suffix)
         else:
-            await message.answer(tr(language, "already_joined"))
+            await answer_feedback(message, language, "already_joined")
         return True
 
     participant_count = await db.participant_count(quest_id)
@@ -127,7 +128,7 @@ async def start_command(
         language = await db.get_language(
             message.from_user.id if message.from_user else 0
         )
-        await message.answer(tr(language, "open_private_chat"))
+        await answer_feedback(message, language, "open_private_chat")
         return
     await state.clear()
     await _register_message_user(message, db)
@@ -138,7 +139,7 @@ async def start_command(
     banned, reason = await db.is_globally_banned(user.id)
     if banned:
         suffix = tr(language, "reason_line", reason=reason) if reason else ""
-        await message.answer(tr(language, "global_blocked", reason=suffix))
+        await answer_feedback(message, language, "global_blocked", reason=suffix)
         return
     if command.args:
         handled = await _join_from_payload(message, command.args.strip(), db, bot)
@@ -169,9 +170,10 @@ async def cancel_command(message: Message, db: Database, state: FSMContext) -> N
         )
     language = await db.get_language(message.from_user.id if message.from_user else 0)
     role = await db.get_role(message.from_user.id) if message.from_user else None
-    await answer_with_buttons(
+    await answer_feedback(
         message,
-        tr(language, "cancelled"),
+        language,
+        "cancelled",
         reply_markup=(
             admin_home_keyboard(language) if role in {"admin", "superadmin"} else None
         ),

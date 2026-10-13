@@ -46,6 +46,8 @@ from ..services import (
 )
 from ..states import ModerationFlow, SuperadminFlow
 from ..utils import (
+    answer_feedback,
+    feedback_text,
     answer_rich_with_buttons,
     answer_with_buttons,
     can_manage_quest,
@@ -126,7 +128,7 @@ async def _require_superadmin(callback: CallbackQuery, db: Database) -> bool:
         return False
     language = await db.get_language(callback.from_user.id)
     if await db.get_role(callback.from_user.id) != "superadmin":
-        await callback.answer(tr(language, "superadmin_only"), show_alert=True)
+        await callback.answer(feedback_text(language, "superadmin_only"), show_alert=True)
         return False
     return True
 
@@ -147,11 +149,11 @@ async def admin_command(message: Message, db: Database) -> None:
         return
     language = await db.get_language(message.from_user.id)
     if message.chat.type != "private":
-        await message.answer(tr(language, "open_private_chat"))
+        await answer_feedback(message, language, "open_private_chat")
         return
     role = await db.get_role(message.from_user.id)
     if role not in {"admin", "superadmin"}:
-        await message.answer(tr(language, "admin_only"))
+        await answer_feedback(message, language, "admin_only")
         return
     await answer_rich_with_buttons(
         message,
@@ -167,7 +169,7 @@ async def admin_home(callback: CallbackQuery, db: Database, state: FSMContext) -
     language = await db.get_language(callback.from_user.id)
     role = await db.get_role(callback.from_user.id)
     if role not in {"admin", "superadmin"}:
-        await callback.answer(tr(language, "admin_only"), show_alert=True)
+        await callback.answer(feedback_text(language, "admin_only"), show_alert=True)
         return
     await state.clear()
     navigation.forget(
@@ -264,20 +266,18 @@ async def add_admin_id_received(
     try:
         admin_id = int((message.text or "").strip())
     except ValueError:
-        await message.answer(tr(language, "invalid_admin_id"))
+        await answer_feedback(message, language, "invalid_admin_id")
         return
     if admin_id <= 0:
-        await message.answer(tr(language, "invalid_admin_id"))
+        await answer_feedback(message, language, "invalid_admin_id")
         return
     added = await db.add_admin(admin_id, message.from_user.id)
     await state.clear()
     if added:
         await set_app_admin_commands(message.bot, admin_id)
         await db.log_action(message.from_user.id, "admin.added", "admin", admin_id)
-        await answer_with_buttons(
-            message,
-            tr(language, "admin_added"),
-            reply_markup=admin_home_keyboard(language),
+        await answer_feedback(
+            message, language, "admin_added", reply_markup=admin_home_keyboard(language)
         )
         try:
             target_language = await db.get_language(admin_id)
@@ -290,10 +290,8 @@ async def add_admin_id_received(
         except TelegramAPIError:
             pass
     else:
-        await answer_with_buttons(
-            message,
-            tr(language, "admin_only"),
-            reply_markup=admin_home_keyboard(language),
+        await answer_feedback(
+            message, language, "admin_only", reply_markup=admin_home_keyboard(language)
         )
 
 
@@ -313,9 +311,9 @@ async def remove_admin_callback(
     if removed:
         await clear_app_admin_commands(bot, admin_id)
         await db.log_action(callback.from_user.id, "admin.removed", "admin", admin_id)
-        await callback.answer(tr(language, "admin_removed"), show_alert=True)
+        await callback.answer(feedback_text(language, "admin_removed"), show_alert=True)
     else:
-        await callback.answer(tr(language, "superadmin_only"), show_alert=True)
+        await callback.answer(feedback_text(language, "superadmin_only"), show_alert=True)
     await _show_admins_page(callback, db, 0)
 
 
@@ -341,7 +339,7 @@ async def show_admin_detail(callback: CallbackQuery, db: Database) -> None:
     admin_id = int(callback.data.rsplit(":", 1)[1])
     admin = await _find_admin(db, admin_id)
     if not admin:
-        await callback.answer(tr(language, "superadmin_only"), show_alert=True)
+        await callback.answer(feedback_text(language, "superadmin_only"), show_alert=True)
         return
     quests = await db.list_owner_quests(admin_id, include_deleted=True)
     deleted = sum(1 for quest in quests if quest["deleted"])
@@ -425,7 +423,7 @@ async def begin_admin_message(
         return
     admin = await _find_admin(db, admin_id)
     if not admin:
-        await callback.answer(tr(language, "superadmin_only"), show_alert=True)
+        await callback.answer(feedback_text(language, "superadmin_only"), show_alert=True)
         return
     if await state.get_state() is not None:
         await callback.answer(
@@ -452,18 +450,18 @@ async def admin_message_received(
     language = await db.get_language(message.from_user.id)
     if await db.get_role(message.from_user.id) != "superadmin":
         await state.clear()
-        await message.answer(tr(language, "superadmin_only"))
+        await answer_feedback(message, language, "superadmin_only")
         return
     text = (message.text or "").strip()
     if not 1 <= len(text) <= 2000:
-        await message.answer(tr(language, "invalid_participant_message"))
+        await answer_feedback(message, language, "invalid_participant_message")
         return
     data = await state.get_data()
     admin_id = int(data.get("admin_message_to") or 0)
     await state.clear()
     admin = await _find_admin(db, admin_id)
     if not admin:
-        await message.answer(tr(language, "superadmin_only"))
+        await answer_feedback(message, language, "superadmin_only")
         return
     name = _admin_name(admin)
     target_language = await db.get_language(admin_id)
@@ -520,7 +518,7 @@ async def confirm_quest_purge(callback: CallbackQuery, db: Database) -> None:
         return
     language = await db.get_language(callback.from_user.id)
     if await db.get_role(callback.from_user.id) != "superadmin":
-        await callback.answer(tr(language, "superadmin_only"), show_alert=True)
+        await callback.answer(feedback_text(language, "superadmin_only"), show_alert=True)
         return
     try:
         quest_id = int(callback.data.rsplit(":", 1)[1])
@@ -529,7 +527,7 @@ async def confirm_quest_purge(callback: CallbackQuery, db: Database) -> None:
         return
     quest = await db.get_quest(quest_id, include_deleted=True)
     if not quest or not quest["deleted"]:
-        await callback.answer(tr(language, "quest_not_found"), show_alert=True)
+        await callback.answer(feedback_text(language, "quest_not_found"), show_alert=True)
         return
     if callback.message:
         await answer_with_buttons(
@@ -549,7 +547,7 @@ async def purge_quest_confirmed(
         return
     language = await db.get_language(callback.from_user.id)
     if await db.get_role(callback.from_user.id) != "superadmin":
-        await callback.answer(tr(language, "superadmin_only"), show_alert=True)
+        await callback.answer(feedback_text(language, "superadmin_only"), show_alert=True)
         return
     try:
         quest_id = int(callback.data.rsplit(":", 1)[1])
@@ -558,12 +556,12 @@ async def purge_quest_confirmed(
         return
     quest = await db.get_quest(quest_id, include_deleted=True)
     if not quest or not quest["deleted"]:
-        await callback.answer(tr(language, "quest_not_found"), show_alert=True)
+        await callback.answer(feedback_text(language, "quest_not_found"), show_alert=True)
         return
     title = quest["title"]
     references = await db.quest_archive_references(quest_id)
     if not await db.purge_quest(quest_id, callback.from_user.id):
-        await callback.answer(tr(language, "error_generic"), show_alert=True)
+        await callback.answer(feedback_text(language, "error_generic"), show_alert=True)
         return
     # The quest rows are gone; archived copies are best-effort cleanup.
     for chat_id, message_id in references:
@@ -779,20 +777,20 @@ async def add_chat_id_received(
         bot_user = await bot.get_me()
         bot_member = await bot.get_chat_member(chat_id, bot_user.id)
     except (ValueError, TelegramAPIError):
-        await message.answer(tr(language, "chat_not_found"))
+        await answer_feedback(message, language, "chat_not_found")
         return
     if chat.type not in {"group", "supergroup", "channel"} or bot_member.status not in {
         "administrator",
         "creator",
     }:
-        await message.answer(tr(language, "chat_not_found"))
+        await answer_feedback(message, language, "chat_not_found")
         return
     if (
         chat.type == "channel"
         and bot_member.status != "creator"
         and not getattr(bot_member, "can_post_messages", False)
     ):
-        await message.answer(tr(language, "chat_permission_missing"))
+        await answer_feedback(message, language, "chat_permission_missing")
         return
     title = chat.title or str(chat_id)
     await db.register_chat(chat_id, title, chat.type, message.from_user.id)
@@ -800,9 +798,11 @@ async def add_chat_id_received(
         message.from_user.id, "managed_chat.added", "chat", chat_id, {"title": title}
     )
     await state.clear()
-    await answer_with_buttons(
+    await answer_feedback(
         message,
-        tr(language, "chat_added", title=title),
+        language,
+        "chat_added",
+        title=title,
         reply_markup=admin_home_keyboard(language),
     )
 
@@ -819,7 +819,7 @@ async def show_chat(callback: CallbackQuery, db: Database) -> None:
     chat = await db.get_managed_chat(chat_id)
     language = await db.get_language(callback.from_user.id)
     if not chat:
-        await callback.answer(tr(language, "chat_not_found"), show_alert=True)
+        await callback.answer(feedback_text(language, "chat_not_found"), show_alert=True)
         return
     if callback.message:
         await safe_edit(
@@ -847,21 +847,17 @@ async def toggle_cleanup(callback: CallbackQuery, db: Database, bot: Bot) -> Non
         try:
             bot_member = await bot.get_chat_member(chat_id, (await bot.get_me()).id)
         except TelegramAPIError:
-            await callback.answer(
-                tr(language, "chat_permission_missing"), show_alert=True
-            )
+            await callback.answer(feedback_text(language, "chat_permission_missing"), show_alert=True)
             return
         can_restrict = bot_member.status == "creator" or bool(
             getattr(bot_member, "can_restrict_members", False)
         )
         if not can_restrict:
-            await callback.answer(
-                tr(language, "chat_permission_missing"), show_alert=True
-            )
+            await callback.answer(feedback_text(language, "chat_permission_missing"), show_alert=True)
             return
     value = await db.toggle_chat_cleanup(chat_id)
     if value is None:
-        await callback.answer(tr(language, "chat_not_found"), show_alert=True)
+        await callback.answer(feedback_text(language, "chat_not_found"), show_alert=True)
         return
     await db.log_action(
         callback.from_user.id,
@@ -952,10 +948,10 @@ async def whitelist_id_received(
     try:
         user_id = int((message.text or "").strip())
     except ValueError:
-        await message.answer(tr(language, "invalid_admin_id"))
+        await answer_feedback(message, language, "invalid_admin_id")
         return
     if user_id <= 0:
-        await message.answer(tr(language, "invalid_admin_id"))
+        await answer_feedback(message, language, "invalid_admin_id")
         return
     data = await state.get_data()
     chat_id = int(data["whitelist_chat_id"])
@@ -969,9 +965,10 @@ async def whitelist_id_received(
     await state.clear()
     page_size = int(await db.settings_get("page_size", "10"))
     users = await db.chat_whitelist(chat_id, 0, page_size)
-    await answer_with_buttons(
+    await answer_feedback(
         message,
-        tr(language, "whitelist_added"),
+        language,
+        "whitelist_added",
         reply_markup=whitelist_keyboard(language, chat_id, users, 0, page_size),
     )
 
@@ -996,7 +993,7 @@ async def remove_whitelist(callback: CallbackQuery, db: Database) -> None:
     )
     language = await db.get_language(callback.from_user.id)
     await _show_whitelist_page(callback, db, chat_id, page)
-    await callback.answer(tr(language, "whitelist_removed"))
+    await callback.answer(feedback_text(language, "whitelist_removed"))
 
 
 @router.callback_query(F.data.startswith("manage:participants:"))
@@ -1013,7 +1010,7 @@ async def show_participants(callback: CallbackQuery, db: Database) -> None:
     quest = await db.get_quest(quest_id)
     language = await db.get_language(callback.from_user.id)
     if not quest or not await can_manage_quest(db, callback.from_user.id, quest):
-        await callback.answer(tr(language, "quest_not_found"), show_alert=True)
+        await callback.answer(feedback_text(language, "quest_not_found"), show_alert=True)
         return
     page_size = int(await db.settings_get("page_size", "10"))
     participants, total, page = await db.list_participants_page(
@@ -1065,7 +1062,9 @@ async def begin_participant_message(
         or not participant
         or not await can_manage_quest(db, callback.from_user.id, quest)
     ):
-        await callback.answer(tr(language, "participant_message_unavailable"), show_alert=True)
+        await callback.answer(
+            feedback_text(language, "participant_message_unavailable"), show_alert=True
+        )
         return
     if await state.get_state() is not None:
         await callback.answer(
@@ -1104,11 +1103,11 @@ async def participant_message_received(
     role = await db.get_role(message.from_user.id)
     if role not in {"admin", "superadmin"}:
         await state.clear()
-        await message.answer(tr(language, "admin_only"))
+        await answer_feedback(message, language, "admin_only")
         return
     text = (message.text or "").strip()
     if not 1 <= len(text) <= 2000:
-        await message.answer(tr(language, "invalid_participant_message"))
+        await answer_feedback(message, language, "invalid_participant_message")
         return
     data = await state.get_data()
     try:
@@ -1117,7 +1116,7 @@ async def participant_message_received(
         page = max(0, int(data.get("participant_message_page", 0)))
     except (KeyError, TypeError, ValueError):
         await state.clear()
-        await message.answer(tr(language, "error_generic"))
+        await answer_feedback(message, language, "error_generic")
         return
     quest = await db.get_quest(quest_id)
     participant = await db.participant(quest_id, user_id) if quest else None
@@ -1127,7 +1126,7 @@ async def participant_message_received(
         or not await can_manage_quest(db, message.from_user.id, quest)
     ):
         await state.clear()
-        await message.answer(tr(language, "participant_message_unavailable"))
+        await answer_feedback(message, language, "participant_message_unavailable")
         return
     heading_key = (
         "participant_message_heading"
@@ -1169,7 +1168,7 @@ async def participant_message_received(
     except TelegramAPIError:
         await db.close_ticket(ticket_id, message.from_user.id)
         await state.clear()
-        await message.answer(tr(language, "participant_message_delivery_failed"))
+        await answer_feedback(message, language, "participant_message_delivery_failed")
         return
     await db.log_action(
         message.from_user.id,
@@ -1219,7 +1218,7 @@ async def participant_moderation(
     quest = await db.get_quest(quest_id)
     language = await db.get_language(callback.from_user.id)
     if not quest or not await can_manage_quest(db, callback.from_user.id, quest):
-        await callback.answer(tr(language, "quest_not_found"), show_alert=True)
+        await callback.answer(feedback_text(language, "quest_not_found"), show_alert=True)
         return
     if action == "unban":
         success = await db.set_participant_block(quest_id, user_id, None, False)
@@ -1237,9 +1236,9 @@ async def participant_moderation(
                 )
             except TelegramAPIError:
                 pass
-            await callback.answer(tr(language, "unblocked_success"), show_alert=True)
+            await callback.answer(feedback_text(language, "unblocked_success"), show_alert=True)
         else:
-            await callback.answer(tr(language, "error_generic"), show_alert=True)
+            await callback.answer(feedback_text(language, "error_generic"), show_alert=True)
         return
     if action != "ban":
         await callback.answer()
@@ -1271,7 +1270,7 @@ async def _apply_participant_ban(
     language = await db.get_language(message.from_user.id)
     if not quest or not await can_manage_quest(db, message.from_user.id, quest):
         await state.clear()
-        await message.answer(tr(language, "quest_not_found"))
+        await answer_feedback(message, language, "quest_not_found")
         return
     success = await db.set_participant_block(quest_id, user_id, reason, True)
     if success:
@@ -1299,9 +1298,10 @@ async def _apply_participant_ban(
         except TelegramAPIError:
             pass
     await state.clear()
-    await answer_with_buttons(
+    await answer_feedback(
         message,
-        tr(language, "blocked_success" if success else "error_generic"),
+        language,
+        "blocked_success" if success else "error_generic",
         reply_markup=admin_home_keyboard(language),
     )
 
@@ -1313,7 +1313,7 @@ async def ban_reason_received(
     text = (message.text or "").strip()
     if len(text) > 300:
         language = await db.get_language(message.from_user.id)
-        await message.answer(tr(language, "invalid_text"))
+        await answer_feedback(message, language, "invalid_text")
         return
     await _apply_participant_ban(
         message, state, db, bot, text if text and text != "-" else None
@@ -1334,7 +1334,7 @@ async def skip_ban_reason(
     language = await db.get_language(callback.from_user.id)
     if not quest or not await can_manage_quest(db, callback.from_user.id, quest):
         await state.clear()
-        await callback.answer(tr(language, "quest_not_found"), show_alert=True)
+        await callback.answer(feedback_text(language, "quest_not_found"), show_alert=True)
         return
     await db.set_participant_block(
         int(data["moderation_quest_id"]), int(data["moderation_user_id"]), None, True
@@ -1356,9 +1356,10 @@ async def skip_ban_reason(
         pass
     await state.clear()
     if callback.message:
-        await answer_with_buttons(
+        await answer_feedback(
             callback.message,
-            tr(language, "blocked_success"),
+            language,
+            "blocked_success",
             reply_markup=admin_home_keyboard(language),
         )
     await callback.answer()
@@ -1376,12 +1377,12 @@ async def show_pending_answers(callback: CallbackQuery, db: Database, bot: Bot) 
     quest = await db.get_quest(quest_id)
     language = await db.get_language(callback.from_user.id)
     if not quest or not await can_manage_quest(db, callback.from_user.id, quest):
-        await callback.answer(tr(language, "quest_not_found"), show_alert=True)
+        await callback.answer(feedback_text(language, "quest_not_found"), show_alert=True)
         return
     pending = await db.pending_answers(quest_id)
     if not pending:
         if callback.message:
-            await callback.message.answer(tr(language, "no_pending"))
+            await answer_feedback(callback.message, language, "no_pending")
     else:
         for item in pending[:25]:
             name = display_name(
@@ -1420,21 +1421,21 @@ async def review_answer(callback: CallbackQuery, db: Database, bot: Bot) -> None
     item = await db.get_pending_answer(answer_id)
     language = await db.get_language(callback.from_user.id)
     if not item:
-        await callback.answer(tr(language, "no_pending"), show_alert=True)
+        await callback.answer(feedback_text(language, "no_pending"), show_alert=True)
         return
     quest = await db.get_quest(int(item["quest_id"]))
     if not quest or not await can_manage_quest(db, callback.from_user.id, quest):
-        await callback.answer(tr(language, "quest_not_found"), show_alert=True)
+        await callback.answer(feedback_text(language, "quest_not_found"), show_alert=True)
         return
     accepted = decision == "yes"
     result = await db.review_answer(
         answer_id, callback.from_user.id, accepted, utc_now()
     )
     if result["code"] == "paused":
-        await callback.answer(tr(language, "quest_paused_notice"), show_alert=True)
+        await callback.answer(feedback_text(language, "quest_paused_notice"), show_alert=True)
         return
     if result["code"] != "reviewed":
-        await callback.answer(tr(language, "no_pending"), show_alert=True)
+        await callback.answer(feedback_text(language, "no_pending"), show_alert=True)
         return
     await db.log_action(
         callback.from_user.id,
@@ -1490,7 +1491,10 @@ async def review_answer(callback: CallbackQuery, db: Database, bot: Bot) -> None
         except TelegramAPIError:
             pass
     await callback.answer(
-        tr(language, "review_approved" if accepted else "review_rejected"),
+        feedback_text(
+            language,
+            "review_approved" if accepted else "review_rejected",
+        ),
         show_alert=True,
     )
 
@@ -1507,7 +1511,7 @@ async def ask_finish_confirmation(callback: CallbackQuery, db: Database) -> None
     quest = await db.get_quest(quest_id)
     language = await db.get_language(callback.from_user.id)
     if not quest or not await can_manage_quest(db, callback.from_user.id, quest):
-        await callback.answer(tr(language, "quest_not_found"), show_alert=True)
+        await callback.answer(feedback_text(language, "quest_not_found"), show_alert=True)
         return
     if callback.message:
         await answer_with_buttons(
@@ -1532,7 +1536,7 @@ async def finish_quest_callback(
     quest = await db.get_quest(quest_id)
     language = await db.get_language(callback.from_user.id)
     if not quest or not await can_manage_quest(db, callback.from_user.id, quest):
-        await callback.answer(tr(language, "quest_not_found"), show_alert=True)
+        await callback.answer(feedback_text(language, "quest_not_found"), show_alert=True)
         return
     user_ids = await db.set_quest_status(quest_id, "completed")
     await db.log_action(callback.from_user.id, "quest.finished", "quest", quest_id)
@@ -1560,7 +1564,7 @@ async def archive_quest_callback(
         return
     if await db.get_role(callback.from_user.id) != "superadmin":
         await callback.answer(
-            tr(await db.get_language(callback.from_user.id), "superadmin_only"),
+            feedback_text(await db.get_language(callback.from_user.id), "superadmin_only"),
             show_alert=True,
         )
         return
@@ -1572,7 +1576,7 @@ async def archive_quest_callback(
     quest = await db.get_quest(quest_id)
     language = await db.get_language(callback.from_user.id)
     if not quest:
-        await callback.answer(tr(language, "quest_not_found"), show_alert=True)
+        await callback.answer(feedback_text(language, "quest_not_found"), show_alert=True)
         return
     user_ids = await db.set_quest_status(quest_id, "archived")
     await db.log_action(callback.from_user.id, "quest.archived", "quest", quest_id)
@@ -1600,7 +1604,7 @@ async def unarchive_quest_callback(callback: CallbackQuery, db: Database) -> Non
         return
     if await db.get_role(callback.from_user.id) != "superadmin":
         await callback.answer(
-            tr(await db.get_language(callback.from_user.id), "superadmin_only"),
+            feedback_text(await db.get_language(callback.from_user.id), "superadmin_only"),
             show_alert=True,
         )
         return
@@ -1612,7 +1616,7 @@ async def unarchive_quest_callback(callback: CallbackQuery, db: Database) -> Non
     quest = await db.get_quest(quest_id)
     language = await db.get_language(callback.from_user.id)
     if not quest or quest["status"] != "archived":
-        await callback.answer(tr(language, "quest_not_found"), show_alert=True)
+        await callback.answer(feedback_text(language, "quest_not_found"), show_alert=True)
         return
     if quest.get("completed_at"):
         status = "completed"
@@ -1647,10 +1651,10 @@ async def confirm_quest_deletion(callback: CallbackQuery, db: Database) -> None:
     quest = await db.get_quest(quest_id)
     role = await db.get_role(callback.from_user.id)
     if not quest or not await can_manage_quest(db, callback.from_user.id, quest):
-        await callback.answer(tr(language, "quest_not_found"), show_alert=True)
+        await callback.answer(feedback_text(language, "quest_not_found"), show_alert=True)
         return
     if quest["status"] == "archived" and role != "superadmin":
-        await callback.answer(tr(language, "quest_metadata_archived"), show_alert=True)
+        await callback.answer(feedback_text(language, "quest_metadata_archived"), show_alert=True)
         return
     if callback.message:
         await answer_with_buttons(
@@ -1675,13 +1679,13 @@ async def delete_quest_confirmed(callback: CallbackQuery, db: Database) -> None:
     quest = await db.get_quest(quest_id)
     role = await db.get_role(callback.from_user.id)
     if not quest or not await can_manage_quest(db, callback.from_user.id, quest):
-        await callback.answer(tr(language, "quest_not_found"), show_alert=True)
+        await callback.answer(feedback_text(language, "quest_not_found"), show_alert=True)
         return
     if quest["status"] == "archived" and role != "superadmin":
-        await callback.answer(tr(language, "quest_metadata_archived"), show_alert=True)
+        await callback.answer(feedback_text(language, "quest_metadata_archived"), show_alert=True)
         return
     if not await db.soft_delete_quest(quest_id, callback.from_user.id, utc_now()):
-        await callback.answer(tr(language, "error_generic"), show_alert=True)
+        await callback.answer(feedback_text(language, "error_generic"), show_alert=True)
         return
     if callback.message:
         await safe_edit(
@@ -1701,7 +1705,7 @@ async def restore_quest_callback(callback: CallbackQuery, db: Database) -> None:
         return
     language = await db.get_language(callback.from_user.id)
     if await db.get_role(callback.from_user.id) != "superadmin":
-        await callback.answer(tr(language, "superadmin_only"), show_alert=True)
+        await callback.answer(feedback_text(language, "superadmin_only"), show_alert=True)
         return
     try:
         quest_id = int(callback.data.rsplit(":", 1)[1])
@@ -1710,10 +1714,10 @@ async def restore_quest_callback(callback: CallbackQuery, db: Database) -> None:
         return
     quest = await db.get_quest(quest_id, include_deleted=True)
     if not quest or not quest["deleted"]:
-        await callback.answer(tr(language, "quest_not_found"), show_alert=True)
+        await callback.answer(feedback_text(language, "quest_not_found"), show_alert=True)
         return
     if not await db.restore_quest(quest_id, callback.from_user.id, utc_now()):
-        await callback.answer(tr(language, "error_generic"), show_alert=True)
+        await callback.answer(feedback_text(language, "error_generic"), show_alert=True)
         return
     if callback.message:
         await safe_edit(
@@ -1758,7 +1762,7 @@ async def private_invite_link(callback: CallbackQuery, db: Database, bot: Bot) -
         or quest["visibility"] != "private"
         or not await can_manage_quest(db, callback.from_user.id, quest)
     ):
-        await callback.answer(tr(language, "quest_not_found"), show_alert=True)
+        await callback.answer(feedback_text(language, "quest_not_found"), show_alert=True)
         return
     me = await bot.get_me()
     link = answer_deep_link(me.username or "", quest)
