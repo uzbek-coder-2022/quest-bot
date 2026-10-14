@@ -9,12 +9,16 @@ from quest_bot.config import Settings
 from quest_bot.error_reporting import UpdateLoggingMiddleware, handle_update_error
 
 
+def _payload(content) -> dict:
+    return content.model_dump(mode="json", exclude_none=True)
+
+
 class FakeBot:
     def __init__(self) -> None:
-        self.messages: list[tuple[int, str]] = []
+        self.messages: list[tuple[int, object]] = []
 
-    async def send_message(self, chat_id: int, text: str) -> None:
-        self.messages.append((chat_id, text))
+    async def send_rich_message(self, chat_id: int, rich_message) -> None:
+        self.messages.append((chat_id, rich_message))
 
 
 class FakeDatabase:
@@ -113,15 +117,28 @@ class ErrorReportingTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(handled)
         self.assertEqual(bot.messages[0][0], 41)
-        self.assertIn("Something went wrong", bot.messages[0][1])
+        self.assertIn("Something went wrong", str(_payload(bot.messages[0][1])))
         self.assertEqual(bot.messages[1][0], 900)
         report = bot.messages[1][1]
-        self.assertIn("Update ID: 17", report)
-        self.assertIn("User ID: 41", report)
-        self.assertIn("RuntimeError", report)
-        self.assertNotIn(token, report)
-        self.assertNotIn("db-password", report)
-        self.assertNotIn("private user content", report)
+        rendered = str(_payload(report))
+        self.assertIn("Update ID", rendered)
+        self.assertIn("17", rendered)
+        self.assertIn("User ID", rendered)
+        self.assertIn("RuntimeError", rendered)
+        self.assertNotIn(token, rendered)
+        self.assertNotIn("db-password", rendered)
+        self.assertNotIn("private user content", rendered)
+
+        # The exception line and the traceback are monospaced code blocks, while
+        # the labelled details stay formatted as normal rich text.
+        code_blocks = [
+            block["text"]
+            for block in _payload(report)["blocks"]
+            if block.get("type") == "pre"
+        ]
+        self.assertEqual(len(code_blocks), 2)
+        self.assertIn("RuntimeError: failure with", code_blocks[0])
+        self.assertIn("RuntimeError", code_blocks[1])
 
 
 if __name__ == "__main__":

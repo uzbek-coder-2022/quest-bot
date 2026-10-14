@@ -9,7 +9,7 @@ from typing import Any
 import asyncpg
 
 _INSERT_OR_IGNORE = re.compile(r"\bINSERT\s+OR\s+IGNORE\s+INTO\b", re.IGNORECASE)
-_ID_INSERT = re.compile(r"^\s*INSERT\s+INTO\s+(quests|answers|support_tickets)\b", re.IGNORECASE)
+_ID_INSERT = re.compile(r"^\s*INSERT\s+INTO\s+(quests|stages|answers|support_tickets)\b", re.IGNORECASE)
 _COMMAND_ROWCOUNT = re.compile(r"\s(\d+)$")
 
 

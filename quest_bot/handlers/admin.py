@@ -37,7 +37,7 @@ from ..keyboards import (
     whitelist_keyboard,
 )
 from ..localization import tr
-from ..presentation import activity_message, information_message, thread_tag
+from ..presentation import activity_message, information_message, thread_notice, thread_tag
 from ..rich_text import heading, paragraph, preformatted, quote, rich_message
 from ..services import (
     answer_deep_link,
@@ -64,11 +64,12 @@ router = Router(name="admin")
 
 def _numbered_ack(
     language: str, key: str, ticket_id: int, **values: object
-) -> str:
-    """Acknowledgement text plus the searchable tag of the new conversation."""
-    return (
-        f"{tr(language, key, **values)}\n{thread_tag(ticket_id)}\n"
-        f"{tr(language, 'support_thread_started', ticket=ticket_id)}"
+) -> InputRichMessage:
+    """Rich acknowledgement for a new conversation, tagged for searching."""
+    return thread_notice(
+        ticket_id,
+        tr(language, key, **values),
+        tr(language, "support_thread_started", ticket=ticket_id),
     )
 
 

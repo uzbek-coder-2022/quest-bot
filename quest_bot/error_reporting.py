@@ -10,13 +10,14 @@ from typing import Any
 
 from aiogram import Bot
 from aiogram.dispatcher.middlewares.base import BaseMiddleware
-from aiogram.types import ErrorEvent, TelegramObject, Update
+from aiogram.types import ErrorEvent, InputRichMessage, TelegramObject, Update
 from aiogram.types.update import UpdateTypeLookupError
 
 from .config import Settings
 from .database import Database
-from .localization import tr
+from .feedback import feedback_message
 from .logging_setup import redact_sensitive_text, sensitive_values
+from .rich_text import bold, bullet_list, divider, heading, paragraph, preformatted, rich_message
 
 logger = logging.getLogger(__name__)
 MAX_TELEGRAM_REPORT_LENGTH = 3_700
@@ -87,8 +88,12 @@ def build_error_report(
     settings: Settings,
     context: dict[str, Any] | None = None,
     source: str = "Unhandled application error",
-) -> str:
-    """Build a compact, secret-redacted report without including user message text."""
+) -> InputRichMessage:
+    """Build a compact, secret-redacted rich report without user message text.
+
+    Details are formatted as labelled rows; the exception line and the
+    traceback are monospaced code blocks so they stay readable and unaltered.
+    """
     details = context or {}
     exception_traceback = "".join(
         traceback.format_exception(type(exception), exception, exception.__traceback__)
@@ -98,24 +103,33 @@ def build_error_report(
     error_message = redact_sensitive_text(str(exception), secrets)
     if len(error_message) > 500:
         error_message = error_message[:497] + "..."
-    header = (
-        "Quest Bot error report\n"
-        f"Source: {source}\n"
-        f"Time (UTC): {datetime.now(timezone.utc).isoformat(timespec='seconds')}\n"
-        f"Update ID: {details.get('update_id', 'n/a')}\n"
-        f"Update type: {details.get('update_type', 'n/a')}\n"
-        f"User ID: {details.get('user_id', 'n/a')}\n"
-        f"Chat ID: {details.get('chat_id', 'n/a')}\n"
-        f"Error: {type(exception).__name__}: {error_message}\n"
-        "Traceback:\n"
-    )
-    available_traceback_length = MAX_TELEGRAM_REPORT_LENGTH - len(header) - 40
+    error_line = f"{type(exception).__name__}: {error_message}"
+    time_text = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    rows = [
+        ("Source", source),
+        ("Time", time_text),
+        ("Update ID", details.get("update_id", "n/a")),
+        ("Update type", details.get("update_type", "n/a")),
+        ("User ID", details.get("user_id", "n/a")),
+        ("Chat ID", details.get("chat_id", "n/a")),
+    ]
+    fixed_length = sum(len(f"{label}: {value}") for label, value in rows)
+    fixed_length += len(error_line) + 200
+    available_traceback_length = MAX_TELEGRAM_REPORT_LENGTH - fixed_length
     if len(exception_traceback) > available_traceback_length:
         exception_traceback = (
             "[Earlier traceback lines omitted]\n"
-            + exception_traceback[-available_traceback_length:]
+            + exception_traceback[-max(0, available_traceback_length) :]
         )
-    return f"{header}{exception_traceback}"[:MAX_TELEGRAM_REPORT_LENGTH]
+    return rich_message(
+        heading("❌ Quest Bot error report", size=2),
+        bullet_list([[bold(f"{label}: "), str(value)] for label, value in rows]),
+        divider(),
+        heading("Error", size=3),
+        preformatted(error_line),
+        heading("Traceback", size=3),
+        preformatted(exception_traceback.rstrip() or "n/a"),
+    )
 
 
 def error_alert_key(
@@ -149,7 +163,7 @@ def _error_alert_decision(dedupe_key: str | None) -> tuple[bool, int]:
 async def notify_superadmins_of_error(
     bot: Bot,
     settings: Settings,
-    report: str,
+    report: InputRichMessage,
     dedupe_key: str | None = None,
 ) -> None:
     """Deliver an application error report to every configured superadmin."""
@@ -160,13 +174,16 @@ async def notify_superadmins_of_error(
         )
         return
     if suppressed_count:
-        report += (
-            f"\nRepeated identical errors suppressed during the previous "
-            f"{ERROR_ALERT_COOLDOWN_SECONDS} seconds: {suppressed_count}."
+        report = rich_message(
+            *report.blocks,
+            paragraph(
+                f"Repeated identical errors suppressed during the previous "
+                f"{ERROR_ALERT_COOLDOWN_SECONDS} seconds: {suppressed_count}."
+            ),
         )
     for user_id in settings.superadmin_ids:
         try:
-            await bot.send_message(user_id, report)
+            await bot.send_rich_message(user_id, report)
         except Exception:
             logger.exception("Could not send an error report to superadmin %s", user_id)
 
@@ -193,7 +210,9 @@ async def handle_update_error(
     if user_id and context["chat_type"] == "private":
         try:
             language = await db.get_language(user_id)
-            await bot.send_message(user_id, tr(language, "error_generic"))
+            await bot.send_rich_message(
+                user_id, feedback_message(language, "error_generic")
+            )
         except Exception:
             logger.exception(
                 "Could not send a generic error notice to user %s", user_id

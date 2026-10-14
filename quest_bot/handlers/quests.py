@@ -684,9 +684,49 @@ def _leaderboard_back_target(data: str, quest_id: int) -> str:
     return "menu:home"
 
 
+LEADERBOARD_FILTERS = ("all", "blocked", "unblocked")
+
+
+def _leaderboard_filter_row(
+    language: str, quest_id: int, data: str, current: str
+) -> list:
+    """Filter buttons for quest managers; the active filter carries a check mark."""
+    origin_tail = ":".join((data or "").split(":")[3:])
+    labels = {
+        "all": "rating_filter_all",
+        "blocked": "rating_filter_blocked",
+        "unblocked": "rating_filter_unblocked",
+    }
+    return [
+        button(
+            ("✓ " if mode == current else "") + tr(language, labels[mode]),
+            f"rating:filter:{mode}:{quest_id}:{origin_tail}",
+        )
+        for mode in LEADERBOARD_FILTERS
+    ]
+
+
 @router.callback_query(F.data.startswith("rating:show:"))
 async def show_leaderboard(callback: CallbackQuery, db: Database) -> None:
-    parts = (callback.data or "").split(":")
+    await _render_leaderboard(callback, db, callback.data or "", "all")
+
+
+@router.callback_query(F.data.startswith("rating:filter:"))
+async def filter_leaderboard(callback: CallbackQuery, db: Database) -> None:
+    # rating:filter:<mode>:<quest_id>:<origin...> re-renders the same rating.
+    parts = (callback.data or "").split(":", 4)
+    if len(parts) < 4 or parts[2] not in LEADERBOARD_FILTERS:
+        await callback.answer()
+        return
+    origin = parts[4] if len(parts) > 4 else ""
+    data = f"rating:show:{parts[3]}:{origin}"
+    await _render_leaderboard(callback, db, data, parts[2])
+
+
+async def _render_leaderboard(
+    callback: CallbackQuery, db: Database, data: str, mode: str
+) -> None:
+    parts = data.split(":")
     if len(parts) < 3:
         await callback.answer()
         return
@@ -704,15 +744,32 @@ async def show_leaderboard(callback: CallbackQuery, db: Database) -> None:
         callback, db
     ):
         return
+    manager = await can_manage_quest(db, callback.from_user.id, quest)
     participant = await db.participant(quest_id, callback.from_user.id)
     if (
         quest["visibility"] == "private"
         and not (participant and participant["status"] != "blocked")
-        and not await can_manage_quest(db, callback.from_user.id, quest)
+        and not manager
     ):
         await callback.answer(feedback_text(language, "quest_not_found"), show_alert=True)
         return
     leaderboard_rows = await db.leaderboard(quest_id)
+    # Blocked participants are hidden from ordinary viewers. Quest managers (the
+    # owner and superadmins) see them and can narrow the list with the filter.
+    if manager:
+        if mode == "blocked":
+            leaderboard_rows = [
+                item for item in leaderboard_rows if item.get("status") == "blocked"
+            ]
+        elif mode == "unblocked":
+            leaderboard_rows = [
+                item for item in leaderboard_rows if item.get("status") != "blocked"
+            ]
+    else:
+        mode = "all"
+        leaderboard_rows = [
+            item for item in leaderboard_rows if item.get("status") != "blocked"
+        ]
     title = tr(language, "leaderboard_title", title=quest["title"])
     rendered = []
     for rank, item in enumerate(leaderboard_rows[:30], start=1):
@@ -745,7 +802,7 @@ async def show_leaderboard(callback: CallbackQuery, db: Database) -> None:
     )
     # Only a rating opened from the quest management view belongs to the admin
     # side; every user-facing rating returns to the main menu.
-    origin, _ = _leaderboard_origin(callback.data)
+    origin, _ = _leaderboard_origin(data)
     home_button = (
         button(tr(language, "btn_admin_home"), "admin:home")
         if origin == "manage"
@@ -753,15 +810,15 @@ async def show_leaderboard(callback: CallbackQuery, db: Database) -> None:
     )
     # Back is enough: from a quest card it returns to that card, and from the
     # ratings list it returns to the list. The main menu closes the screen.
-    rows = [
+    rows = []
+    if manager:
+        rows.append(_leaderboard_filter_row(language, quest_id, data, mode))
+    rows.extend(
         [
-            button(
-                tr(language, "btn_back"),
-                _leaderboard_back_target(callback.data, quest_id),
-            )
-        ],
-        [home_button],
-    ]
+            [button(tr(language, "btn_back"), _leaderboard_back_target(data, quest_id))],
+            [home_button],
+        ]
+    )
     if callback.message:
         await safe_edit(
             callback, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows)
