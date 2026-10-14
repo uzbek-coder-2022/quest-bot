@@ -2603,5 +2603,87 @@ class PaginatedListHandlerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("support:open:2", codes)
 
 
+class BlockedParticipantRatingVisibilityTests(unittest.IsolatedAsyncioTestCase):
+    """A blocked participant is hidden from ordinary viewers of the rating only."""
+
+    class Db:
+        def __init__(self, role: str) -> None:
+            self.role = role
+
+        async def get_language(self, user_id: int) -> str:
+            return "en"
+
+        async def get_quest(self, quest_id: int) -> dict:
+            return {
+                "id": quest_id,
+                # The admin under test owns the quest, so the panel applies.
+                "owner_id": 9 if self.role == "admin" else 1,
+                "visibility": "public",
+                "title": "Blocked Quest",
+            }
+
+        async def participant(self, quest_id: int, user_id: int):
+            return None
+
+        async def leaderboard(self, quest_id: int):
+            return [
+                {
+                    "user_id": 20,
+                    "full_name": "Active Player",
+                    "status": "active",
+                    "solved": 2,
+                    "completed_at": None,
+                },
+                {
+                    "user_id": 21,
+                    "full_name": "Banned Player",
+                    "status": "blocked",
+                    "solved": 3,
+                    "completed_at": None,
+                },
+                {
+                    "user_id": 22,
+                    "full_name": "Last Player",
+                    "status": "failed",
+                    "solved": 1,
+                    "completed_at": None,
+                },
+            ]
+
+        async def get_role(self, user_id: int) -> str:
+            return self.role
+
+    async def _render(self, role: str, origin: str) -> str:
+        message = SimpleNamespace(edit_text=AsyncMock())
+        callback = SimpleNamespace(
+            data=f"rating:show:17:{origin}",
+            from_user=SimpleNamespace(id=9),
+            message=message,
+            answer=AsyncMock(),
+        )
+        await show_leaderboard(callback, self.Db(role))
+        return json.dumps(
+            message.edit_text.await_args.kwargs["rich_message"].model_dump(mode="json"),
+            ensure_ascii=False,
+        )
+
+    async def test_ordinary_user_does_not_see_blocked_participant(self) -> None:
+        text = await self._render("user", "card:browse")
+
+        self.assertNotIn("Banned Player", text)
+        self.assertIn("Active Player", text)
+        self.assertIn("Last Player", text)
+        # Ranks are renumbered among the visible rows.
+        self.assertIn("🥇 1. Active Player", text)
+        self.assertIn("🥈 2. Last Player", text)
+
+    async def test_quest_manager_still_sees_blocked_participant_in_the_panel(self) -> None:
+        text = await self._render("admin", "manage")
+
+        self.assertIn("Banned Player", text)
+        self.assertIn("Active Player", text)
+        self.assertIn("Last Player", text)
+
+
 if __name__ == "__main__":
     unittest.main()

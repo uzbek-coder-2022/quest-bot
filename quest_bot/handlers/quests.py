@@ -713,6 +713,13 @@ async def show_leaderboard(callback: CallbackQuery, db: Database) -> None:
         await callback.answer(feedback_text(language, "quest_not_found"), show_alert=True)
         return
     leaderboard_rows = await db.leaderboard(quest_id)
+    # Blocked participants vanish from the rating for ordinary viewers; quest
+    # managers (the owner and superadmins) still see every row, blocked ones
+    # included, so the admin rating panel stays complete.
+    if not await can_manage_quest(db, callback.from_user.id, quest):
+        leaderboard_rows = [
+            item for item in leaderboard_rows if item.get("status") != "blocked"
+        ]
     title = tr(language, "leaderboard_title", title=quest["title"])
     rendered = []
     for rank, item in enumerate(leaderboard_rows[:30], start=1):
