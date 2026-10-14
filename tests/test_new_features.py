@@ -641,13 +641,14 @@ class LeaderboardBackButtonTests(unittest.IsolatedAsyncioTestCase):
         browsed = await render("card:browse", manager=False)
         self.assertEqual(markup(browsed).inline_keyboard[0][0].callback_data, "quest:view:17")
 
+        # Managers get a filter row first, then Back and the admin panel button.
         managed = await render("manage", manager=True)
-        self.assertEqual(markup(managed).inline_keyboard[0][0].callback_data, "manage:quest:17")
-        self.assertEqual(markup(managed).inline_keyboard[1][0].callback_data, "admin:home")
+        self.assertEqual(markup(managed).inline_keyboard[1][0].callback_data, "manage:quest:17")
+        self.assertEqual(markup(managed).inline_keyboard[2][0].callback_data, "admin:home")
 
         listed = await render("list:managed:2", manager=True)
         self.assertEqual(
-            markup(listed).inline_keyboard[0][0].callback_data, "ratings:list:managed:2"
+            markup(listed).inline_keyboard[1][0].callback_data, "ratings:list:managed:2"
         )
 
         legacy = await render("my:private:1", manager=False)
@@ -699,7 +700,9 @@ class SupportPendingTextTests(unittest.IsolatedAsyncioTestCase):
             data="support:pending:ticket",
             from_user=SimpleNamespace(id=20),
             message=SimpleNamespace(
-                chat=SimpleNamespace(type="private"), answer=AsyncMock()
+                chat=SimpleNamespace(type="private"),
+                answer=AsyncMock(),
+                answer_rich=AsyncMock(),
             ),
             answer=AsyncMock(),
         )
@@ -713,8 +716,10 @@ class SupportPendingTextTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(recorded["log"][1], "support.ticket.created")
         self.assertEqual(state.data, {})
         # The confirmation carries the numbered, searchable thread tag.
-        confirmation = callback.message.answer.await_args.args[0]
-        self.assertTrue(confirmation.startswith(TEXTS["support_created"]["en"]))
+        confirmation = str(
+            callback.message.answer_rich.await_args.args[0].model_dump(mode="json")
+        )
+        self.assertIn(TEXTS["support_created"]["en"], confirmation)
         self.assertIn("#T55", confirmation)
 
 
@@ -917,6 +922,7 @@ class AdminOverviewTests(unittest.IsolatedAsyncioTestCase):
             text="Please review your quests today.",
             bot=bot,
             answer=AsyncMock(),
+            answer_rich=AsyncMock(),
         )
         state = FakeState({"admin_message_to": 5})
 
@@ -937,8 +943,11 @@ class AdminOverviewTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(recorded["log"][1], "admin.message.sent")
         self.assertEqual(recorded["log"][3], 5)
         self.assertEqual(state.data, {})
-        self.assertIn("Quest Admin", message.answer.await_args.args[0])
-        self.assertIn("#T77", message.answer.await_args.args[0])
+        acknowledgement = str(
+            message.answer_rich.await_args.args[0].model_dump(mode="json")
+        )
+        self.assertIn("Quest Admin", acknowledgement)
+        self.assertIn("#T77", acknowledgement)
 
 
 class TerminalLogTests(unittest.IsolatedAsyncioTestCase):
@@ -2069,7 +2078,9 @@ class NumberedThreadTests(unittest.IsolatedAsyncioTestCase):
                 answer=AsyncMock(),
             ),
             answer=AsyncMock(),
-            bot=SimpleNamespace(send_message=AsyncMock()),
+            bot=SimpleNamespace(
+                send_message=AsyncMock(), send_rich_message=AsyncMock()
+            ),
         )
 
     def test_the_tag_is_a_searchable_hashtag(self) -> None:
@@ -2107,10 +2118,12 @@ class NumberedThreadTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(db.closed, [31])
         notified = [
-            call.args[0] for call in callback.bot.send_message.await_args_list
+            call.args[0] for call in callback.bot.send_rich_message.await_args_list
         ]
         self.assertEqual(notified, [5, 1])
-        self.assertIn("#T31", callback.bot.send_message.await_args_list[0].args[1])
+        # The closing notice is a rich message that keeps the searchable tag.
+        closing = callback.bot.send_rich_message.await_args_list[0].args[1]
+        self.assertIn("#T31", str(closing.model_dump(mode="json")))
         screen = str(
             callback.message.edit_text.await_args.kwargs[
                 "rich_message"
@@ -2443,7 +2456,8 @@ class UserFacingRatingsTests(unittest.IsolatedAsyncioTestCase):
             for row in keyboard_from_call(callback.message.edit_text.await_args).inline_keyboard
             for button in row
         ]
-        self.assertEqual(codes, ["quest:view:17", "menu:home"])
+        # The quest manager of this fixture also gets the filter row above Back.
+        self.assertEqual(codes[-2:], ["quest:view:17", "menu:home"])
 
     async def test_quest_rating_opened_from_the_admin_side_keeps_the_panel_button(
         self,
@@ -2456,7 +2470,8 @@ class UserFacingRatingsTests(unittest.IsolatedAsyncioTestCase):
             for row in keyboard_from_call(callback.message.edit_text.await_args).inline_keyboard
             for button in row
         ]
-        self.assertEqual(codes, ["manage:quest:17", "admin:home"])
+        self.assertEqual(codes[-2:], ["manage:quest:17", "admin:home"])
+        self.assertTrue(codes[0].startswith("rating:filter:"))
 
     async def test_public_ratings_list_has_no_admin_panel_button(self) -> None:
         callback = self._callback("ratings:list:all:0")
@@ -2683,6 +2698,55 @@ class BlockedParticipantRatingVisibilityTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Banned Player", text)
         self.assertIn("Active Player", text)
         self.assertIn("Last Player", text)
+
+    async def _filter(self, role: str, data: str) -> tuple[str, list[str]]:
+        message = SimpleNamespace(edit_text=AsyncMock())
+        callback = SimpleNamespace(
+            data=data,
+            from_user=SimpleNamespace(id=9),
+            message=message,
+            answer=AsyncMock(),
+        )
+        from quest_bot.handlers.quests import filter_leaderboard
+
+        await filter_leaderboard(callback, self.Db(role))
+        text = json.dumps(
+            message.edit_text.await_args.kwargs["rich_message"].model_dump(mode="json"),
+            ensure_ascii=False,
+        )
+        codes = [
+            button.callback_data
+            for row in keyboard_from_call(message.edit_text.await_args).inline_keyboard
+            for button in row
+        ]
+        return text, codes
+
+    async def test_manager_filter_isolates_blocked_participants(self) -> None:
+        text, codes = await self._filter("admin", "rating:filter:blocked:17:manage")
+
+        self.assertIn("Banned Player", text)
+        self.assertNotIn("Active Player", text)
+        self.assertNotIn("Last Player", text)
+        # The blocked filter is marked as the active one and keeps the panel path.
+        self.assertIn("rating:filter:all:17:manage", codes)
+        self.assertIn("manage:quest:17", codes)
+        self.assertEqual(codes[-1], "admin:home")
+
+    async def test_manager_unblocked_filter_hides_blocked_participants(self) -> None:
+        text, _ = await self._filter("admin", "rating:filter:unblocked:17:manage")
+
+        self.assertNotIn("Banned Player", text)
+        self.assertIn("Active Player", text)
+        self.assertIn("Last Player", text)
+
+    async def test_ordinary_user_cannot_reveal_blocked_rows_through_the_filter(self) -> None:
+        text, codes = await self._filter("user", "rating:filter:blocked:17:card:browse")
+
+        self.assertNotIn("Banned Player", text)
+        self.assertIn("Active Player", text)
+        # Ordinary viewers get no filter row at all.
+        self.assertFalse(any(code.startswith("rating:filter:") for code in codes))
+        self.assertEqual(codes[-1], "menu:home")
 
 
 if __name__ == "__main__":

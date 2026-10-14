@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import os
 import unittest
 from unittest.mock import patch
 
 from quest_bot.config import Settings
 from quest_bot.database import QUEST_LEADERBOARD_QUERY, SCHEMA, Database
 from quest_bot.postgres import (
+    _ID_INSERT,
     AsyncpgConnection,
     AsyncpgCursor,
     postgres_schema,
@@ -14,6 +16,16 @@ from quest_bot.postgres import (
 
 
 class PostgresCompatibilityTests(unittest.TestCase):
+    def test_inserts_whose_new_row_id_is_read_return_it_on_postgres(self) -> None:
+        # cursor.lastrowid is only populated for tables listed in _ID_INSERT.
+        for statement in (
+            "INSERT INTO quests(title) VALUES(?)",
+            "INSERT INTO stages(quest_id,stage_order) VALUES(?,?)",
+            "INSERT INTO answers(quest_id) VALUES(?)",
+            "INSERT INTO support_tickets(user_id) VALUES(?)",
+        ):
+            self.assertIsNotNone(_ID_INSERT.match(statement), statement)
+
     def test_placeholders_ignore_quoted_question_marks(self) -> None:
         sql = translate_sql('SELECT ?, \'?\' AS literal, "?" AS identifier')
         self.assertEqual(sql, 'SELECT $1, \'?\' AS literal, "?" AS identifier')
@@ -136,6 +148,27 @@ class PostgresTransactionTests(unittest.IsolatedAsyncioTestCase):
         await connection.rollback()
         self.assertEqual(transaction.commits, 1)
         self.assertEqual(transaction.rollbacks, 0)
+
+
+POSTGRES_TEST_DSN = os.environ.get("QUEST_BOT_TEST_POSTGRES_DSN")
+
+
+@unittest.skipUnless(
+    POSTGRES_TEST_DSN, "set QUEST_BOT_TEST_POSTGRES_DSN to run against a real PostgreSQL"
+)
+class PostgresAggregateLeaderboardTests(unittest.IsolatedAsyncioTestCase):
+    async def test_aggregate_leaderboard_is_valid_postgres_sql(self) -> None:
+        # PostgreSQL validates column references while planning, so the query
+        # fails here even on an empty database when an alias is misused.
+        database = Database(POSTGRES_TEST_DSN)
+        await database.initialize()
+        try:
+            rows = await database.aggregate_leaderboard(
+                "2026-10-01T00:00:00+00:00", "2026-10-08T00:00:00+00:00"
+            )
+            self.assertIsInstance(rows, list)
+        finally:
+            await database.close()
 
 
 if __name__ == "__main__":

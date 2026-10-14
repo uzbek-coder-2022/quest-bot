@@ -201,6 +201,7 @@ class FeatureFlowTests(unittest.IsolatedAsyncioTestCase):
             from_user=SimpleNamespace(id=1),
             text=message_text,
             answer=AsyncMock(),
+            answer_rich=AsyncMock(),
         )
 
         await participant_message_received(message, state, db, bot)
@@ -222,9 +223,12 @@ class FeatureFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(db.actions[0][0][1:4], ("participant.message.sent", "quest_participant", "17:42"))
         self.assertNotIn(message_text, str(db.actions))
         self.assertTrue(state.cleared)
-        self.assertIn("Player One", message.answer.await_args.args[0])
-        self.assertIn("#T12", message.answer.await_args.args[0])
-        ack_rows = keyboard_from_call(message.answer.await_args).inline_keyboard
+        acknowledgement = str(
+            message.answer_rich.await_args.args[0].model_dump(mode="json")
+        )
+        self.assertIn("Player One", acknowledgement)
+        self.assertIn("#T12", acknowledgement)
+        ack_rows = keyboard_from_call(message.answer_rich.await_args).inline_keyboard
         self.assertEqual(
             [item.callback_data for item in ack_rows[0]], ["support:close:12"]
         )
@@ -950,14 +954,15 @@ class FeatureFlowTests(unittest.IsolatedAsyncioTestCase):
             from_user=SimpleNamespace(id=20),
             text="Please help",
             answer=AsyncMock(),
+            answer_rich=AsyncMock(),
             bot=FakeBot(),
         )
         state = FakeState()
 
         await create_ticket_message(message, state, Db())
 
-        acknowledgement = message.answer.await_args.kwargs
-        self.assertNotIn("reply_markup", acknowledgement)
+        acknowledgement = message.answer_rich.await_args.kwargs
+        self.assertIsNone(acknowledgement.get("reply_markup"))
         self.assertEqual(len(message.bot.messages), 1)
         recipient, notice = message.bot.messages[0]
         self.assertEqual(recipient, 90)
@@ -998,13 +1003,14 @@ class FeatureFlowTests(unittest.IsolatedAsyncioTestCase):
             from_user=SimpleNamespace(id=20),
             text="Following up on my question.",
             answer=AsyncMock(),
+            answer_rich=AsyncMock(),
             bot=bot,
         )
         state = FakeState({"ticket_id": 31})
 
         await user_ticket_reply(message, state, Db())
 
-        self.assertNotIn("reply_markup", message.answer.await_args.kwargs)
+        self.assertIsNone(message.answer_rich.await_args.kwargs.get("reply_markup"))
         self.assertEqual(len(bot.messages), 1)
         _, notice = bot.messages[0]
         notice_text = str(notice["rich_message"].model_dump(mode="json", exclude_none=True))
@@ -1044,6 +1050,7 @@ class FeatureFlowTests(unittest.IsolatedAsyncioTestCase):
                 from_user=SimpleNamespace(id=sender_id),
                 text="We are looking into this.",
                 answer=AsyncMock(),
+                answer_rich=AsyncMock(),
                 bot=bot,
             )
             state = FakeState({"ticket_id": 31})
@@ -1057,7 +1064,7 @@ class FeatureFlowTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsNotNone(keyboard_from_rich(reply["rich_message"]))
             # The acknowledgement offers no unnecessary Reply button, but it
             # does offer the Close button for the numbered conversation.
-            markup = keyboard_from_call(message.answer.await_args)
+            markup = keyboard_from_call(message.answer_rich.await_args)
             codes = [
                 item.callback_data for row in markup.inline_keyboard for item in row
             ]

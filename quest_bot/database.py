@@ -2264,7 +2264,11 @@ class Database:
         settled by the finishing time instead of the name.
         """
         async with self._connection() as connection:
+            # The ordering expressions reference the aggregated columns through a
+            # derived table: PostgreSQL does not allow an output alias inside a
+            # CASE expression in ORDER BY, while SQLite accepts it.
             cursor = await connection.execute(
+                "SELECT * FROM ("
                 "SELECT ps.user_id,u.full_name,u.username,COUNT(DISTINCT ps.id) AS solved,"
                 "COUNT(DISTINCT CASE WHEN p.status='completed' AND p.completed_at>=? AND p.completed_at<? "
                 "THEN p.quest_id END) AS completed_quests,"
@@ -2275,10 +2279,11 @@ class Database:
                 "LEFT JOIN quest_participants p ON p.quest_id=ps.quest_id AND p.user_id=ps.user_id "
                 "WHERE q.visibility='public' AND q.deleted=0 AND ps.status='correct' "
                 "AND ps.completed_at>=? AND ps.completed_at<? "
-                "GROUP BY ps.user_id,u.full_name,u.username "
+                "GROUP BY ps.user_id,u.full_name,u.username"
+                ") AS ranked "
                 "ORDER BY solved DESC,completed_quests DESC,"
                 "CASE WHEN first_completed_at IS NULL THEN 1 ELSE 0 END,first_completed_at,"
-                "u.full_name,ps.user_id LIMIT ?",
+                "full_name,user_id LIMIT ?",
                 (
                     start_at,
                     end_at,

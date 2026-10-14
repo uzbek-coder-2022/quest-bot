@@ -155,6 +155,33 @@ def thread_tag(ticket_id: int) -> str:
     return f"{THREAD_TAG_PREFIX}{int(ticket_id)}"
 
 
+def thread_notice(
+    ticket_id: int, title: str, body: str | None = None
+) -> InputRichMessage:
+    """Rich confirmation for a conversation, always closed by its searchable tag."""
+    blocks = [heading(title, size=3)]
+    if body:
+        blocks.append(paragraph(body))
+    blocks.extend((divider(), paragraph(thread_tag(ticket_id))))
+    return rich_message(*blocks)
+
+
+BACKUP_TAG = "#backup"
+
+
+def backup_notice(
+    title: str, body: str, details: list[tuple[str, str]]
+) -> InputRichMessage:
+    """Rich database-backup notice: labelled facts, then the searchable backup tag."""
+    blocks = [heading(title, size=2), paragraph(body)]
+    if details:
+        blocks.append(
+            bullet_list([[bold(f"{label}: "), value] for label, value in details])
+        )
+    blocks.extend((divider(), paragraph(BACKUP_TAG)))
+    return rich_message(*blocks)
+
+
 def support_reply(source: str, message: str, ticket_id: int) -> InputRichMessage:
     """Build a rich ticket reply with sender context and safely quoted user text."""
     return rich_message(

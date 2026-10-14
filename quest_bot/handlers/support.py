@@ -9,18 +9,25 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import (
     CallbackQuery,
     InlineKeyboardMarkup,
+    InputRichMessage,
     Message,
 )
 
 from .. import navigation
 from ..database import Database
-from ..keyboards import button, support_start_keyboard, ticket_reply_keyboard
+from ..keyboards import (
+    answer_or_ticket_keyboard,
+    button,
+    support_start_keyboard,
+    ticket_reply_keyboard,
+)
 from ..localization import tr
 from ..presentation import (
     information_message,
     support_history,
     support_notification,
     support_reply,
+    thread_notice,
     thread_tag,
 )
 from ..states import SupportFlow
@@ -71,9 +78,9 @@ def _tickets_keyboard(
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def _tagged(language: str, key: str, ticket_id: int, **kwargs: object) -> str:
-    """A localized confirmation line followed by the searchable thread tag."""
-    return f"{tr(language, key, **kwargs)}\n{thread_tag(ticket_id)}"
+def _tagged(language: str, key: str, ticket_id: int, **kwargs: object) -> InputRichMessage:
+    """A rich confirmation with the searchable thread tag at its end."""
+    return thread_notice(ticket_id, tr(language, key, **kwargs))
 
 
 async def _notify_admins(
@@ -230,10 +237,13 @@ async def _submit_support_ticket(
     )
     language = await db.get_language(user_id)
     await state.clear()
-    await message.answer(
-        _tagged(language, "support_created", ticket_id)
-        + "\n"
-        + tr(language, "support_thread_started", ticket=ticket_id)
+    await answer_rich_with_buttons(
+        message,
+        thread_notice(
+            ticket_id,
+            tr(language, "support_created"),
+            tr(language, "support_thread_started", ticket=ticket_id),
+        ),
     )
     await _notify_admins(message, db, ticket_id, text)
 
@@ -497,10 +507,13 @@ async def close_ticket_callback(
     for target_id in notices:
         target_language = await db.get_language(target_id)
         try:
-            await callback.bot.send_message(
+            await send_rich_with_buttons(
+                callback.bot,
                 target_id,
-                f"{tr(target_language, 'support_thread_closed_notice', ticket=ticket_id)}\n"
-                f"{thread_tag(ticket_id)}",
+                thread_notice(
+                    ticket_id,
+                    tr(target_language, "support_thread_closed_notice", ticket=ticket_id),
+                ),
             )
         except TelegramAPIError:
             continue
@@ -523,10 +536,13 @@ async def user_ticket_reply(message: Message, state: FSMContext, db: Database) -
         await answer_feedback(message, language, "support_ticket_closed", ticket=ticket_id)
         return
     await state.clear()
-    await message.answer(
-        _tagged(language, "support_created", ticket_id)
-        + "\n"
-        + tr(language, "support_thread_started", ticket=ticket_id)
+    await answer_rich_with_buttons(
+        message,
+        thread_notice(
+            ticket_id,
+            tr(language, "support_created"),
+            tr(language, "support_thread_started", ticket=ticket_id),
+        ),
     )
     await _notify_admins(message, db, ticket_id, text)
 
@@ -573,7 +589,7 @@ async def admin_ticket_reply(message: Message, state: FSMContext, db: Database) 
         )
     except TelegramAPIError:
         pass
-    await answer_with_buttons(
+    await answer_rich_with_buttons(
         message,
         _tagged(language, "support_admin_reply_sent", ticket_id),
         reply_markup=ticket_reply_keyboard(language, ticket_id, can_reply=False),
